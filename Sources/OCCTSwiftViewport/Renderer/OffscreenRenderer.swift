@@ -57,6 +57,16 @@ public struct OffscreenRenderOptions: Sendable {
     /// `cameraState.pivot` or `explicitOrthoBounds` for small registration nudges.
     public var pixelPan: SIMD2<Float>?
 
+    /// Measurement annotations to overlay on the rendered image.
+    ///
+    /// After the Metal pass produces the base CGImage, each measurement is
+    /// drawn on top via Core Graphics + Core Text using the same visual
+    /// semantics as the interactive `MeasurementOverlay` SwiftUI Canvas.
+    /// World-space anchors must already be resolved on the input
+    /// `ViewportMeasurement` values; the headless path performs no topology
+    /// lookups.
+    public var measurements: [ViewportMeasurement]
+
     public init(
         width: Int = 1024,
         height: Int = 768,
@@ -68,7 +78,8 @@ public struct OffscreenRenderOptions: Sendable {
         showAxes: Bool = false,
         msaaSampleCount: Int = 4,
         explicitOrthoBounds: OrthoBounds? = nil,
-        pixelPan: SIMD2<Float>? = nil
+        pixelPan: SIMD2<Float>? = nil,
+        measurements: [ViewportMeasurement] = []
     ) {
         self.width = width
         self.height = height
@@ -81,6 +92,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.msaaSampleCount = msaaSampleCount
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
+        self.measurements = measurements
     }
 }
 
@@ -544,7 +556,17 @@ public final class OffscreenRenderer: Sendable {
             space: colorSpace, bitmapInfo: bitmapInfo.rawValue
         ) else { return nil }
 
-        return context.makeImage()
+        guard let baseImage = context.makeImage() else { return nil }
+
+        if options.measurements.isEmpty {
+            return baseImage
+        }
+        return MeasurementCompositor.composite(
+            baseImage: baseImage,
+            measurements: options.measurements,
+            viewProjection: viewProjection,
+            viewportSize: CGSize(width: w, height: h)
+        )
     }
 
     /// Renders and writes PNG to disk. Returns file size in bytes.
