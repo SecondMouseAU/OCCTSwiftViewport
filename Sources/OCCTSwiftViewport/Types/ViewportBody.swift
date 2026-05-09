@@ -27,6 +27,23 @@ public enum PickLayer: Hashable, Sendable {
     case widget
 }
 
+/// What primitive type the renderer should draw a body as.
+///
+/// Existing bodies default to `.mesh` (vertexData + indices + optional edges),
+/// so this is source-compatible. `.point` switches the body to a point-cloud
+/// pass that draws `vertices` as visible point sprites — `vertexData`/`indices`
+/// are ignored. `.wire` is reserved for an explicit wire-only intent; today
+/// such bodies render through the existing edge-only path with `.mesh` and
+/// `.wire` is treated identically by the renderer.
+///
+/// Named to avoid collision with the pick-result `PrimitiveKind` enum
+/// (`.face/.edge/.vertex`).
+public enum BodyPrimitiveKind: Sendable, Hashable {
+    case mesh
+    case point
+    case wire
+}
+
 /// Per-triangle highlight style. `.zero` alpha = no highlight; non-zero alpha
 /// composites the given color over the base shading at that triangle.
 ///
@@ -89,6 +106,23 @@ public struct ViewportBody: Identifiable, Sendable {
     /// pick result's `primitiveIndex` is the vertex index directly).
     public var vertexIndices: [Int32]
 
+    /// Optional per-point colour, parallel to `vertices`. Empty (default)
+    /// means every point uses `color`. Only consumed by the point-cloud
+    /// rendering pass (`primitiveKind == .point`).
+    public var vertexColors: [SIMD4<Float>]
+
+    /// World-space radius for each point sprite when rendered as a point
+    /// cloud. Projected to a screen-space pixel size at draw time. Clamped
+    /// to a minimum of 1 px and a maximum of 64 px (Apple's `[[point_size]]`
+    /// limit) by the shader.
+    public var pointRadius: Float
+
+    /// What primitive the renderer should draw this body as. `.mesh`
+    /// (default) walks `vertexData`/`indices`/`edges` exactly as before.
+    /// `.point` switches to the point-cloud pass and ignores the mesh +
+    /// edge buffers.
+    public var primitiveKind: BodyPrimitiveKind
+
     /// Per-triangle highlight style. Empty (default) = no highlight pass for
     /// this body. When populated, `count == indices.count / 3`.
     ///
@@ -141,11 +175,14 @@ public struct ViewportBody: Identifiable, Sendable {
         edgeIndices: [Int32] = [],
         vertices: [SIMD3<Float>] = [],
         vertexIndices: [Int32] = [],
+        vertexColors: [SIMD4<Float>] = [],
         triangleStyles: [TriangleStyle] = [],
         color: SIMD4<Float>,
         roughness: Float = 0.5,
         metallic: Float = 0.0,
         material: PBRMaterial? = nil,
+        pointRadius: Float = 0.05,
+        primitiveKind: BodyPrimitiveKind = .mesh,
         isVisible: Bool = true,
         renderLayer: RenderLayer = .geometry,
         pickLayer: PickLayer = .userGeometry,
@@ -161,11 +198,14 @@ public struct ViewportBody: Identifiable, Sendable {
         self.edgeIndices = edgeIndices
         self.vertices = vertices
         self.vertexIndices = vertexIndices
+        self.vertexColors = vertexColors
         self.triangleStyles = triangleStyles
         self.color = color
         self.roughness = roughness
         self.metallic = metallic
         self.material = material
+        self.pointRadius = pointRadius
+        self.primitiveKind = primitiveKind
         self.isVisible = isVisible
         self.renderLayer = renderLayer
         self.pickLayer = pickLayer
@@ -197,22 +237,32 @@ extension ViewportBody {
 
     /// Computes the axis-aligned bounding box from vertex positions.
     ///
-    /// Returns `nil` if the body has no vertex data.
+    /// Falls back to `vertices` when `vertexData` is empty, so point-cloud
+    /// bodies (`primitiveKind == .point`) report a usable extent for
+    /// shadow-pass framing, picking, and `CameraState.fit(to:)`.
+    /// Returns `nil` if neither source has any points.
     public var boundingBox: BoundingBox? {
         let stride = 6
         let vertexCount = vertexData.count / stride
-        guard vertexCount > 0 else { return nil }
-
-        var bbMin = SIMD3<Float>(vertexData[0], vertexData[1], vertexData[2])
-        var bbMax = bbMin
-
-        for i in 1..<vertexCount {
-            let base = i * stride
-            let p = SIMD3<Float>(vertexData[base], vertexData[base + 1], vertexData[base + 2])
-            bbMin = simd_min(bbMin, p)
-            bbMax = simd_max(bbMax, p)
+        if vertexCount > 0 {
+            var bbMin = SIMD3<Float>(vertexData[0], vertexData[1], vertexData[2])
+            var bbMax = bbMin
+            for i in 1..<vertexCount {
+                let base = i * stride
+                let p = SIMD3<Float>(vertexData[base], vertexData[base + 1], vertexData[base + 2])
+                bbMin = simd_min(bbMin, p)
+                bbMax = simd_max(bbMax, p)
+            }
+            return BoundingBox(min: bbMin, max: bbMax)
         }
 
+        guard let first = vertices.first else { return nil }
+        var bbMin = first
+        var bbMax = first
+        for i in 1..<vertices.count {
+            bbMin = simd_min(bbMin, vertices[i])
+            bbMax = simd_max(bbMax, vertices[i])
+        }
         return BoundingBox(min: bbMin, max: bbMax)
     }
 }

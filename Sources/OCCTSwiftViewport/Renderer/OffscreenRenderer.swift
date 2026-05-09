@@ -115,6 +115,10 @@ public final class OffscreenRenderer: Sendable {
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
+    /// Visible point-cloud pipeline (issue #28). Mirrors the live renderer's
+    /// `visiblePointPipeline`. Optional only because pipeline construction
+    /// could fail on a degenerate device.
+    private let visiblePointPipeline: MTLRenderPipelineState?
     private let shadowPipeline: MTLRenderPipelineState
     private let shadowMapManager: ShadowMapManager
     private let depthState: MTLDepthStencilState
@@ -237,6 +241,24 @@ public final class OffscreenRenderer: Sendable {
 
         guard let axisPipeline = try? device.makeRenderPipelineState(descriptor: axisDesc) else { return nil }
         self.axisPipeline = axisPipeline
+
+        // Visible point-cloud pipeline (issue #28). No vertex descriptor —
+        // shader reads positions and per-point colours via [[vertex_id]].
+        let visiblePointDesc = MTLRenderPipelineDescriptor()
+        visiblePointDesc.label = "offscreen_visible_point"
+        visiblePointDesc.vertexFunction = library.makeFunction(name: "visible_point_vertex")
+        visiblePointDesc.fragmentFunction = library.makeFunction(name: "visible_point_fragment")
+        visiblePointDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        visiblePointDesc.colorAttachments[1].pixelFormat = .invalid
+        visiblePointDesc.colorAttachments[0].isBlendingEnabled = true
+        visiblePointDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        visiblePointDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        visiblePointDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        visiblePointDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        visiblePointDesc.depthAttachmentPixelFormat = depthFormat
+        visiblePointDesc.stencilAttachmentPixelFormat = depthFormat
+        visiblePointDesc.rasterSampleCount = sampleCount
+        self.visiblePointPipeline = try? device.makeRenderPipelineState(descriptor: visiblePointDesc)
 
         // Shadow pipeline
         let shadowDesc = MTLRenderPipelineDescriptor()
@@ -491,6 +513,9 @@ public final class OffscreenRenderer: Sendable {
         let displayMode = options.displayMode
         for body in bodies where body.isVisible {
             guard let buffers = bodyBufferCache[body.id] else { continue }
+            // Point-cloud bodies are drawn in the dedicated pass below — skip
+            // the mesh + wireframe paths entirely.
+            if body.primitiveKind == .point { continue }
 
             var uniforms = makeUniforms()
             var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
@@ -523,6 +548,47 @@ public final class OffscreenRenderer: Sendable {
                 mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                 mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+            }
+        }
+
+        // Point-cloud pass (issue #28). Walks `.point` bodies and draws them
+        // as MTL point primitives via `visiblePointPipeline`. See
+        // Shaders.metal `visible_point_vertex` for `pxPerWorldFactor` derivation.
+        if let pointPipeline = visiblePointPipeline {
+            let pxPerWorldFactor = Float(h) * projMatrix.columns.1.y * 0.5
+            var didBindPipeline = false
+            for body in bodies where body.isVisible && body.primitiveKind == .point {
+                guard let buffers = bodyBufferCache[body.id],
+                      let positionBuf = buffers.pointPositionBuffer,
+                      buffers.pointVertexCount > 0 else { continue }
+
+                if !didBindPipeline {
+                    mainEncoder.setRenderPipelineState(pointPipeline)
+                    mainEncoder.setDepthStencilState(depthState)
+                    didBindPipeline = true
+                }
+
+                var uniforms = makeUniforms()
+                let useColors = (buffers.pointColorBuffer != nil) ? UInt32(1) : UInt32(0)
+                var params = PointParamsSwift(
+                    baseColor: body.color,
+                    worldRadius: body.pointRadius,
+                    pxPerWorldFactor: pxPerWorldFactor,
+                    useVertexColors: useColors
+                )
+
+                mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
+                if let colorBuf = buffers.pointColorBuffer {
+                    mainEncoder.setVertexBuffer(colorBuf, offset: 0, index: 1)
+                } else {
+                    // Placeholder binding so the shader's `vertexColors`
+                    // argument is non-null (some validation layers care).
+                    mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
+                }
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.setVertexBytes(&params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
+
+                mainEncoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
             }
         }
 
@@ -645,9 +711,52 @@ public final class OffscreenRenderer: Sendable {
             device.makeBuffer(bytes: edgeVertices, length: edgeVertices.count * MemoryLayout<Float>.size, options: .storageModeShared)
         let edgeVertexCount = edgeVertices.count / 6
 
-        guard vertexBuffer != nil || edgeVB != nil else { return }
+        // Point-cloud buffers (issue #28). Built only when `body.vertices`
+        // is non-empty. The colour buffer is only built when its length
+        // matches the vertex count — mismatched arrays silently fall back
+        // to the body colour rather than reading out of bounds.
+        let pointPositionVB: MTLBuffer?
+        let pointVertexCount: Int
+        if !body.vertices.isEmpty {
+            pointPositionVB = body.vertices.withUnsafeBufferPointer { buf in
+                device.makeBuffer(
+                    bytes: buf.baseAddress!,
+                    length: buf.count * MemoryLayout<SIMD3<Float>>.stride,
+                    options: .storageModeShared
+                )
+            }
+            pointVertexCount = body.vertices.count
+        } else {
+            pointPositionVB = nil
+            pointVertexCount = 0
+        }
 
-        bodyBufferCache[body.id] = BodyBuffersOffscreen(vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indexCount, edgeVertexBuffer: edgeVB, edgeVertexCount: edgeVertexCount, vertexCount: vertexCount)
+        let pointColorVB: MTLBuffer?
+        if !body.vertexColors.isEmpty, body.vertexColors.count == body.vertices.count {
+            pointColorVB = body.vertexColors.withUnsafeBufferPointer { buf in
+                device.makeBuffer(
+                    bytes: buf.baseAddress!,
+                    length: buf.count * MemoryLayout<SIMD4<Float>>.stride,
+                    options: .storageModeShared
+                )
+            }
+        } else {
+            pointColorVB = nil
+        }
+
+        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
+
+        bodyBufferCache[body.id] = BodyBuffersOffscreen(
+            vertexBuffer: vertexBuffer,
+            indexBuffer: indexBuffer,
+            indexCount: indexCount,
+            edgeVertexBuffer: edgeVB,
+            edgeVertexCount: edgeVertexCount,
+            vertexCount: vertexCount,
+            pointPositionBuffer: pointPositionVB,
+            pointVertexCount: pointVertexCount,
+            pointColorBuffer: pointColorVB
+        )
         bodyGeneration[body.id] = currentGen
     }
 
@@ -708,4 +817,12 @@ private struct BodyBuffersOffscreen {
     let edgeVertexBuffer: MTLBuffer?
     let edgeVertexCount: Int
     let vertexCount: Int
+    /// Tight position buffer (stride 12) for the visible point-cloud pass.
+    /// Built from `body.vertices` only when non-empty.
+    let pointPositionBuffer: MTLBuffer?
+    let pointVertexCount: Int
+    /// Per-point colour buffer (stride 16). Nil when `body.vertexColors` is
+    /// empty or its length doesn't match `body.vertices` — the pass falls
+    /// back to `body.color` in that case.
+    let pointColorBuffer: MTLBuffer?
 }

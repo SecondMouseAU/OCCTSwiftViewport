@@ -72,6 +72,16 @@ extension BodyUniforms {
     }
 }
 
+// IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct PointParams`).
+// Field order, types, and 16-byte alignment must stay identical. Total stride = 32 bytes.
+struct PointParamsSwift {
+    var baseColor: SIMD4<Float>     // offset  0 — fallback colour when vertexColors empty
+    var worldRadius: Float           // offset 16
+    var pxPerWorldFactor: Float      // offset 20 — viewportHeight * projection[1][1] / 2
+    var useVertexColors: UInt32      // offset 24
+    var _pad: UInt32 = 0             // offset 28
+}
+
 struct GridUniforms {
     var viewProjectionMatrix: simd_float4x4
     var gridOrigin: SIMD3<Float>
@@ -144,6 +154,13 @@ private struct BodyBuffers {
     /// can reuse the standard pick vertex descriptor.
     let pointVertexBuffer: MTLBuffer?
     let pointVertexCount: Int
+    /// Position-only buffer for the visible point-cloud pass (stride 12 =
+    /// SIMD3<Float>). The visible-point shader reads this with [[vertex_id]]
+    /// instead of going through a vertex descriptor.
+    let pointPositionBuffer: MTLBuffer?
+    /// Per-point colour buffer (stride 16 = SIMD4<Float>). Nil when the body
+    /// has no `vertexColors` set — the pass falls back to the body colour.
+    let pointColorBuffer: MTLBuffer?
     let vertexCount: Int
     // Tessellation (nil when tessellation disabled or edge-only body)
     let tessellation: TessellationBuffers?
@@ -178,6 +195,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `[[point_size]]` so individual points have a clickable footprint;
     /// fragment emits kind=2.
     private let pickPointPipeline: MTLRenderPipelineState?
+    /// MSAA point-sprite pipeline for visible point-cloud bodies
+    /// (`primitiveKind == .point`). Renders `body.vertices` as disc-masked
+    /// point sprites with a world-space radius projected to screen pixels.
+    private let visiblePointPipeline: MTLRenderPipelineState?
     /// `.lessEqual` depth state used by the edge + vertex pick sub-passes so
     /// edges/points coplanar with a face win the pick over the face.
     private let pickEdgeOrPointDepthState: MTLDepthStencilState
@@ -453,6 +474,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         pickPointDesc.rasterSampleCount = 1
         pickPointDesc.vertexDescriptor = vertexDesc
         self.pickPointPipeline = try? device.makeRenderPipelineState(descriptor: pickPointDesc)
+
+        // MSAA visible point-cloud pipeline. No vertex descriptor — the shader
+        // reads positions and per-point colours directly via [[vertex_id]] so
+        // the position buffer can be tightly packed (stride 12).
+        let visiblePointDesc = MTLRenderPipelineDescriptor()
+        visiblePointDesc.label = "visible_point"
+        visiblePointDesc.vertexFunction = library.makeFunction(name: "visible_point_vertex")
+        visiblePointDesc.fragmentFunction = library.makeFunction(name: "visible_point_fragment")
+        visiblePointDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        visiblePointDesc.colorAttachments[1].pixelFormat = .invalid
+        // Premultiplied alpha so per-point colours with alpha < 1 blend over
+        // existing geometry without disturbing the depth state.
+        visiblePointDesc.colorAttachments[0].isBlendingEnabled = true
+        visiblePointDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        visiblePointDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        visiblePointDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        visiblePointDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        visiblePointDesc.depthAttachmentPixelFormat = depthFormat
+        visiblePointDesc.stencilAttachmentPixelFormat = depthFormat
+        visiblePointDesc.rasterSampleCount = sampleCount
+        self.visiblePointPipeline = try? device.makeRenderPipelineState(descriptor: visiblePointDesc)
 
         // Depth-only pipeline (for SSAO depth pass — no color attachments)
         let depthOnlyDesc = MTLRenderPipelineDescriptor()
@@ -1374,6 +1416,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
             // Overlay bodies are drawn after the selection outline, in their own pass.
             if body.renderLayer == .overlay { continue }
+            // Point-cloud bodies are drawn in the dedicated visible-point pass
+            // below — skip the mesh + wireframe paths so a `.point` body that
+            // happens to also carry stray vertexData/edges doesn't double-draw.
+            if body.primitiveKind == .point { continue }
 
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
@@ -1465,6 +1511,54 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                 mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+            }
+        }
+
+        // 3.4 Point-cloud pass (issue #28).
+        // Walks bodies whose primitiveKind is .point and draws their
+        // `vertices` as MTL point primitives with a world-space radius
+        // projected to a clamped [[point_size]]. Premultiplied-alpha
+        // blending lets per-point colours composite over earlier geometry.
+        let hasPointBodies = bodies.contains { body in
+            body.isVisible
+                && body.renderLayer == .geometry
+                && body.primitiveKind == .point
+                && (bodyBufferCache[body.id]?.pointPositionBuffer != nil)
+        }
+        if hasPointBodies, let pointPipeline = visiblePointPipeline {
+            // pxPerWorldFactor = viewportHeight * projection[1][1] / 2
+            // — see Shaders.metal `visible_point_vertex` for derivation.
+            let pxPerWorldFactor = Float(drawableSize.height) * projMatrix.columns.1.y * 0.5
+            mainEncoder.setRenderPipelineState(pointPipeline)
+            mainEncoder.setDepthStencilState(depthState)
+            for body in bodies where body.isVisible && body.renderLayer == .geometry && body.primitiveKind == .point {
+                guard let buffers = bodyBufferCache[body.id],
+                      let positionBuf = buffers.pointPositionBuffer,
+                      buffers.pointVertexCount > 0 else { continue }
+
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                let useColors = (buffers.pointColorBuffer != nil) ? UInt32(1) : UInt32(0)
+                var params = PointParamsSwift(
+                    baseColor: body.color,
+                    worldRadius: body.pointRadius,
+                    pxPerWorldFactor: pxPerWorldFactor,
+                    useVertexColors: useColors
+                )
+
+                mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
+                if let colorBuf = buffers.pointColorBuffer {
+                    mainEncoder.setVertexBuffer(colorBuf, offset: 0, index: 1)
+                } else {
+                    // Bind the position buffer as a benign placeholder so the
+                    // shader's `vertexColors` argument is non-null on devices
+                    // that validate buffer bindings.
+                    mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
+                }
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.setVertexBytes(&params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
+
+                mainEncoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
             }
         }
 
@@ -2180,6 +2274,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // mesh vertex buffer so the standard pick vertex descriptor applies.
         let pointVB: MTLBuffer?
         let pointVertexCount: Int
+        let pointPositionVB: MTLBuffer?
         if !body.vertices.isEmpty {
             var pointData: [Float] = []
             pointData.reserveCapacity(body.vertices.count * 6)
@@ -2192,13 +2287,44 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 options: .storageModeShared
             )
             pointVertexCount = body.vertices.count
+
+            // Tight position-only buffer for the visible point-cloud pass.
+            // Separate from `pointVB` because the visible pass uses
+            // [[vertex_id]] indexing with no vertex descriptor — a stride of
+            // 12 keeps memory bandwidth proportional to the point count
+            // rather than 2× for the unused normal slots.
+            pointPositionVB = body.vertices.withUnsafeBufferPointer { buf in
+                device.makeBuffer(
+                    bytes: buf.baseAddress!,
+                    length: buf.count * MemoryLayout<SIMD3<Float>>.stride,
+                    options: .storageModeShared
+                )
+            }
         } else {
             pointVB = nil
             pointVertexCount = 0
+            pointPositionVB = nil
+        }
+
+        // Per-point colour buffer for the visible point-cloud pass. Built only
+        // when length matches `vertices`; if the consumer supplies a mismatched
+        // colour array we silently fall back to the body colour rather than
+        // reading out of bounds.
+        let pointColorVB: MTLBuffer?
+        if !body.vertexColors.isEmpty, body.vertexColors.count == body.vertices.count {
+            pointColorVB = body.vertexColors.withUnsafeBufferPointer { buf in
+                device.makeBuffer(
+                    bytes: buf.baseAddress!,
+                    length: buf.count * MemoryLayout<SIMD4<Float>>.stride,
+                    options: .storageModeShared
+                )
+            }
+        } else {
+            pointColorVB = nil
         }
 
         // Skip bodies with no renderable data at all
-        guard vertexBuffer != nil || edgeVB != nil else { return }
+        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
 
         // Build tessellation patch data if tessellation is enabled
         var tessBuffers: TessellationBuffers?
@@ -2264,6 +2390,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             edgePrimitiveCount: edgePrimitiveCount,
             pointVertexBuffer: pointVB,
             pointVertexCount: pointVertexCount,
+            pointPositionBuffer: pointPositionVB,
+            pointColorBuffer: pointColorVB,
             vertexCount: vertexCount,
             tessellation: tessBuffers,
             meshlets: meshletBufs,

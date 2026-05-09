@@ -554,6 +554,70 @@ fragment PickFragmentOut pick_point_fragment(
     return out;
 }
 
+// MARK: - Visible Point-Cloud Pipeline
+//
+// Draws a body whose primitiveKind == .point as visible point sprites. Reads
+// positions from `positions[buffer(0)]` indexed by [[vertex_id]] (no vertex
+// descriptor needed) and an optional per-point colour buffer at buffer(1).
+// `pxPerWorldFactor` = viewportHeight * projection[1][1] / 2 — the
+// projection-aware scalar that, divided by clipPosition.w, gives screen
+// pixels per world unit. Works for both perspective (w == -viewZ) and
+// orthographic (w == 1) projections.
+//
+// IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift
+// `struct PointParamsSwift`). Field order, types, and 16-byte alignment must
+// stay identical.
+struct PointParams {
+    float4 baseColor;          // offset  0 — fallback colour when vertexColors empty
+    float  worldRadius;        // offset 16
+    float  pxPerWorldFactor;   // offset 20
+    uint   useVertexColors;    // offset 24 (0 or 1)
+    uint   _pad;               // offset 28 — pad to 16-byte boundary
+};
+
+struct VisiblePointVertexOut {
+    float4 clipPosition [[position]];
+    float  pointSize    [[point_size]];
+    float4 color;
+};
+
+vertex VisiblePointVertexOut visible_point_vertex(
+    uint vid [[vertex_id]],
+    constant float3 *positions [[buffer(0)]],
+    constant float4 *vertexColors [[buffer(1)]],
+    constant Uniforms &uniforms [[buffer(2)]],
+    constant PointParams &params [[buffer(3)]]
+) {
+    VisiblePointVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(positions[vid], 1.0);
+    float4 clipPos = uniforms.viewProjectionMatrix * worldPos;
+    out.clipPosition = clipPos;
+
+    // Convert world-space radius to a screen-space pixel diameter. The
+    // factor `pxPerWorldFactor / clipPos.w` gives pixels per world unit at
+    // this depth, and the diameter is twice the radius.
+    float wDenom = max(abs(clipPos.w), 1e-4);
+    float screenSize = 2.0 * params.worldRadius * params.pxPerWorldFactor / wDenom;
+    // Apple GPUs clamp [[point_size]] at 64 px; clamp on the upper end so
+    // the value we emit is what actually rasterizes (avoids visual cliffs
+    // when clamping happens silently). 1 px lower bound keeps the sprite
+    // visible at extreme depths.
+    out.pointSize = clamp(screenSize, 1.0, 64.0);
+
+    out.color = (params.useVertexColors != 0u) ? vertexColors[vid] : params.baseColor;
+    return out;
+}
+
+fragment float4 visible_point_fragment(
+    VisiblePointVertexOut in [[stage_in]],
+    float2 pointCoord [[point_coord]]
+) {
+    // Mask to a disk inscribed in the [[point_coord]] unit square.
+    float2 c = pointCoord - float2(0.5);
+    if (dot(c, c) > 0.25) discard_fragment();
+    return in.color;
+}
+
 // MARK: - Selection Outline Pipeline
 
 struct SelectionOutlineParams {
