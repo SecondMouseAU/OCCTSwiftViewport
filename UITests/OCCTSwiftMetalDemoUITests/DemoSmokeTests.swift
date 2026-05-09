@@ -355,6 +355,10 @@ final class DemoSmokeTests: XCTestCase {
         tapDemo("v0.160 Triangulation+Cache Write")
         tapDemo("v0.163 ProductOps Assembly")
         tapDemo("v0.164 Cache Inspection")
+        tapDemo("v0.168 Import Progress")
+        tapDemo("v0.169 Mesh Progress")
+        tapDemo("v0.169 Export Progress")
+        tapDemo("v1.0 RootNodes & EdgeRegularity")
     }
 
     // MARK: - Helpers
