@@ -2,6 +2,12 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.10] — 2026-06-06
+
+### Fixed
+- **`OffscreenRenderer` now honours per-body `transform`** (issue #55). Headless renders previously drew every body at its local origin because the offscreen uniforms hard-coded `modelMatrix = identity` — so transformed / instanced / assembled bodies came out piled up. The shaded, transparent, point, and shadow passes now set `modelMatrix = body.transform`, and the shadow-frustum bounds use each body's *transformed* AABB so shadows follow the moved geometry. Matches `ViewportRenderer`. Identity-transform bodies are unchanged.
+- New `OffscreenTransformTests` (2): a body translated out of frame disappears; a `+X` offset shifts its rendered centroid right (126 tests total).
+
 ## [1.1.9] — 2026-06-06
 
 ### Added

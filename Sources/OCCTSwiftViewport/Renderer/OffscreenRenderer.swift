@@ -463,7 +463,7 @@ public final class OffscreenRenderer: Sendable {
                         guard let buffers = bodyBufferCache[body.id],
                               let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
                               buffers.indexCount > 0 else { continue }
-                        var shadowUniforms = ShadowUniformsSwift(lightViewProjectionMatrix: lightVP, modelMatrix: matrix_identity_float4x4)
+                        var shadowUniforms = ShadowUniformsSwift(lightViewProjectionMatrix: lightVP, modelMatrix: body.transform)
                         enc.setRenderPipelineState(shadowPipeline)
                         enc.setVertexBuffer(vb, offset: 0, index: 0)
                         enc.setVertexBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
@@ -542,6 +542,7 @@ public final class OffscreenRenderer: Sendable {
             }
 
             var uniforms = makeUniforms()
+            uniforms.modelMatrix = body.transform
             var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
 
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
@@ -595,6 +596,7 @@ public final class OffscreenRenderer: Sendable {
                 guard let vb = t.buffers.vertexBuffer, let ib = t.buffers.indexBuffer,
                       t.buffers.indexCount > 0 else { continue }
                 var uniforms = makeUniforms()
+                uniforms.modelMatrix = t.body.transform
                 var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: 0)
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -623,6 +625,7 @@ public final class OffscreenRenderer: Sendable {
                 }
 
                 var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
                 let useColors = (buffers.pointColorBuffer != nil) ? UInt32(1) : UInt32(0)
                 var params = PointParamsSwift(
                     baseColor: body.color,
@@ -820,7 +823,7 @@ public final class OffscreenRenderer: Sendable {
         var hasGeometry = false
 
         for body in bodies where body.isVisible {
-            if let bb = body.boundingBox {
+            if let bb = body.boundingBox?.transformed(by: body.transform) {
                 sceneMin = simd_min(sceneMin, bb.min)
                 sceneMax = simd_max(sceneMax, bb.max)
                 hasGeometry = true
