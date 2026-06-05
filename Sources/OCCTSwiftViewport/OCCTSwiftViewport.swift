@@ -97,6 +97,7 @@ public typealias _ViewportConfiguration = ViewportConfiguration
 public typealias _GestureConfiguration = GestureConfiguration
 public typealias _GestureAction = GestureAction
 public typealias _ViewportModifierKeys = ViewportModifierKeys
+public typealias _ViewportInputEvent = ViewportInputEvent
 public typealias _ViewCubePosition = ViewCubePosition
 public typealias _ClipPlane = ClipPlane
 public typealias _RenderingQuality = RenderingQuality

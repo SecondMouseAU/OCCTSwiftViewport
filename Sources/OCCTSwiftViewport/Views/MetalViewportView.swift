@@ -39,17 +39,13 @@ public struct MetalViewportView: View {
 
     // MARK: - Gesture State
 
+    // These hold per-frame deltas for translating native gestures into
+    // `ViewportInputEvent`s; interpretation (which action a drag performs) lives
+    // in `ViewportController.dispatch(_:)`.
     @State private var lastDragValue: CGSize = .zero
     @State private var lastMagnification: CGFloat = 1.0
     @State private var isPanning: Bool = false
     @State private var lastRotation: Angle = .zero
-
-    #if os(macOS)
-    /// Tracks which modifier-based gesture the current drag is performing.
-    @State private var activeDragMode: MacDragMode = .orbit
-
-    private enum MacDragMode { case orbit, pan, zoom }
-    #endif
 
     // MARK: - Initialization
 
@@ -184,6 +180,10 @@ public struct MetalViewportView: View {
         #endif
         let ndc = SIMD2<Float>(ndcX, ndcY)
 
+        // Observational only — routes nothing for a single tap, but surfaces taps
+        // on the input-event stream (e.g. for a HUD input inspector).
+        controller.dispatch(.tap(ndc: ndc, count: 1))
+
         let ctrl = controller
         renderer?.performPick(at: pixel) { result in
             Task { @MainActor in
@@ -205,11 +205,11 @@ public struct MetalViewportView: View {
                         let nx = Float((cursorInView.x / viewSize.width) * 2 - 1)
                         let ny = Float((1 - cursorInView.y / viewSize.height) * 2 - 1)
                         let aspect = Float(viewSize.width / viewSize.height)
-                        controller.handleScrollZoom(
-                            delta: delta,
-                            cursorNormalized: SIMD2<Float>(nx, ny),
+                        controller.dispatch(.scroll(
+                            delta: Float(delta),
+                            cursorNDC: SIMD2<Float>(nx, ny),
                             aspectRatio: aspect
-                        )
+                        ))
                         controller.scheduleDynamicPivotUpdate(bodies: bodies)
                     },
                     onMouseDown: { location, viewSize in
@@ -240,10 +240,14 @@ public struct MetalViewportView: View {
         TwoFingerPanGestureView(
             onChanged: { translation in
                 isPanning = true
-                controller.handlePan(translation: translation)
+                controller.dispatch(.twoFingerPanChanged(
+                    translation: SIMD2<Float>(Float(translation.width), Float(translation.height))
+                ))
             },
             onEnded: { velocity in
-                controller.endPan(velocity: velocity)
+                controller.dispatch(.twoFingerPanEnded(
+                    velocity: SIMD2<Float>(Float(velocity.width), Float(velocity.height))
+                ))
             }
         )
     }
@@ -259,15 +263,18 @@ public struct MetalViewportView: View {
                 )
                 lastDragValue = value.translation
 
-                // Negate horizontal so left/right swipe rotates the object
-                // under the finger (direct manipulation) rather than orbiting
-                // the camera around the object.
-                controller.handleOrbit(translation: CGSize(width: -delta.width, height: delta.height))
+                controller.dispatch(.dragChanged(
+                    delta: SIMD2<Float>(Float(delta.width), Float(delta.height)),
+                    modifiers: []
+                ))
             }
             .onEnded { value in
                 lastDragValue = .zero
                 if !isPanning {
-                    controller.endOrbit(velocity: CGSize(width: -value.velocity.width, height: value.velocity.height))
+                    controller.dispatch(.dragEnded(
+                        velocity: SIMD2<Float>(Float(value.velocity.width), Float(value.velocity.height)),
+                        modifiers: []
+                    ))
                 }
                 isPanning = false
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
@@ -279,10 +286,11 @@ public struct MetalViewportView: View {
             .onChanged { value in
                 let delta = value.magnification / lastMagnification
                 lastMagnification = value.magnification
-                controller.handleZoom(magnification: delta)
+                controller.dispatch(.pinchChanged(scale: Float(delta)))
             }
             .onEnded { _ in
                 lastMagnification = 1.0
+                controller.dispatch(.pinchEnded)
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
             }
     }
@@ -292,17 +300,18 @@ public struct MetalViewportView: View {
             .onChanged { value in
                 let delta = Float((value.rotation - lastRotation).radians)
                 lastRotation = value.rotation
-                controller.handleRoll(angle: CGFloat(delta))
+                controller.dispatch(.rotateChanged(radians: delta))
             }
             .onEnded { _ in
                 lastRotation = .zero
+                controller.dispatch(.rotateEnded)
             }
     }
 
     private var doubleTapGesture: some Gesture {
         TapGesture(count: 2)
             .onEnded {
-                controller.reset(animated: true)
+                controller.dispatch(.tap(ndc: .zero, count: 2))
             }
     }
     #endif
@@ -320,39 +329,18 @@ public struct MetalViewportView: View {
                 lastDragValue = value.translation
 
                 let modifiers = ViewportModifierKeys(NSApp.currentEvent?.modifierFlags ?? [])
-                let gc = controller.configuration.gestureConfiguration
-                let action = gc.dragAction(for: modifiers)
-
-                switch action {
-                case .pan:
-                    activeDragMode = .pan
-                    controller.handlePan(translation: delta)
-                case .zoom:
-                    activeDragMode = .zoom
-                    let zoomDelta = 1.0 + delta.height * 0.02
-                    controller.handleZoom(magnification: zoomDelta)
-                case .orbit:
-                    activeDragMode = .orbit
-                    controller.handleOrbit(translation: CGSize(width: -delta.width, height: delta.height))
-                case .none:
-                    break
-                default:
-                    break
-                }
+                controller.dispatch(.dragChanged(
+                    delta: SIMD2<Float>(Float(delta.width), Float(delta.height)),
+                    modifiers: modifiers
+                ))
             }
             .onEnded { value in
                 lastDragValue = .zero
-
-                switch activeDragMode {
-                case .orbit:
-                    controller.endOrbit(velocity: CGSize(width: -value.velocity.width, height: value.velocity.height))
-                case .pan:
-                    controller.endPan(velocity: value.velocity)
-                case .zoom:
-                    break
-                }
-                activeDragMode = .orbit
-
+                let modifiers = ViewportModifierKeys(NSApp.currentEvent?.modifierFlags ?? [])
+                controller.dispatch(.dragEnded(
+                    velocity: SIMD2<Float>(Float(value.velocity.width), Float(value.velocity.height)),
+                    modifiers: modifiers
+                ))
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
             }
     }
@@ -362,10 +350,11 @@ public struct MetalViewportView: View {
             .onChanged { value in
                 let delta = value.magnification / lastMagnification
                 lastMagnification = value.magnification
-                controller.handleZoom(magnification: delta)
+                controller.dispatch(.pinchChanged(scale: Float(delta)))
             }
             .onEnded { _ in
                 lastMagnification = 1.0
+                controller.dispatch(.pinchEnded)
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
             }
     }
@@ -375,10 +364,11 @@ public struct MetalViewportView: View {
             .onChanged { value in
                 let delta = Float((value.rotation - lastRotation).radians)
                 lastRotation = value.rotation
-                controller.handleRoll(angle: CGFloat(delta))
+                controller.dispatch(.rotateChanged(radians: delta))
             }
             .onEnded { _ in
                 lastRotation = .zero
+                controller.dispatch(.rotateEnded)
             }
     }
     #endif

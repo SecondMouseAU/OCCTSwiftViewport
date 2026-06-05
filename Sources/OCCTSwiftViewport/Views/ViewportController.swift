@@ -329,6 +329,17 @@ public final class ViewportController: ObservableObject {
     /// Optional callback invoked when a widget-layer pick occurs.
     public var onWidgetPick: ((PickResult?) -> Void)?
 
+    /// Optional observer of the portable input-event stream, fired for every event
+    /// passed to `dispatch(_:)`. Useful for debugging / HUD input inspectors; does
+    /// not affect interpretation. See `ViewportInputEvent`.
+    public var onInputEvent: ((ViewportInputEvent) -> Void)?
+
+    /// Drag mode the unified pointer drag is currently interpreted as. Tracked
+    /// across `dragChanged` so `dragEnded` applies the matching inertia. Internal —
+    /// used by the input router (`dispatch(_:)`).
+    enum InputDragMode { case orbit, pan, zoom }
+    var activeInputDragMode: InputDragMode = .orbit
+
     /// Optional filter constraining what the user-geometry pick stream accepts.
     ///
     /// When set, a user-geometry pick that fails the filter is treated as a miss

@@ -94,6 +94,10 @@ struct SpikeView: View {
 
     @StateObject private var materialLibrary = MaterialLibrary()
 
+    // Input-event inspector (issue #35 on-device verification).
+    @StateObject private var inputLog = InputEventLog()
+    @State private var showInputInspector = false
+
     var body: some View {
         viewportLayout
         .onAppear {
@@ -107,6 +111,11 @@ struct SpikeView: View {
             }
             // Build procedural metadata for primitive face selection
             buildProceduralMetadata()
+
+            // Feed the input-event inspector (issue #35).
+            controller.onInputEvent = { [inputLog] event in
+                inputLog.record(event)
+            }
 
             // --test-all-demos is now handled in AppEntry.runHeadless before
             // SwiftUI boots — no need for a duplicate trigger here.
@@ -150,10 +159,12 @@ struct SpikeView: View {
             sidebar
         } detail: {
             MetalViewportView(controller: controller, bodies: $bodies)
+                .overlay(alignment: .topTrailing) { inputInspectorOverlay }
                 .overlay(alignment: .bottom) { statusOverlay }
         }
         #else
         MetalViewportView(controller: controller, bodies: $bodies)
+            .overlay(alignment: .topTrailing) { inputInspectorOverlay }
             .overlay(alignment: .topLeading) {
                 Button {
                     showSettings = true
@@ -182,6 +193,14 @@ struct SpikeView: View {
     }
 
     @ViewBuilder
+    private var inputInspectorOverlay: some View {
+        if showInputInspector {
+            InputInspectorView(log: inputLog)
+                .padding(12)
+        }
+    }
+
+    @ViewBuilder
     private var statusOverlay: some View {
         if let status = operationStatus {
             Text(status)
@@ -197,6 +216,11 @@ struct SpikeView: View {
 
     private var sidebar: some View {
         List {
+            DisclosureGroup("Debug") {
+                Toggle("Input event inspector", isOn: $showInputInspector)
+                    .accessibilityIdentifier("inputInspectorToggle")
+            }
+
             DisclosureGroup("File & Tools") {
                 fileSection
                 exportSection
