@@ -2,6 +2,18 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.0.6] — 2026-06-05
+
+### Added
+- **Screen-space HUD overlays** (issue #34) — the `Graphic3d_TransMode` analogue: orientation-only overlays pinned to viewport corners, distinct from the world-space axes/grid. Implemented as SwiftUI overlays (the ViewCube pattern), no extra Metal pass.
+  - **`OrientationGnomon`** — top-leading corner gnomon drawing the world X/Y/Z axes (red/green/blue) under the current camera rotation; back-to-front depth sorted. Re-exported as `_OrientationGnomon`.
+  - **`ScaleBarView`** — bottom-leading scale bar reporting the world length of a ~100-point span at the camera's focus (pivot) depth. Re-exported as `_ScaleBarView`.
+  - **`CameraState.worldUnitsPerPoint(viewportHeightPoints:)`** — unified perspective (`2·distance·tan(fov/2)`) + orthographic (`orthographicScale`) world-units-per-point.
+  - **`ScaleBarMetrics`** — snaps the represented length to a nice 1/2/5×10ⁿ value, recomputes the bar's point length, and formats an optional unit label. Re-exported as `_ScaleBarMetrics`.
+  - **Config:** `ViewportConfiguration.showOrientationGnomon` / `showScaleBar` / `scaleBarUnitLabel` (all default off / empty → source-compatible), mirrored by `ViewportController.showOrientationGnomon` / `showScaleBar` published toggles.
+  - New `HUDOverlayTests` (10 tests → 87 total, all green). Additive, no API break (PATCH).
+  - Note: for perspective cameras the scale bar is exact only at the pivot depth (scale varies with depth); orthographic is exact everywhere.
+
 ## [1.0.5] — 2026-06-05
 
 ### Added

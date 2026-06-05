@@ -80,6 +80,15 @@ public struct ViewportConfiguration: Sendable {
     /// ViewCube position.
     public var viewCubePosition: ViewCubePosition
 
+    /// Whether to show the screen-space orientation gnomon (HUD corner axes).
+    public var showOrientationGnomon: Bool
+
+    /// Whether to show the screen-space scale bar (HUD).
+    public var showScaleBar: Bool
+
+    /// Optional unit suffix shown on the scale bar (e.g. `"mm"`). Empty = number only.
+    public var scaleBarUnitLabel: String
+
     /// Whether to show coordinate axes.
     public var showAxes: Bool
 
@@ -207,7 +216,10 @@ public struct ViewportConfiguration: Sendable {
         adaptiveTessellation: Bool = true,
         enableTAA: Bool = false,
         taaBlendFactor: Float = 0.9,
-        dynamicPivotConfiguration: DynamicPivotConfiguration = .default
+        dynamicPivotConfiguration: DynamicPivotConfiguration = .default,
+        showOrientationGnomon: Bool = false,
+        showScaleBar: Bool = false,
+        scaleBarUnitLabel: String = ""
     ) {
         self.initialCameraState = initialCameraState
         self.rotationStyle = rotationStyle
@@ -244,6 +256,9 @@ public struct ViewportConfiguration: Sendable {
         self.enableTAA = enableTAA
         self.taaBlendFactor = taaBlendFactor
         self.dynamicPivotConfiguration = dynamicPivotConfiguration
+        self.showOrientationGnomon = showOrientationGnomon
+        self.showScaleBar = showScaleBar
+        self.scaleBarUnitLabel = scaleBarUnitLabel
     }
 
     // MARK: - Presets

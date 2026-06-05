@@ -48,6 +48,12 @@ public final class ViewportController: ObservableObject {
     /// Whether the grid is visible.
     @Published public var showGrid: Bool
 
+    /// Whether the screen-space orientation gnomon (HUD corner axes) is visible.
+    @Published public var showOrientationGnomon: Bool
+
+    /// Whether the screen-space scale bar (HUD) is visible.
+    @Published public var showScaleBar: Bool
+
     /// Whether an animation is in progress.
     @Published public private(set) var isAnimating: Bool = false
 
@@ -147,6 +153,8 @@ public final class ViewportController: ObservableObject {
         self.showViewCube = configuration.showViewCube
         self.showAxes = configuration.showAxes
         self.showGrid = configuration.showGrid
+        self.showOrientationGnomon = configuration.showOrientationGnomon
+        self.showScaleBar = configuration.showScaleBar
         self.lightingConfiguration = configuration.lightingConfiguration
         self.enableDepthOfField = configuration.enableDepthOfField
         self.dofAperture = configuration.dofAperture

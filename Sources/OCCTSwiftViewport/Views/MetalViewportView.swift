@@ -89,6 +89,14 @@ public struct MetalViewportView: View {
                     viewCubeOverlay
                 }
 
+                if controller.showOrientationGnomon {
+                    orientationGnomonOverlay
+                }
+
+                if controller.showScaleBar {
+                    scaleBarOverlay(viewportSize: geometry.size)
+                }
+
                 if !controller.measurements.isEmpty {
                     measurementOverlay(viewportSize: geometry.size)
                 }
@@ -396,6 +404,37 @@ public struct MetalViewportView: View {
                 ViewCubeView(controller: controller)
                     .frame(width: 80, height: 80)
                     .padding(12)
+            }
+        }
+    }
+
+    // MARK: - HUD Overlays
+
+    /// Orientation gnomon pinned to the top-leading corner.
+    private var orientationGnomonOverlay: some View {
+        VStack {
+            HStack {
+                OrientationGnomon(controller: controller)
+                    .frame(width: 64, height: 64)
+                    .padding(12)
+                Spacer()
+            }
+            Spacer()
+        }
+    }
+
+    /// Scale bar pinned to the bottom-leading corner.
+    private func scaleBarOverlay(viewportSize: CGSize) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                ScaleBarView(
+                    controller: controller,
+                    viewportHeightPoints: viewportSize.height,
+                    unitLabel: controller.configuration.scaleBarUnitLabel
+                )
+                .padding(12)
+                Spacer()
             }
         }
     }
