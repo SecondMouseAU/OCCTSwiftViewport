@@ -200,6 +200,45 @@ let config = ViewportConfiguration(
 // Also: .studio, .architectural, .flat
 ```
 
+## Performance & Scaling
+
+Large, many-body scenes (thousands of `ViewportBody` objects, hundreds of
+thousands of triangles) can stutter on mobile. The cost has two main sources —
+**per-frame whole-scene passes** and **per-body CPU overhead** — and there are
+two levers for each:
+
+```swift
+// 1. Use the performance preset: disables the expensive per-frame passes
+//    (directional shadow map, SSAO, MSAA, silhouettes).
+let controller = ViewportController(configuration: .performance)
+
+// or toggle the individual levers on any configuration:
+//   lightingConfiguration.shadowsEnabled = false
+//   lightingConfiguration.enableSSAO     = false
+//   msaaSampleCount = 1
+//   enableSilhouettes = false
+```
+
+**Batch many small static bodies.** Per-body overhead (buffer-cache lookups,
+uniform updates, encoder state changes) scales with body *count*, independent of
+triangle count — thousands of tiny bodies are far more expensive than a handful
+of large ones with the same total geometry. If your source produces one body per
+component (e.g. per mesh connected-component), **merge components that share a
+material into a single `ViewportBody`** before handing them to the viewport. You
+can keep sub-component picking by maintaining a triangle→component map and using
+`ViewportBody.faceIndices`.
+
+**Rules of thumb**
+- Aim for **low hundreds of bodies**, not thousands. Merging ~thousands of
+  bodies down to dozens is typically the single biggest win.
+- For dense scenes on iPhone/iPad, start from `.performance`.
+- Triangle count matters less than body count for CPU cost; the GPU handles
+  a few hundred thousand triangles comfortably once the per-body overhead is
+  contained.
+
+> Renderer-side scaling work (frustum culling, reduced per-body overhead) is
+> tracked in [issue #42](https://github.com/gsdali/OCCTSwiftViewport/issues/42).
+
 ## GPU Picking and Selection
 
 ```swift

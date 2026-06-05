@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.1] — 2026-06-05
+
+### Added
+- **`ViewportConfiguration.performance` preset** (issue #42, part 1) — a discoverable fast path for large / many-body scenes on mobile. Disables the per-frame whole-scene passes that dominate cost on big models: directional shadow map, SSAO, MSAA (sample count 1), and silhouettes. Replaces hand-assembling those levers.
+- **README "Performance & Scaling" section** — guidance on the two cost sources (per-frame passes vs per-body CPU overhead), batching many small static bodies into shared-material `ViewportBody`s (keeping sub-component picking via `faceIndices`), and recommended body counts.
+- New `ViewportConfigurationTests` (2 tests → 104 total).
+
+Renderer-side scaling (frustum culling, reduced per-body overhead) continues in #42.
+
 ## [1.1.0] — 2026-06-05
 
 ### Added

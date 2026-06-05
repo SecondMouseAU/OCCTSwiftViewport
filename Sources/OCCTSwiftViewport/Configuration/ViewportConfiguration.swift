@@ -288,6 +288,30 @@ public struct ViewportConfiguration: Sendable {
         showViewCube: true,
         showGrid: true
     )
+
+    /// Configuration tuned for large / many-body scenes on mobile (issue #42).
+    ///
+    /// Disables the per-frame whole-scene passes that dominate cost on big models
+    /// (directional shadow map, SSAO, MSAA, silhouettes), giving a discoverable
+    /// fast path instead of hand-assembling the levers. Keep this for dense scenes
+    /// (thousands of bodies / hundreds of thousands of triangles) on iPhone / iPad;
+    /// see the README "Scaling" section for batching guidance and recommended body
+    /// counts.
+    public static let performance: ViewportConfiguration = {
+        var lighting = LightingConfiguration.threePoint
+        lighting.shadowsEnabled = false
+        lighting.enableSSAO = false
+        return ViewportConfiguration(
+            rotationStyle: .turntable,
+            lightingConfiguration: lighting,
+            showViewCube: true,
+            showAxes: true,
+            showGrid: true,
+            msaaSampleCount: 1,
+            enableSilhouettes: false,
+            renderingQuality: .standard
+        )
+    }()
 }
 
 // MARK: - ViewCube Position
