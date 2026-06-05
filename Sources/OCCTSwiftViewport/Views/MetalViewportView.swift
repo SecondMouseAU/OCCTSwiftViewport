@@ -319,20 +319,9 @@ public struct MetalViewportView: View {
                 )
                 lastDragValue = value.translation
 
-                let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+                let modifiers = ViewportModifierKeys(NSApp.currentEvent?.modifierFlags ?? [])
                 let gc = controller.configuration.gestureConfiguration
-                print("[GESTURE] mouseDrag=\(gc.mouseDrag) shift=\(modifiers.contains(.shift))")
-
-                let action: GestureAction
-                if modifiers.contains(.command) {
-                    action = gc.commandDrag
-                } else if modifiers.contains(.shift) {
-                    action = gc.shiftDrag
-                } else if modifiers.contains(.option) {
-                    action = gc.optionDrag
-                } else {
-                    action = gc.mouseDrag
-                }
+                let action = gc.dragAction(for: modifiers)
 
                 switch action {
                 case .pan:

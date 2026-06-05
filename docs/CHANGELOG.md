@@ -2,6 +2,18 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.0.7] — 2026-06-05
+
+### Added
+- **Portable input-interpretation seam** (issue #35, first increment) — an `Aspect_VKey` analogue decoupling gesture interpretation from `NSEvent` / `UIEvent`.
+  - **`ViewportModifierKeys`** — a `Sendable` `OptionSet` (`.shift` / `.control` / `.option` / `.command`) with bridging initialisers from `NSEvent.ModifierFlags` (AppKit) and `UIKeyModifierFlags` (UIKit). Re-exported as `_ViewportModifierKeys`.
+  - **`GestureConfiguration.dragAction(for:)`** — resolves a drag's `GestureAction` from modifier keys, preserving the historical priority (command → shift → option → unmodified).
+  - The macOS drag handler now bridges native flags into `ViewportModifierKeys` and calls the resolver instead of branching on `NSEvent` inline; a stray debug `print` was removed. Behaviour is unchanged.
+  - New `InputAbstractionTests` (7 tests → 94 total, all green).
+
+### Note
+- This is the modifier/key portion of #35. A full portable pointer/scroll/pinch event model remains; #35 stays open to track it. This seam is the foundation the visionOS work (#36) builds on.
+
 ## [1.0.6] — 2026-06-05
 
 ### Added

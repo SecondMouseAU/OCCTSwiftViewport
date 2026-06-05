@@ -136,6 +136,22 @@ public struct GestureConfiguration: Sendable {
         optionDrag: .pan,
         commandDrag: .zoom
     )
+
+    // MARK: - Input Interpretation
+
+    /// Resolves the action for a pointer drag given the active modifier keys.
+    ///
+    /// Priority — matching the historical macOS handler — is
+    /// command → shift → option → unmodified. This is the portable interpretation
+    /// seam: platform code bridges its native modifier flags into
+    /// `ViewportModifierKeys` (see its `init(_:)` overloads) and calls this, so the
+    /// mapping stays free of `NSEvent` / `UIEvent`.
+    public func dragAction(for modifiers: ViewportModifierKeys) -> GestureAction {
+        if modifiers.contains(.command) { return commandDrag }
+        if modifiers.contains(.shift) { return shiftDrag }
+        if modifiers.contains(.option) { return optionDrag }
+        return mouseDrag
+    }
 }
 
 // MARK: - Gesture Action
