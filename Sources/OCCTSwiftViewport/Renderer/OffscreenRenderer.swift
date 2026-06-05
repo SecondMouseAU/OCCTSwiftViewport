@@ -122,6 +122,7 @@ public final class OffscreenRenderer: Sendable {
     private let shadowPipeline: MTLRenderPipelineState
     private let shadowMapManager: ShadowMapManager
     private let depthState: MTLDepthStencilState
+    private let transparentDepthState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
     private let axisVertexBuffer: MTLBuffer
 
@@ -179,6 +180,12 @@ public final class OffscreenRenderer: Sendable {
         shadedDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
         shadedDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
         shadedDesc.colorAttachments[1].pixelFormat = .invalid
+        // Per-body surface transparency (issue #53); opaque (alpha=1) unaffected.
+        shadedDesc.colorAttachments[0].isBlendingEnabled = true
+        shadedDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        shadedDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        shadedDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        shadedDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         shadedDesc.depthAttachmentPixelFormat = depthFormat
         shadedDesc.stencilAttachmentPixelFormat = depthFormat
         shadedDesc.rasterSampleCount = sampleCount
@@ -279,6 +286,13 @@ public final class OffscreenRenderer: Sendable {
         depthDesc.isDepthWriteEnabled = true
         guard let depthState = device.makeDepthStencilState(descriptor: depthDesc) else { return nil }
         self.depthState = depthState
+
+        // Transparent surface depth state (#53): test on, write off.
+        let transparentDepthDesc = MTLDepthStencilDescriptor()
+        transparentDepthDesc.depthCompareFunction = .less
+        transparentDepthDesc.isDepthWriteEnabled = false
+        guard let transparentDepthState = device.makeDepthStencilState(descriptor: transparentDepthDesc) else { return nil }
+        self.transparentDepthState = transparentDepthState
 
         // Axis vertex buffer
         let axisLength: Float = 1000.0
@@ -511,16 +525,25 @@ public final class OffscreenRenderer: Sendable {
 
         // Bodies
         let displayMode = options.displayMode
+        // Translucent bodies (issue #53) are deferred to a sorted back-to-front pass.
+        var transparentBodies: [(body: ViewportBody, buffers: BodyBuffersOffscreen)] = []
         for body in bodies where body.isVisible {
             guard let buffers = bodyBufferCache[body.id] else { continue }
             // Point-cloud bodies are drawn in the dedicated pass below — skip
             // the mesh + wireframe paths entirely.
             if body.primitiveKind == .point { continue }
 
+            let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+
+            // Defer translucent mesh bodies to the transparent pass.
+            if body.renderLayer == .geometry, body.effectiveMaterial.opacity < 1.0, hasMesh {
+                transparentBodies.append((body, buffers))
+                continue
+            }
+
             var uniforms = makeUniforms()
             var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
 
-            let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
             // Shaded
@@ -548,6 +571,37 @@ public final class OffscreenRenderer: Sendable {
                 mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                 mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+            }
+        }
+
+        // Transparent surface pass (issue #53): deferred translucent bodies,
+        // back-to-front, depth test on / write off, composited over the opaque set.
+        if displayMode.showsSurfaces, !transparentBodies.isEmpty {
+            let camPos = cameraState.position
+            func centerDistanceSq(_ t: (body: ViewportBody, buffers: BodyBuffersOffscreen)) -> Float {
+                let localCenter = t.body.boundingBox?.center ?? SIMD3<Float>(0, 0, 0)
+                let c = t.body.transform * SIMD4<Float>(localCenter, 1)
+                return simd_length_squared(SIMD3<Float>(c.x, c.y, c.z) - camPos)
+            }
+            let sorted = transparentBodies.sorted { centerDistanceSq($0) > centerDistanceSq($1) }
+
+            mainEncoder.setDepthStencilState(transparentDepthState)
+            mainEncoder.setRenderPipelineState(shadedPipeline)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                mainEncoder.setFragmentTexture(shadowTex, index: 1)
+            }
+            for t in sorted {
+                guard let vb = t.buffers.vertexBuffer, let ib = t.buffers.indexBuffer,
+                      t.buffers.indexCount > 0 else { continue }
+                var uniforms = makeUniforms()
+                var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: 0)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.drawIndexedPrimitives(type: .triangle, indexCount: t.buffers.indexCount,
+                                                  indexType: .uint32, indexBuffer: ib, indexBufferOffset: 0)
             }
         }
 

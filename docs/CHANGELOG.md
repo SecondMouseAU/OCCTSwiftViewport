@@ -2,6 +2,18 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.9] — 2026-06-06
+
+### Added
+- **Per-body surface transparency** (issue #53, closes it). A body with `color.w` / `effectiveMaterial.opacity` < 1 now renders as a translucent surface compositing over the geometry behind it — enabling "focus one part, fade the rest" interactions.
+  - Alpha blending (`.sourceAlpha` / `.oneMinusSourceAlpha`) enabled on all shaded pipelines (standard, tessellated, mesh-shader) in both `ViewportRenderer` and `OffscreenRenderer`. Opaque bodies (alpha = 1) are unaffected.
+  - Translucent bodies are drawn in a dedicated pass **after** the opaque set, sorted **back-to-front** by camera distance, with depth **test on / write off** (new `transparentSurfaceDepthState`), so they composite correctly without occluding each other in depth. Opaque bodies stay fully z-correct among themselves.
+  - Works headlessly in `OffscreenRenderer` (PNG) as well as live.
+  - New `SurfaceTransparencyTests` — a differential GPU render (opaque vs translucent front panel) asserting the body behind shows through (124 tests total). Live opaque rendering verified unchanged on the Vision Pro simulator.
+
+### Note
+- The alpha plumbing already existed end-to-end (`shaded_fragment` outputs `bodyUniforms.color.a`); only blending + draw order were missing.
+
 ## [1.1.8] — 2026-06-06
 
 ### Added

@@ -230,6 +230,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     // Identical-position highlight triangles win ties with the shaded pass
     // without depth-fighting; depth write off so later passes aren't disturbed.
     private let highlightDepthState: MTLDepthStencilState
+    private let transparentSurfaceDepthState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
     private let msaaSampleCount: Int
     // Skybox (HDR background draw — IBL cubemap as fullscreen background)
@@ -357,6 +358,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         shadedDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
         shadedDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
         shadedDesc.colorAttachments[1].pixelFormat = .invalid
+        // Per-body surface transparency (issue #53): honour bodyUniforms.color.a.
+        // Opaque bodies (alpha = 1) are unchanged by src-alpha / 1-src-alpha blending.
+        shadedDesc.colorAttachments[0].isBlendingEnabled = true
+        shadedDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        shadedDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        shadedDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        shadedDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         shadedDesc.depthAttachmentPixelFormat = depthFormat
         shadedDesc.stencilAttachmentPixelFormat = depthFormat
         shadedDesc.rasterSampleCount = sampleCount
@@ -617,6 +625,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tsDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
             tsDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
             tsDesc.colorAttachments[1].pixelFormat = .invalid
+            // Per-body surface transparency (issue #53).
+            tsDesc.colorAttachments[0].isBlendingEnabled = true
+            tsDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            tsDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            tsDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+            tsDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
             tsDesc.depthAttachmentPixelFormat = depthFormat
             tsDesc.stencilAttachmentPixelFormat = depthFormat
             tsDesc.rasterSampleCount = sampleCount
@@ -721,6 +735,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 depthFmt: MTLPixelFormat,
                 stencilFmt: MTLPixelFormat = .invalid,
                 samples: Int = 1,
+                blend: Bool = false,
                 label: String
             ) -> MTLRenderPipelineState? {
                 let desc = MTLMeshRenderPipelineDescriptor()
@@ -730,6 +745,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 desc.fragmentFunction = fragmentFn
                 if colorFormat != .invalid {
                     desc.colorAttachments[0].pixelFormat = colorFormat
+                    if blend {
+                        // Per-body surface transparency (issue #53).
+                        desc.colorAttachments[0].isBlendingEnabled = true
+                        desc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+                        desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+                        desc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+                        desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+                    }
                 }
                 desc.depthAttachmentPixelFormat = depthFmt
                 if stencilFmt != .invalid {
@@ -748,7 +771,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.meshShaderShadedPipeline = makeMeshPipeline(
                 meshFn: meshFunc, fragmentFn: shadedFrag,
                 colorFormat: .bgra8Unorm, depthFmt: depthFormat, stencilFmt: depthFormat,
-                samples: sampleCount, label: "mesh_shaded"
+                samples: sampleCount, blend: true, label: "mesh_shaded"
             )
             self.meshShaderShadowPipeline = makeMeshPipeline(
                 meshFn: shadowMeshFunc, fragmentFn: depthFrag,
@@ -868,6 +891,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.highlightDepthState = highlightDepthState
+
+        // .less + write disabled — for the transparent surface pass (issue #53).
+        // Transparent bodies test against the opaque depth buffer (so they hide
+        // behind opaque geometry) but don't write depth, so back-to-front sorted
+        // translucent surfaces composite without occluding each other in depth.
+        let transparentDepthDesc = MTLDepthStencilDescriptor()
+        transparentDepthDesc.depthCompareFunction = .less
+        transparentDepthDesc.isDepthWriteEnabled = false
+        guard let transparentSurfaceDepthState = device.makeDepthStencilState(descriptor: transparentDepthDesc) else {
+            return nil
+        }
+        self.transparentSurfaceDepthState = transparentSurfaceDepthState
 
         // Build axis vertex buffer (6 vertices for 3 lines)
         let axisLength: Float = 1000.0
@@ -1450,6 +1485,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let selectedIDs = controller.selectedBodyIDs
         let hoveredID = controller.hoveredBodyID
 
+        // Transparent surfaces (issue #53) are deferred to a sorted back-to-front
+        // pass after the opaque bodies, so they composite correctly.
+        var transparentDraws: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
+
         for (body, buffers, bodyObjectIndex) in frameVisibleBodies {
             // Frustum-cull off-screen geometry inline using the cached local AABB.
             // Pick IDs stay stable: bodyObjectIndex was assigned over all visible
@@ -1465,6 +1504,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // below — skip the mesh + wireframe paths so a `.point` body that
             // happens to also carry stray vertexData/edges doesn't double-draw.
             if body.primitiveKind == .point { continue }
+            // Translucent geometry bodies are deferred to the sorted transparent
+            // pass below (a body with edges only — no mesh — is unaffected).
+            if body.renderLayer == .geometry,
+               body.effectiveMaterial.opacity < 1.0,
+               buffers.vertexBuffer != nil, buffers.indexCount > 0 {
+                transparentDraws.append((body, buffers, bodyObjectIndex))
+                continue
+            }
 
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
@@ -1476,8 +1523,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
             // Shaded pass (mesh bodies only)
-            if displayMode.showsSurfaces, hasMesh,
-               let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
+            if displayMode.showsSurfaces, hasMesh {
                 // Write stencil=1 for selected bodies
                 if selState > 0 {
                     mainEncoder.setDepthStencilState(stencilWriteState)
@@ -1499,46 +1545,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
                 }
 
-                if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
-                    mainEncoder.setRenderPipelineState(msPipeline)
-                    mainEncoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                    mainEncoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                    mainEncoder.setMeshBuffer(vb, offset: 0, index: 1)
-                    mainEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-                    mainEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-                    mainEncoder.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
-                    mainEncoder.drawMeshThreadgroups(
-                        MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                        threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-                        threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
-                    )
-                } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedShadedPipeline {
-                    mainEncoder.setRenderPipelineState(tessPipeline)
-                    mainEncoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                    mainEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.drawPatches(
-                        numberOfPatchControlPoints: 3,
-                        patchStart: 0,
-                        patchCount: tess.patchCount,
-                        patchIndexBuffer: nil,
-                        patchIndexBufferOffset: 0,
-                        instanceCount: 1,
-                        baseInstance: 0
-                    )
-                } else {
-                    mainEncoder.setRenderPipelineState(shadedPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.drawIndexedPrimitives(
-                        type: .triangle,
-                        indexCount: buffers.indexCount,
-                        indexType: .uint32,
-                        indexBuffer: ib,
-                        indexBufferOffset: 0
-                    )
-                }
+                encodeShadedSurface(mainEncoder, buffers: buffers, uniforms: &uniforms,
+                                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
 
             // Wireframe/edge pass
@@ -1556,6 +1564,39 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                 mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+            }
+        }
+
+        // 3.3 Transparent surface pass (issue #53): draw the deferred translucent
+        // bodies back-to-front with depth-test on / write off, so they composite
+        // over the opaque set (and over each other in sorted order).
+        if displayMode.showsSurfaces, !transparentDraws.isEmpty {
+            let camPos = cameraState.position
+            func centerDistanceSq(_ d: (body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)) -> Float {
+                let localCenter = d.buffers.localBoundingBox?.center ?? SIMD3<Float>(0, 0, 0)
+                let c = d.body.transform * SIMD4<Float>(localCenter, 1)
+                return simd_length_squared(SIMD3<Float>(c.x, c.y, c.z) - camPos)
+            }
+            let sorted = transparentDraws.sorted { centerDistanceSq($0) > centerDistanceSq($1) }
+
+            mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                mainEncoder.setFragmentTexture(shadowTex, index: 1)
+            }
+            if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
+                if let spec = envMgr.prefilteredSpecularMap { mainEncoder.setFragmentTexture(spec, index: 2) }
+                if let diff = envMgr.irradianceMap { mainEncoder.setFragmentTexture(diff, index: 3) }
+                if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
+            }
+            for d in sorted {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = d.body.transform
+                var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex, isSelected: 0)
+                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                encodeShadedSurface(mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
         }
 
@@ -2332,6 +2373,62 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         )
 
         return lightProj * lightView
+    }
+
+    // MARK: - Shaded surface draw
+
+    /// Encodes a body's shaded surface via the mesh-shader, tessellated, or
+    /// standard path. The caller sets uniforms / fragment bytes / textures / depth
+    /// state first. Shared by the opaque main loop and the transparent pass (#53).
+    private func encodeShadedSurface(
+        _ encoder: MTLRenderCommandEncoder,
+        buffers: BodyBuffers,
+        uniforms: inout Uniforms,
+        useMeshShaders: Bool,
+        useTessellation: Bool
+    ) {
+        guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0 else { return }
+
+        if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
+            encoder.setRenderPipelineState(msPipeline)
+            encoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
+            encoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
+            encoder.setMeshBuffer(vb, offset: 0, index: 1)
+            encoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
+            encoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
+            encoder.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
+            encoder.drawMeshThreadgroups(
+                MTLSize(width: ml.meshletCount, height: 1, depth: 1),
+                threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
+                threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
+            )
+        } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedShadedPipeline {
+            encoder.setRenderPipelineState(tessPipeline)
+            encoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
+            encoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.drawPatches(
+                numberOfPatchControlPoints: 3,
+                patchStart: 0,
+                patchCount: tess.patchCount,
+                patchIndexBuffer: nil,
+                patchIndexBufferOffset: 0,
+                instanceCount: 1,
+                baseInstance: 0
+            )
+        } else {
+            encoder.setRenderPipelineState(shadedPipeline)
+            encoder.setVertexBuffer(vb, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: buffers.indexCount,
+                indexType: .uint32,
+                indexBuffer: ib,
+                indexBufferOffset: 0
+            )
+        }
     }
 
     // MARK: - Buffer Management
