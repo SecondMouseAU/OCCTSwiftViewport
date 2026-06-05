@@ -1221,31 +1221,32 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         var layerMap: [String: PickLayer] = [:]
         var objectIndex: UInt32 = 0
 
-        // Ensure buffers for all visible bodies
+        // Ensure buffers for all visible bodies, and resolve each body's buffers +
+        // stable pick index ONCE per frame (issue #42 part 3). The main draw pass
+        // iterates this list instead of re-filtering `bodies` and re-hashing the
+        // String-keyed `bodyBufferCache[body.id]` every pass.
+        var frameVisibleBodies: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
+        frameVisibleBodies.reserveCapacity(bodies.count)
         for body in bodies where body.isVisible {
             ensureBuffers(for: body)
             indexMap[Int(objectIndex)] = body.id
             layerMap[body.id] = body.pickLayer
+            if let bufs = bodyBufferCache[body.id] {
+                frameVisibleBodies.append((body, bufs, objectIndex))
+            }
             objectIndex += 1
         }
         currentIndexMap = indexMap
         currentLayerMap = layerMap
 
-        // Per-body frustum culling (issue #42): skip bodies whose world-space
-        // bounds fall entirely outside the camera, computed once per frame from
-        // cached local AABBs. Applied to the main geometry pass; the shadow pass is
-        // intentionally not camera-culled (off-screen casters can shadow visible
-        // geometry), and bodies with no bounds are never culled.
-        var culledBodyIDs: Set<String> = []
-        if controller.configuration.enableFrustumCulling {
-            let frustum = Frustum(viewProjection: viewProjection)
-            for body in bodies where body.isVisible && body.renderLayer == .geometry {
-                guard let localBox = bodyBufferCache[body.id]?.localBoundingBox else { continue }
-                if !frustum.intersects(localBox.transformed(by: body.transform)) {
-                    culledBodyIDs.insert(body.id)
-                }
-            }
-        }
+        // Per-body frustum culling (issue #42): off-screen bodies are skipped
+        // inline in the main pass below, using the cached local AABB — no per-frame
+        // Set / extra String hashing. The shadow pass is intentionally not
+        // camera-culled (off-screen casters can shadow visible geometry); bodies
+        // with no bounds are never culled.
+        let cullFrustum: Frustum? = controller.configuration.enableFrustumCulling
+            ? Frustum(viewProjection: viewProjection)
+            : nil
 
         let silhouettesEnabled = controller.configuration.enableSilhouettes
         let ssaoEnabled = (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil && displayMode.showsSurfaces
@@ -1432,14 +1433,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let selectedIDs = controller.selectedBodyIDs
         let hoveredID = controller.hoveredBodyID
 
-        objectIndex = 0
-        for body in bodies where body.isVisible {
-            let bodyObjectIndex = objectIndex
-            objectIndex += 1
-            // Frustum-culled (off-screen) bodies are skipped here, but objectIndex
-            // still advances so the remaining bodies keep their stable pick IDs.
-            if culledBodyIDs.contains(body.id) { continue }
-            guard let buffers = bodyBufferCache[body.id] else {
+        for (body, buffers, bodyObjectIndex) in frameVisibleBodies {
+            // Frustum-cull off-screen geometry inline using the cached local AABB.
+            // Pick IDs stay stable: bodyObjectIndex was assigned over all visible
+            // bodies, independent of culling.
+            if let cullFrustum, body.renderLayer == .geometry,
+               let localBox = buffers.localBoundingBox,
+               !cullFrustum.intersects(localBox.transformed(by: body.transform)) {
                 continue
             }
             // Overlay bodies are drawn after the selection outline, in their own pass.

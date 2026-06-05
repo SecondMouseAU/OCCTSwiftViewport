@@ -2,6 +2,13 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.3] — 2026-06-05
+
+### Changed
+- **Reduced per-body CPU overhead in the main draw pass** (issue #42, part 3) — closes #42. Each visible body's GPU buffers and stable pick index are now resolved **once per frame** into a single list that the main geometry pass iterates, instead of re-filtering `bodies` and re-hashing the `String`-keyed `bodyBufferCache[body.id]` on the pass. Frustum culling moved inline on that list using the cached local AABB, dropping the separate per-frame `Set<String>` and its extra per-body hash. No render or API change (verified unchanged on the Vision Pro simulator); 112 tests green.
+
+The remaining larger lever for extreme body counts — merging many small static bodies — is consumer-side and documented in the README "Performance & Scaling" section.
+
 ## [1.1.2] — 2026-06-05
 
 ### Added
