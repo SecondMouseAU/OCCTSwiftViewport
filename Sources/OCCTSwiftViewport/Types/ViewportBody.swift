@@ -86,6 +86,12 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Polylines for wireframe rendering. Each inner array is a connected polyline.
     public var edges: [[SIMD3<Float>]]
 
+    /// Analytic arc/circle feature edges, in body-local space (issue #48). Unlike
+    /// `edges` (pre-sampled polylines), these are tessellated to line segments by
+    /// the renderer **adaptively to projected size each frame**, so they stay
+    /// smooth at any zoom independent of mesh density. Empty by default.
+    public var arcs: [ViewportArc]
+
     /// Per-triangle source face index. Parallel to triangle count (`indices.count / 3`).
     /// Maps each triangle back to its B-Rep face for sub-body selection. Empty if not applicable.
     public var faceIndices: [Int32]
@@ -171,6 +177,7 @@ public struct ViewportBody: Identifiable, Sendable {
         vertexData: [Float],
         indices: [UInt32],
         edges: [[SIMD3<Float>]],
+        arcs: [ViewportArc] = [],
         faceIndices: [Int32] = [],
         edgeIndices: [Int32] = [],
         vertices: [SIMD3<Float>] = [],
@@ -194,6 +201,7 @@ public struct ViewportBody: Identifiable, Sendable {
         self.vertexData = vertexData
         self.indices = indices
         self.edges = edges
+        self.arcs = arcs
         self.faceIndices = faceIndices
         self.edgeIndices = edgeIndices
         self.vertices = vertices

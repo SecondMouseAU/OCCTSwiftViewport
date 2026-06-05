@@ -65,6 +65,23 @@ struct SpikeView: View {
             ],
             color: SIMD4<Float>(1.0, 1.0, 0.0, 1.0)
         ),
+        // Analytic arc edge (issue #48): a smooth circle, tessellated adaptively
+        // by the renderer regardless of zoom.
+        ViewportBody(
+            id: "arc-circle",
+            vertexData: [],
+            indices: [],
+            edges: [],
+            arcs: [
+                ViewportArc.circle(
+                    center: SIMD3<Float>(0, 0.8, 0),
+                    radius: 2.4,
+                    xAxis: SIMD3<Float>(1, 0, 0),
+                    yAxis: SIMD3<Float>(0, 1, 0)
+                )
+            ],
+            color: SIMD4<Float>(1.0, 0.2, 0.1, 1.0)
+        ),
     ]
 
     /// CAD metadata for sub-body selection (populated by CADFileLoader or procedural primitives).
