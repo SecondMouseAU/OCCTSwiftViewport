@@ -59,6 +59,16 @@ struct InputAbstractionTests {
         #expect(fusion.dragAction(for: .command) == .zoom)
     }
 
+    @Test("visionOS preset keeps touch-style mapping with steadier inertia")
+    func visionOSPreset() {
+        let v = GestureConfiguration.visionOS
+        // Same orbit-on-drag mapping as the default touch path.
+        #expect(v.singleFingerDrag == GestureConfiguration.default.singleFingerDrag)
+        #expect(v.enableInertia)
+        // Damping raised vs default for more predictable settling with indirect input.
+        #expect(v.dampingFactor > GestureConfiguration.default.dampingFactor)
+    }
+
     // MARK: - Platform bridge
 
     #if canImport(AppKit)

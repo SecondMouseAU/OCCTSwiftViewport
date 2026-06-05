@@ -9,15 +9,25 @@ import OCCTSwiftViewport
 import OCCTSwiftTools
 
 struct SpikeView: View {
-    @StateObject private var controller = ViewportController(
-        configuration: ViewportConfiguration(
+    @StateObject private var controller = ViewportController(configuration: SpikeView.makeConfiguration())
+
+    /// Builds the viewport configuration, using the visionOS-tuned gesture preset
+    /// when running on visionOS (issue #36, Phase 2).
+    private static func makeConfiguration() -> ViewportConfiguration {
+        #if os(visionOS)
+        let gestures: GestureConfiguration = .visionOS
+        #else
+        let gestures: GestureConfiguration = .default
+        #endif
+        return ViewportConfiguration(
             rotationStyle: .turntable,
+            gestureConfiguration: gestures,
             showViewCube: true,
             showAxes: true,
             showGrid: true,
             pickingConfiguration: PickingConfiguration(isEnabled: true)
         )
-    )
+    }
 
     @StateObject private var selectionManager = SelectionManager()
 

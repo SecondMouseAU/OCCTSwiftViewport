@@ -137,6 +137,20 @@ public struct GestureConfiguration: Sendable {
         commandDrag: .zoom
     )
 
+    /// Gesture configuration tuned for visionOS spatial (indirect pinch + look)
+    /// input in a window / volume (issue #36, Phase 2).
+    ///
+    /// Keeps the touch-style mapping (single pinch-drag orbits; two-handed
+    /// pinch/twist zoom/roll via the magnify/rotate gestures), and raises inertia
+    /// damping a little so momentum settles more predictably with indirect input.
+    ///
+    /// - Note: These are a sensible **starting point**. Indirect spatial input
+    ///   ultimately feels different from a touchscreen, so the sensitivities are
+    ///   best fine-tuned on Vision Pro hardware.
+    public static let visionOS = GestureConfiguration(
+        dampingFactor: 0.15
+    )
+
     // MARK: - Input Interpretation
 
     /// Resolves the action for a pointer drag given the active modifier keys.

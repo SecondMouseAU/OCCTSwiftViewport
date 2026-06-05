@@ -2,6 +2,14 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.4] — 2026-06-05
+
+### Added
+- **`GestureConfiguration.visionOS` preset** (issue #36, Phase 2) — a spatial-input starting point for windowed / volumetric visionOS. Keeps the touch-style mapping (single pinch-drag orbits; two-handed pinch/twist zoom/roll) and raises inertia damping for more predictable settling with indirect (pinch + look) input. Re-exported via `_GestureConfiguration`. The demo adopts it automatically on visionOS.
+  - New preset test (113 total). Builds + runs on the Vision Pro simulator.
+
+> The exact sensitivities are a starting point: indirect spatial input feels different from a touchscreen, so final tuning — and richer `SpatialEventGesture` integration — is best done on Vision Pro hardware. Tracked in #36 (Phase 2 refinement); immersive / XR is Phase 3.
+
 ## [1.1.3] — 2026-06-05
 
 ### Changed
