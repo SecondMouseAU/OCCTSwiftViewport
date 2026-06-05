@@ -1148,7 +1148,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let aspectRatio = Float(drawableSize.width / drawableSize.height)
 
         let viewMatrix = cameraState.viewMatrix
-        var projMatrix = cameraState.projectionMatrix(aspectRatio: aspectRatio, near: 0.01, far: 10000.0)
+
+        // Scene-adaptive clip planes (issue #57): fit near/far to the visible
+        // geometry so hyperbolic depth precision isn't crushed by a fixed
+        // 0.01/10000 range. Uses the cached per-body AABBs (from the previous
+        // frame on the first frame — bounds change slowly, so that's fine).
+        var sceneBounds: BoundingBox? = nil
+        for body in bodiesBinding.wrappedValue where body.isVisible && body.renderLayer == .geometry {
+            guard let localBox = bodyBufferCache[body.id]?.localBoundingBox else { continue }
+            let worldBox = localBox.transformed(by: body.transform)
+            sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
+        }
+        let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
+
+        var projMatrix = cameraState.projectionMatrix(aspectRatio: aspectRatio, near: clip.near, far: clip.far)
 
         // TAA / progressive accumulation: apply Halton(2,3) sub-pixel jitter to the
         // projection matrix so each frame rasterizes at a different sub-pixel offset.
@@ -1176,8 +1189,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let lighting = controller.lightingConfiguration
 
-        let nearPlane: Float = 0.01
-        let farPlane: Float = 10000.0
+        let nearPlane: Float = clip.near
+        let farPlane: Float = clip.far
 
         // Pack lights from lighting configuration
         let lightSources = [lighting.keyLight, lighting.fillLight, lighting.backLight]

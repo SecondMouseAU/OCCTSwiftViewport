@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.11] — 2026-06-06
+
+### Fixed
+- **Z-fighting from a fixed near/far clip range** (issue #57). The renderers hard-coded `near = 0.01` / `far = 10000` (ratio 1e6), which collapses hyperbolic depth precision onto distant geometry — adjacent triangles on large / real-scale models (e.g. an mm-scale STL hundreds of units out) round to the same depth and flicker. Clip planes are now **scene-adaptive**: derived each frame from the camera distance and the visible scene's bounding radius (`CameraState.clipPlanes(sceneBounds:)`), keeping `far/near` ~1e3 at any model scale. Applied in both `ViewportRenderer` (cached per-body AABBs) and `OffscreenRenderer`. Empty scenes fall back to the old wide default. No consumer tuning required; no API change.
+- New `ClipPlaneTests` (5) covering unit / mm-scale / camera-inside / tiny / huge cases (131 tests total). Live rendering verified unchanged on the Vision Pro simulator.
+
+### Note
+- Reversed-Z (the issue's "best for CAD" option) would push precision even further but requires flipping every depth state / clear / compare; scene-adaptive planes resolve the reported flicker with far less risk and are the change shipped here. The measurement-overlay projection in `MetalViewportView` keeps the wide range deliberately — near/far don't affect screen-space x/y, only depth.
+
 ## [1.1.10] — 2026-06-06
 
 ### Fixed

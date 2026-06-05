@@ -361,8 +361,17 @@ public final class OffscreenRenderer: Sendable {
         let cameraState = options.cameraState
         let aspectRatio = Float(w) / Float(h)
         let viewMatrix = cameraState.viewMatrix
-        let nearClip: Float = 0.01
-        let farClip: Float = 10000.0
+
+        // Scene-adaptive clip planes (issue #57): fit near/far to the visible
+        // geometry so depth precision isn't crushed by a fixed 0.01/10000 range.
+        var sceneBounds: BoundingBox? = nil
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
+            guard let box = body.boundingBox?.transformed(by: body.transform) else { continue }
+            sceneBounds = sceneBounds.map { $0.union(box) } ?? box
+        }
+        let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
+        let nearClip: Float = clip.near
+        let farClip: Float = clip.far
 
         let baseProjMatrix: simd_float4x4
         if let bounds = options.explicitOrthoBounds {
