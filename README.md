@@ -239,6 +239,37 @@ can keep sub-component picking by maintaining a triangle→component map and usi
 > Renderer-side scaling work (frustum culling, reduced per-body overhead) is
 > tracked in [issue #42](https://github.com/gsdali/OCCTSwiftViewport/issues/42).
 
+## Smooth Round Geometry
+
+Round surfaces (cylinder / cone silhouettes, fillets) can look faceted if the
+mesh you supply is coarsely tessellated. The renderer has **screen-space-adaptive
+PN-triangle (Phong) tessellation** that smooths curved silhouettes on the GPU,
+refining by projected size each frame — so a cylinder stays round at any zoom
+without you guessing a tessellation density. It's off in the default `.standard`
+quality; turn it on with the CAD-quality preset (or the quality knobs directly):
+
+```swift
+// Smooth curved surfaces, adaptive to zoom:
+let controller = ViewportController(configuration: .cadHighQuality)
+
+// or set the knobs on any configuration:
+//   renderingQuality     = .enhanced     // enables GPU PN-triangle tessellation
+//   adaptiveTessellation = true          // refine by projected size (vs fixed)
+//   tessellationMaxFactor = 48           // upper bound on subdivision (1...64)
+```
+
+**What controls smoothness**
+- **Surfaces:** `renderingQuality = .enhanced` (or `.maximum`) enables adaptive
+  Phong tessellation. Requires an Apple3+ GPU (falls back gracefully). Needs
+  reasonable per-vertex normals on the input mesh — OCCT meshes provide these; for
+  flat-normalled meshes, run `NormalSmoothing.smoothNormals(vertexData:indices:creaseAngle:)`
+  first (crease-aware, so hard edges stay sharp).
+- **Feature edges:** edges are drawn as polylines, so a circular edge is only as
+  smooth as its sampling. Sample BREP edges finely (e.g. 64+ points per circle)
+  until analytic arc edges land — see [issue #48](https://github.com/gsdali/OCCTSwiftViewport/issues/48).
+- **Tradeoff:** tessellation adds GPU work — prefer `.performance` for very large
+  many-body scenes (see Performance & Scaling above).
+
 ## GPU Picking and Selection
 
 ```swift

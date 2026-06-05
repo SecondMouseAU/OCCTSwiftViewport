@@ -19,4 +19,14 @@ struct ViewportConfigurationTests {
         #expect(config.msaaSampleCount > 1)
         #expect(config.enableSilhouettes == true)
     }
+
+    @Test("cadHighQuality enables adaptive GPU tessellation for smooth curves (#48)")
+    func cadHighQualityEnablesTessellation() {
+        let config = ViewportConfiguration.cadHighQuality
+        #expect(config.renderingQuality == .enhanced)
+        #expect(config.adaptiveTessellation == true)
+        #expect(config.tessellationMaxFactor >= 32)
+        // Plain .cad stays on the cheaper standard path (no auto-tessellation).
+        #expect(ViewportConfiguration.cad.renderingQuality == .standard)
+    }
 }

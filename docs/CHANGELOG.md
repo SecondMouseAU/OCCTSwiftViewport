@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.5] — 2026-06-06
+
+### Added
+- **`ViewportConfiguration.cadHighQuality` preset** (issue #48, part 1) — exposes the renderer's existing screen-space-adaptive PN-triangle (Phong) tessellation for smooth round geometry. Sets `renderingQuality = .enhanced` + `adaptiveTessellation` + a higher `tessellationMaxFactor`, so curved surfaces (cylinder / cone silhouettes, fillets) stay smooth at any zoom without the consumer pre-tessellating finely. The smoothness counterpart to `.performance`.
+- **README "Smooth Round Geometry" section** — documents the surface-smoothness knobs (`renderingQuality`, `adaptiveTessellation`, `tessellationMaxFactor`, `NormalSmoothing`), the edge-sampling caveat, and the perf tradeoff.
+- Config preset test (114 total).
+
+Adaptive Phong tessellation already existed but was gated behind `.enhanced` (off by default); this makes it discoverable. Auto-smoothing flat input normals and analytic arc edges continue in #48.
+
 ## [1.1.4] — 2026-06-05
 
 ### Added

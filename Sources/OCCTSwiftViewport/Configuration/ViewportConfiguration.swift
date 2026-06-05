@@ -321,6 +321,29 @@ public struct ViewportConfiguration: Sendable {
             renderingQuality: .standard
         )
     }()
+
+    /// CAD configuration tuned for smooth round geometry (issue #48).
+    ///
+    /// Enables the GPU's screen-space-adaptive PN-triangle (Phong) tessellation
+    /// (`renderingQuality = .enhanced`), so curved surfaces — cylinder / cone
+    /// silhouettes, filleted faces — stay smooth at any zoom without the consumer
+    /// pre-tessellating finely. Tessellation refines by projected size and surface
+    /// curvature each frame, so it doesn't waste triangles on small / distant parts.
+    ///
+    /// - Note: This is the smoothness counterpart to `.performance`. Tessellation
+    ///   adds GPU work, so prefer `.performance` for very large many-body scenes
+    ///   (see #42). Smooth silhouettes need reasonable per-vertex normals on the
+    ///   input mesh; OCCT meshes provide these. Requires an Apple3+ GPU (falls back
+    ///   to un-tessellated rendering otherwise).
+    public static let cadHighQuality = ViewportConfiguration(
+        rotationStyle: .turntable,
+        showViewCube: true,
+        showAxes: true,
+        showGrid: true,
+        renderingQuality: .enhanced,
+        tessellationMaxFactor: 48,
+        adaptiveTessellation: true
+    )
 }
 
 // MARK: - ViewCube Position
