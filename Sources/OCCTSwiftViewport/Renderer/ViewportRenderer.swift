@@ -297,6 +297,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// to either `ViewportController.pickResult` or `widgetPickResult`.
     private var currentLayerMap: [String: PickLayer] = [:]
 
+    /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue
+    /// #48). Grown on demand; written CPU-side each frame.
+    private var arcLineBuffer: MTLBuffer?
+
     /// Most recent drawable size in pixels, updated each frame. Lets the view layer
     /// derive the point→pixel scale without `UIScreen`/`NSScreen` (works on
     /// iOS / macOS / visionOS alike).
@@ -1542,6 +1546,60 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
+        // 3.35 Analytic arc edge pass (issue #48 part 3).
+        // Adaptively samples each visible body's `arcs` to line segments by their
+        // projected size, so circular feature edges stay smooth at any zoom
+        // independent of mesh density. Built once per frame into one reused buffer
+        // and drawn per body (so arcs inherit the body's transform / colour).
+        let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
+        if !arcBodies.isEmpty {
+            let vpSize = SIMD2<Float>(Float(w), Float(h))
+            var arcVerts: [Float] = []
+            var arcRanges: [(body: ViewportBody, objectIndex: UInt32, start: Int, count: Int)] = []
+            for entry in arcBodies {
+                // Match the edge-pass visibility rule: show feature edges when the
+                // display mode draws edges, or when the body is edge-only.
+                let bodyHasMesh = entry.buffers.indexCount > 0
+                guard displayMode.showsEdges || !bodyHasMesh else { continue }
+
+                let mvp = viewProjection * entry.body.transform
+                let startVert = arcVerts.count / 6
+                for arc in entry.body.arcs {
+                    let segs = ArcSampling.segmentCount(arc: arc, mvp: mvp, viewportSize: vpSize)
+                    var prev = arc.point(at: 0)
+                    for s in 1...segs {
+                        let cur = arc.point(at: Float(s) / Float(segs))
+                        arcVerts.append(contentsOf: [prev.x, prev.y, prev.z, 0, 0, 0,
+                                                     cur.x, cur.y, cur.z, 0, 0, 0])
+                        prev = cur
+                    }
+                }
+                let count = arcVerts.count / 6 - startVert
+                if count > 0 {
+                    arcRanges.append((entry.body, entry.objectIndex, startVert, count))
+                }
+            }
+
+            if !arcVerts.isEmpty,
+               let arcBuf = ensureArcBuffer(byteCount: arcVerts.count * MemoryLayout<Float>.size) {
+                arcVerts.withUnsafeBytes { raw in
+                    arcBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+                }
+                mainEncoder.setRenderPipelineState(wireframePipeline)
+                mainEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
+                var uniforms = makeUniforms()
+                for r in arcRanges {
+                    let bodyHasMesh = (bodyBufferCache[r.body.id]?.indexCount ?? 0) > 0
+                    var arcBodyUniforms = BodyUniforms(body: r.body, objectIndex: r.objectIndex, isSelected: 0)
+                    if !bodyHasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
+                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(&arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(type: .line, vertexStart: r.start, vertexCount: r.count)
+                }
+            }
+        }
+
         // 3.4 Point-cloud pass (issue #28).
         // Walks bodies whose primitiveKind is .point and draws their
         // `vertices` as MTL point primitives with a world-space radius
@@ -2243,6 +2301,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Buffer Management
 
+    /// Returns the reused arc-line buffer, growing it if needed.
+    private func ensureArcBuffer(byteCount: Int) -> MTLBuffer? {
+        if let b = arcLineBuffer, b.length >= byteCount { return b }
+        arcLineBuffer = device.makeBuffer(length: max(byteCount, 4096), options: .storageModeShared)
+        return arcLineBuffer
+    }
+
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen {
@@ -2364,8 +2429,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             pointColorVB = nil
         }
 
-        // Skip bodies with no renderable data at all
-        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
+        // Skip bodies with no renderable data at all. Arc-only bodies have none of
+        // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
+        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty else { return }
 
         // Build tessellation patch data if tessellation is enabled
         var tessBuffers: TessellationBuffers?

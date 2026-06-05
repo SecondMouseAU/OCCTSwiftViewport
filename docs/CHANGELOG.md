@@ -2,6 +2,20 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.7] — 2026-06-06
+
+### Added
+- **Analytic arc edges** (issue #48, part 3 — closes #48). New `ViewportArc` primitive (center / radius / in-plane basis / start+end angle) and `ViewportBody.arcs`. The renderer samples arcs to line segments **adaptively to their projected size each frame** (`ArcSampling.segmentCount`), so circular feature edges render smooth at any zoom, independent of mesh density — no consumer pre-faceting. Sampled once per frame into one reused buffer and drawn per body (inheriting transform / colour) through the existing wireframe pipeline. Re-exported as `_ViewportArc` / `_ArcSampling`.
+- Demo shows a smooth analytic circle.
+
+### Fixed
+- **Arc-only / data-light bodies were dropped by the renderer.** `ensureBuffers` skipped any body with no vertex/edge/point buffer, so a body carrying only `arcs` never reached the draw passes. The guard now also admits bodies with arcs. (Surfaced by on-device verification on the Vision Pro simulator.)
+
+### Tests
+- New `ViewportArcTests` (6): arc evaluation, adaptive segment count (scaling, clamps, behind-camera fallback), body integration. 122 total green; arc rendering confirmed on the Vision Pro simulator.
+
+With this, #48 is complete: `.cadHighQuality` adaptive surface tessellation (v1.1.5) + auto normal smoothing (v1.1.6) + analytic arc edges (v1.1.7).
+
 ## [1.1.6] — 2026-06-06
 
 ### Added
