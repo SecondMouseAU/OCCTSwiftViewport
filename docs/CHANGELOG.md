@@ -26,6 +26,41 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   - Builds on the face/edge/vertex pick discrimination shipped in v0.55.0.
   - Note: depth/distance filtering is intentionally absent — the GPU `PickResult` carries no depth value; use the CPU `SceneRaycast` path for distance-aware filtering.
 
+## [1.0.4] — 2026-05-26
+
+### Fixed
+- **Package-level dependency cycle** (issue #32). OCCTSwiftViewport's manifest declared a dependency on OCCTSwiftTools (used only by the demo executable), while OCCTSwiftTools depends back on OCCTSwiftViewport — a cycle that broke `swift build` on a fresh checkout whenever the working-copy directory wasn't named exactly `OCCTSwiftViewport` (SwiftPM resolved a stale 0.55.3 copy and failed). The demo moved into its own standalone package at `Examples/MetalDemo` (takes Viewport via `path: "../.."`). The published OCCTSwiftViewport package now has **zero external dependencies**; the root `Package.resolved` was removed. Library consumers were never affected (SwiftPM prunes the demo-only Tools dep). `project.yml` and `scripts/overnight-stress.sh` updated to the new demo path.
+
+## [1.0.3] — 2026-05-21
+
+### Fixed
+- **`quantize()` traps on out-of-range / non-finite vertex coords** (issue #30, PR #31). `NormalSmoothing.quantize` now drops non-finite coords (→0) and clamps into the Int32 range (limit `2e9`, *not* `Float(Int32.max)` which rounds up to 2³¹ and traps) before the trapping `Int32(_: Float)` init. Previously any vertex coord beyond ±21,474.8 model units, or `NaN`/`±inf`, `fatalError`'d on every body load via `CADFileLoader.loadFromManifest`. Only affects the welding key — clamped extremes simply don't weld. Added `NormalSmoothingTests` (3 tests). Source/binary compatible with 1.0.2.
+
+## [1.0.2] — 2026-05-09
+
+### Added
+- **Point-cloud rendering pipeline** (issue #28, PR #29). New `visiblePointPipeline` in both `ViewportRenderer` and `OffscreenRenderer`.
+  - `BodyPrimitiveKind` enum (`.mesh` / `.point` / `.wire`, named to avoid colliding with the pick-side `PrimitiveKind`).
+  - `ViewportBody.primitiveKind` / `pointRadius` / `vertexColors` (all defaulted → source-compatible); `boundingBox` falls back to `vertices`.
+  - World-radius → screen-pixels via `pxPerWorldFactor / clipPosition.w` (unified perspective + ortho), `[[point_size]]` clamped to `[1, 64]`, premultiplied-alpha blending. Mesh + wireframe paths skip `.point` bodies.
+  - New `ViewportPointCloudRenderingTests` (4 tests).
+
+## [1.0.1] — 2026-05-09
+
+### Changed
+- Docs polish + UX smoke coverage. README adds an ecosystem-map cross-link; `CHANGELOG.md` moved into `docs/` with the README link updated; `PBR_UPGRADE_PLAN.md` removed (shipped in 0.50.0); `DemoSmokeTests` now covers the v0.168 / v0.169 / v1.0 demo buttons. No library API changes.
+
+## [1.0.0] — 2026-05-08
+
+### Changed
+- **SemVer-stable graduation** (issue #21), aligning with the OCCTSwift v1.0 family pin to OCCT 8.0.0 GA (released 2026-05-07). Demo deps bumped: OCCTSwift `from: 1.0.1`, OCCTSwiftTools `from: 1.0.0` (transitively OCCTSwiftIO 1.0.0). The viewport library itself has no OCCTSwift dependency — the bump only affects the demo + `project.yml`.
+- Demo `v0.130 PointSetLib` block excised (API removed in OCCT 8.0.0 GA, no replacement). Added a `v1RootNodesAndEdgeRegularity` demo showing `NodeKind.product/occurrence` and the consolidated `setEdgeRegularity(edge, face1, face2, continuity)`.
+
+## [0.55.3] — 2026-05-07
+
+### Added
+- **Headless measurement overlay in `OffscreenRenderer`** (issue #26). Measurement annotations now composite into offscreen renders without an on-screen `MTKView`, so server-side / snapshot pipelines get the same dimension overlays as the interactive viewport.
+
 ## [0.55.2] — 2026-05-04
 
 ### Fixed
