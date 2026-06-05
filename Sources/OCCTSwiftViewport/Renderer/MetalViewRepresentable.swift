@@ -6,9 +6,10 @@
 import SwiftUI
 import MetalKit
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 
-/// iOS wrapper for MTKView.
+/// UIKit (iOS / visionOS) wrapper for MTKView. visionOS runs this in a window /
+/// volume (shared space); the same `MTKView` + SwiftUI gesture path applies.
 struct MetalViewRepresentable: UIViewRepresentable {
     let renderer: ViewportRenderer
     let backgroundColor: SIMD4<Float>

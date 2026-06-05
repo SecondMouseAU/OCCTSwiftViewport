@@ -294,6 +294,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// to either `ViewportController.pickResult` or `widgetPickResult`.
     private var currentLayerMap: [String: PickLayer] = [:]
 
+    /// Most recent drawable size in pixels, updated each frame. Lets the view layer
+    /// derive the point→pixel scale without `UIScreen`/`NSScreen` (works on
+    /// iOS / macOS / visionOS alike).
+    public private(set) var lastDrawableSize: CGSize = .zero
+
     // MARK: - Initialization
 
     public init?(controller: ViewportController, bodies: Binding<[ViewportBody]>) {
@@ -1084,6 +1089,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let cameraState = controller.cameraState
         let drawableSize = view.drawableSize
+        lastDrawableSize = drawableSize
         let aspectRatio = Float(drawableSize.width / drawableSize.height)
 
         let viewMatrix = cameraState.viewMatrix

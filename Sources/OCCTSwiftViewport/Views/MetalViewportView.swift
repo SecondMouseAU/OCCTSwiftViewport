@@ -63,7 +63,7 @@ public struct MetalViewportView: View {
         GeometryReader { geometry in
             ZStack {
                 metalView
-                    #if os(iOS)
+                    #if os(iOS) || os(visionOS)
                     .overlay { panGestureOverlay }
                     .gesture(orbitGesture)
                     // Pinch and rotate are both two-finger continuous gestures;
@@ -149,23 +149,31 @@ public struct MetalViewportView: View {
     /// Converts a view-space point to drawable pixel coordinates.
     private func viewToPixel(_ point: CGPoint, viewSize: CGSize) -> SIMD2<Int>? {
         guard viewSize.width > 0, viewSize.height > 0 else { return nil }
-        let scale = nativeScaleFactor
+        let scale = nativeScaleFactor(viewSize: viewSize)
         let px = Int(point.x * scale)
         #if os(macOS)
         // macOS: AppKit origin is bottom-left, flip Y
         let py = Int((viewSize.height - point.y) * scale)
         #else
-        // iOS: UIKit origin is top-left, no flip needed
+        // UIKit (iOS / visionOS): origin is top-left, no flip needed
         let py = Int(point.y * scale)
         #endif
         return SIMD2<Int>(px, py)
     }
 
-    private var nativeScaleFactor: CGFloat {
+    /// Point→pixel scale, derived from the renderer's actual drawable size relative
+    /// to the view size. This is the exact ratio the GPU uses and needs no
+    /// `UIScreen`/`NSScreen` (the former is unavailable on visionOS). Falls back to a
+    /// platform default before the first frame establishes a drawable size.
+    private func nativeScaleFactor(viewSize: CGSize) -> CGFloat {
+        if let drawable = renderer?.lastDrawableSize,
+           drawable.width > 0, viewSize.width > 0 {
+            return drawable.width / viewSize.width
+        }
         #if os(macOS)
-        NSScreen.main?.backingScaleFactor ?? 2.0
+        return NSScreen.main?.backingScaleFactor ?? 2.0
         #else
-        UIScreen.main.scale
+        return 2.0
         #endif
     }
 
@@ -237,9 +245,9 @@ public struct MetalViewportView: View {
         }
     }
 
-    // MARK: - iOS Gestures
+    // MARK: - iOS / visionOS Gestures
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     private var panGestureOverlay: some View {
         TwoFingerPanGestureView(
             onChanged: { translation in
@@ -423,9 +431,9 @@ public struct MetalViewportView: View {
     }
 }
 
-// MARK: - iOS Two-Finger Pan Gesture (Metal version)
+// MARK: - iOS / visionOS Two-Finger Pan Gesture (Metal version)
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import UIKit
 
 /// A transparent UIView overlay that recognizes two-finger pan gestures via UIKit.
