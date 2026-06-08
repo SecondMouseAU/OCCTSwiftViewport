@@ -140,6 +140,8 @@ public typealias _DynamicPivotConfiguration = DynamicPivotConfiguration
 // ViewCube
 public typealias _ViewCubeView = ViewCubeView
 public typealias _ViewCubeRegion = ViewCubeRegion
+public typealias _NavigationCubeView = NavigationCubeView
+public typealias _NavigationCube = NavigationCube
 
 // HUD overlays
 public typealias _OrientationGnomon = OrientationGnomon

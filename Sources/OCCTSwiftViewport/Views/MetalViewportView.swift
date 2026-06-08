@@ -392,7 +392,7 @@ public struct MetalViewportView: View {
             Spacer()
             HStack {
                 Spacer()
-                ViewCubeView(controller: controller)
+                NavigationCubeView(controller: controller)
                     .frame(width: 80, height: 80)
                     .padding(12)
             }

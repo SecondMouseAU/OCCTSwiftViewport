@@ -211,6 +211,14 @@ public final class ViewportController: ObservableObject {
         cameraController.animateTo(state, duration: duration)
     }
 
+    /// Animates to a ViewCube region (face / edge / corner), preserving the current
+    /// pivot, distance and projection — only the orientation changes (issue #60).
+    public func goToRegion(_ region: ViewCubeRegion, duration: Float = 0.3) {
+        var target = cameraState
+        target.rotation = region.cameraState().rotation
+        cameraController.animateTo(target, duration: duration)
+    }
+
     // MARK: - Camera Control
 
     /// Handles orbit gesture input.

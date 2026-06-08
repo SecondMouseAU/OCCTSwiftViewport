@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.12] — 2026-06-08
+
+### Added
+- **Interactive 3D navigation cube** (issue #60) — a Shapr3D / Fusion-style `NavigationCubeView` replacing the orientation-gizmo `ViewCubeView` in the corner overlay. It renders a cube that tracks `cameraState.rotation`, with **clickable faces, edges, and corners** that animate to the matching plan / elevation / isometric view.
+  - New `NavigationCube` — pure, SwiftUI-free projection + hit-testing. Taps are unprojected to a ray, intersected with the unit cube, and the frontmost surface point is classified into the 3×3-per-face grid → one of the 26 `ViewCubeRegion`s (faces / edges / corners). Robust on iOS (touch) and macOS (click + hover highlight).
+  - New `ViewportController.goToRegion(_:duration:)` — animates to a region's orientation, preserving the current pivot / distance / projection.
+  - `NavigationCube` / `NavigationCubeView` re-exported (`_NavigationCube` / `_NavigationCubeView`). `ViewCubeView` is retained (still re-exported) for source compatibility.
+  - New `NavigationCubeTests` (5): region↔base-face mapping + 26-region lookup completeness, surface-point classification, ray-cube intersection, and end-to-end identity-rotation hit-testing (centre→face, edges, corners, miss). 136 tests total; cube rendering verified on the Vision Pro simulator.
+
 ## [1.1.11] — 2026-06-06
 
 ### Fixed
