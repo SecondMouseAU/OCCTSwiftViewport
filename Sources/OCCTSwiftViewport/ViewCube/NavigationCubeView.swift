@@ -78,14 +78,17 @@ public struct NavigationCubeView: View {
                             let dy = value.translation.height - lastDrag.height
                             lastDrag = value.translation
                             // Grab-and-spin: always orbit (independent of the
-                            // viewport's gesture-action mapping).
-                            controller.handleOrbit(translation: CGSize(width: -dx, height: dy))
+                            // viewport's gesture-action mapping). The cube is a
+                            // camera proxy, so dragging it orbits the camera *around*
+                            // the model — the opposite sign to the viewport's
+                            // grab-the-model drag.
+                            controller.handleOrbit(translation: CGSize(width: dx, height: -dy))
                         }
                     }
                     .onEnded { value in
                         if isOrbiting {
-                            controller.endOrbit(velocity: CGSize(width: -value.velocity.width,
-                                                                 height: value.velocity.height))
+                            controller.endOrbit(velocity: CGSize(width: value.velocity.width,
+                                                                 height: -value.velocity.height))
                         } else if let region = cube.region(at: value.location) {
                             controller.goToRegion(region)
                         }

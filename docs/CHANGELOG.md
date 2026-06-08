@@ -2,6 +2,11 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.16] — 2026-06-08
+
+### Fixed
+- **Navigation-cube drag direction** (follow-up to #60/v1.1.15). Dragging the cube orbited the camera the wrong way — v1.1.15 reused the viewport's grab-the-model sign, but the cube is a camera proxy, so it must orbit the camera *around* the model (opposite sign on both axes). Dragging the cube now spins the view the way the drag intends.
+
 ## [1.1.15] — 2026-06-08
 
 ### Changed
