@@ -68,6 +68,28 @@ struct NavigationCubeTests {
 
     // MARK: - Visible faces
 
+    @Test("Round-trip under the isometric rotation: faces, edges, and corners resolve")
+    func isometricRoundTrip() {
+        let cube = NavigationCube(rotation: CameraState.isometric.rotation, size: 120)
+
+        // The frontmost corner projects and hit-tests back to the same corner.
+        let toward = CameraState.isometric.rotation.act(SIMD3<Float>(0, 0, 1))
+        var best = SIMD3<Float>(1, 1, 1)
+        var bestDot = -Float.greatestFiniteMagnitude
+        for x in [Float(-1), 1] { for y in [Float(-1), 1] { for z in [Float(-1), 1] {
+            let c = SIMD3<Float>(x, y, z)
+            let d = simd_dot(c, toward)
+            if d > bestDot { bestDot = d; best = c }
+        }}}
+        #expect(cube.region(at: cube.project(best)) == NavigationCube.classify(best))
+        #expect(cube.region(at: cube.project(best))?.isCorner == true)
+
+        // Each visible face's centre hit-tests back to that face.
+        for face in cube.visibleFaces() {
+            #expect(cube.region(at: face.center) == face.region)
+        }
+    }
+
     @Test("At most three faces are visible and they front-face the camera")
     func visibleFaceCount() {
         // A generic tilt so three faces show.
