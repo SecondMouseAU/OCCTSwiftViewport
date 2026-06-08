@@ -1881,6 +1881,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     for body in bodies where body.isVisible {
                         let bodyObjectIndex = objectIndex
                         objectIndex += 1
+                        // Non-pickable bodies (issue #63) are skipped, but objectIndex
+                        // still advances so the remaining bodies keep their pick IDs.
+                        if !body.isPickable { continue }
                         guard let buffers = bodyBufferCache[body.id] else {
                             continue
                         }
@@ -1955,6 +1958,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
                                 objectIndex += 1
+                                if !body.isPickable { continue }   // issue #63
                                 guard !body.edgeIndices.isEmpty,
                                       let buffers = bodyBufferCache[body.id],
                                       let edgeVB = buffers.edgeVertexBuffer,
@@ -1985,6 +1989,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         pickEncoder.setRenderPipelineState(pickArcPipeline)
                         pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
                         for d in frameArcDraws {
+                            if !d.body.isPickable { continue }   // issue #63
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = d.body.transform
                             var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex)
@@ -2010,6 +2015,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
                                 objectIndex += 1
+                                if !body.isPickable { continue }   // issue #63
                                 guard !body.vertices.isEmpty,
                                       let buffers = bodyBufferCache[body.id],
                                       let pointVB = buffers.pointVertexBuffer,
@@ -2040,6 +2046,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         for body in bodies where body.isVisible {
                             let bodyObjectIndex = objectIndex
                             objectIndex += 1
+                            if !body.isPickable { continue }   // issue #63
                             guard body.renderLayer == .overlay,
                                   let buffers = bodyBufferCache[body.id],
                                   let vb = buffers.vertexBuffer,
