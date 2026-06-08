@@ -2,6 +2,12 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.14] — 2026-06-08
+
+### Added
+- **`ViewportBody.isPickable`** (issue #63, default `true`). A body can now be drawn but excluded from the GPU pick buffer, so always-on-top reference geometry (datum / ground planes, overlays) no longer steals face/edge/vertex picks from the geometry behind it. Gated alongside `isVisible` in every pick sub-pass — geometry, edge, arc, vertex, and the overlay pick pass — with the object index still advancing so remaining bodies keep stable pick IDs. Unlike `selectionFilter` (which rejects a pick *after* the GPU returns it), this stops the body from occluding the pick buffer at all, so the geometry behind it is actually sampled.
+- New `PickabilityTests` (3). 141 tests total. Default `true` → no behaviour change for existing bodies.
+
 ## [1.1.13] — 2026-06-08
 
 ### Fixed

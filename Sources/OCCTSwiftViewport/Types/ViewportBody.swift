@@ -160,6 +160,12 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Whether this body should be rendered.
     public var isVisible: Bool
 
+    /// Whether this body participates in GPU picking (issue #63). When `false` the
+    /// body is still drawn but excluded from the pick buffer, so it never wins a
+    /// pick over the geometry behind it — useful for always-on-top reference bodies
+    /// (datum/ground planes, overlays) that shouldn't steal face/edge/vertex picks.
+    public var isPickable: Bool
+
     /// Render-time layer. `.overlay` bodies are drawn always-on-top.
     public var renderLayer: RenderLayer
 
@@ -191,6 +197,7 @@ public struct ViewportBody: Identifiable, Sendable {
         pointRadius: Float = 0.05,
         primitiveKind: BodyPrimitiveKind = .mesh,
         isVisible: Bool = true,
+        isPickable: Bool = true,
         renderLayer: RenderLayer = .geometry,
         pickLayer: PickLayer = .userGeometry,
         transform: simd_float4x4 = matrix_identity_float4x4
@@ -215,6 +222,7 @@ public struct ViewportBody: Identifiable, Sendable {
         self.pointRadius = pointRadius
         self.primitiveKind = primitiveKind
         self.isVisible = isVisible
+        self.isPickable = isPickable
         self.renderLayer = renderLayer
         self.pickLayer = pickLayer
         self.transform = transform
