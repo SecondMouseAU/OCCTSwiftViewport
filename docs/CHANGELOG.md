@@ -2,6 +2,12 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.15] — 2026-06-08
+
+### Changed
+- **Navigation cube is now drag-to-orbit, with discoverable edge/corner targets** (follow-up to #60). Dragging the cube now orbits the camera (grab-and-spin, independent of the viewport's gesture-action mapping); a press that doesn't move past a small threshold is still treated as a tap that snaps to the region's view. The cube draws a 3×3 grid per visible face so the edge and corner hit zones are visible, and the overlay is larger (96 pt) so they're easier to hit on touch.
+- The hit-test already resolved faces / edges / corners (verified by a new round-trip test under the isometric rotation); these changes make edges/corners practically reachable and add the expected CAD cube-drag interaction. 142 tests total.
+
 ## [1.1.14] — 2026-06-08
 
 ### Added

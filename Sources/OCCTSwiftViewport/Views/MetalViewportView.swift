@@ -403,7 +403,7 @@ public struct MetalViewportView: View {
         // Honour configuration.viewCubePosition (issue #62) and keep clear of the
         // safe area (e.g. an iPhone bottom sheet covering bottom-trailing).
         NavigationCubeView(controller: controller)
-            .frame(width: 80, height: 80)
+            .frame(width: 96, height: 96)
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                    alignment: controller.configuration.viewCubePosition.overlayAlignment)
