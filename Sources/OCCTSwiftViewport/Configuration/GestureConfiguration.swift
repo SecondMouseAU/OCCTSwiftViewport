@@ -28,6 +28,15 @@ public struct GestureConfiguration: Sendable {
     /// Minimum pan speed floor (prevents pan stalling when zoomed in very close).
     public var minPanSpeed: Float
 
+    // MARK: - Orbit direction
+
+    /// Invert horizontal orbit: a left/right drag rotates the model the opposite way. Some users expect
+    /// "grab the model and drag it" (object follows the finger) rather than the camera orbiting around it.
+    public var invertOrbitHorizontal: Bool
+
+    /// Invert vertical orbit (up/down drag).
+    public var invertOrbitVertical: Bool
+
     // MARK: - Inertia
 
     /// Whether to enable inertia (momentum) after gestures.
@@ -82,6 +91,8 @@ public struct GestureConfiguration: Sendable {
         zoomSensitivity: Float = 1.0,
         scrollZoomSensitivity: Float = 0.25,
         minPanSpeed: Float = 0.001,
+        invertOrbitHorizontal: Bool = false,
+        invertOrbitVertical: Bool = false,
         enableInertia: Bool = true,
         dampingFactor: Float = 0.1,
         singleFingerDrag: GestureAction = .orbit,
@@ -101,6 +112,8 @@ public struct GestureConfiguration: Sendable {
         self.zoomSensitivity = zoomSensitivity
         self.scrollZoomSensitivity = scrollZoomSensitivity
         self.minPanSpeed = minPanSpeed
+        self.invertOrbitHorizontal = invertOrbitHorizontal
+        self.invertOrbitVertical = invertOrbitVertical
         self.enableInertia = enableInertia
         self.dampingFactor = dampingFactor
         self.singleFingerDrag = singleFingerDrag

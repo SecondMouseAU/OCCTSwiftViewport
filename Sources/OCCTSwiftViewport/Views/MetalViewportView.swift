@@ -277,7 +277,10 @@ public struct MetalViewportView: View {
     }
 
     private var orbitGesture: some Gesture {
-        DragGesture(minimumDistance: 1)
+        // minimumDistance 8 (was 1): a 1pt threshold caught the sub-pixel jitter of a *tap* as a
+        // micro-orbit, so SpatialTapGesture rarely fired and tap-to-select felt broken. 8pt cleanly
+        // separates a tap (select) from a drag (orbit).
+        DragGesture(minimumDistance: 8)
             .onChanged { value in
                 guard !isPanning else { return }
 

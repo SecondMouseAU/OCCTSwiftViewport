@@ -75,9 +75,13 @@ extension ViewportController {
         switch resolvedDragAction(modifiers) {
         case .orbit:
             activeInputDragMode = .orbit
-            // Negate X so left/right drag rotates the model under the pointer.
-            handleOrbit(translation: CGSize(width: CGFloat(-delta.x),
-                                            height: CGFloat(delta.y)))
+            // Negate X so left/right drag rotates the model under the pointer; the invert flags let a
+            // consumer flip either axis to taste (object-follows-finger vs camera-orbits).
+            let cfg = configuration.gestureConfiguration
+            let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
+            let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
+            handleOrbit(translation: CGSize(width: sx * CGFloat(delta.x),
+                                            height: sy * CGFloat(delta.y)))
         case .pan:
             activeInputDragMode = .pan
             handlePan(translation: CGSize(width: CGFloat(delta.x),
@@ -95,8 +99,11 @@ extension ViewportController {
     private func endDrag(velocity: SIMD2<Float>) {
         switch activeInputDragMode {
         case .orbit:
-            endOrbit(velocity: CGSize(width: CGFloat(-velocity.x),
-                                      height: CGFloat(velocity.y)))
+            let cfg = configuration.gestureConfiguration
+            let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
+            let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
+            endOrbit(velocity: CGSize(width: sx * CGFloat(velocity.x),
+                                      height: sy * CGFloat(velocity.y)))
         case .pan:
             endPan(velocity: CGSize(width: CGFloat(velocity.x),
                                     height: CGFloat(velocity.y)))
