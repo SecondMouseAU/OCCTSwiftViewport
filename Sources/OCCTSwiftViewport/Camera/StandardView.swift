@@ -104,56 +104,35 @@ public enum StandardView: String, CaseIterable, Sendable {
     /// - Camera looks along its local -Z axis
     /// - Camera up is along its local +Y axis
     public var rotation: simd_quatf {
+        // Z-UP world (the turntable orbits Z; the navigation cube's top face is +Z). Rotation maps
+        // CAMERA space → world: look = rotation.act(0,0,-1), up = rotation.act(0,1,0).
+        //
+        // Identity therefore IS the top view (camera above, looking down −Z, +Y north). Side views
+        // tilt the camera onto the horizon first (rotX π/2 → front), then yaw around world-Z. The
+        // previous implementation mixed a Y-up front-is-identity convention with Z-axis yaws — a yaw
+        // about Z does NOTHING to a −Z look direction, so front/back/left/right were all the same
+        // top-down view (the "every cube click goes to top" bug).
+        let front = simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))   // look +Y, up +Z
+        func yawed(_ angle: Float) -> simd_quatf {
+            simd_normalize(simd_quatf(angle: angle, axis: SIMD3<Float>(0, 0, 1)) * front)
+        }
+        // Isometric: tilt 54.7356° from the zenith (35.264° above the horizon), then yaw to a corner.
+        let isoTilt = simd_quatf(angle: .pi / 2 - Float(atan(1.0 / sqrt(2.0))), axis: SIMD3<Float>(1, 0, 0))
+        func iso(_ yaw: Float) -> simd_quatf {
+            simd_normalize(simd_quatf(angle: yaw, axis: SIMD3<Float>(0, 0, 1)) * isoTilt)
+        }
+
         switch self {
-        case .top:
-            // Looking down -Z, camera points down Y-up world
-            return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
-
-        case .bottom:
-            // Looking up +Z
-            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))
-
-        case .front:
-            // Looking along -Y, so camera faces +Y direction
-            // No rotation needed for default orientation
-            return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-
-        case .back:
-            // Looking along +Y (180° around Z)
-            return simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 0, 1))
-
-        case .right:
-            // Looking along -X (90° around Z)
-            return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 0, 1))
-
-        case .left:
-            // Looking along +X (-90° around Z)
-            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1))
-
-        case .isometricFrontRight:
-            // Classic isometric: rotate 45° around Z, then tilt down ~35.264° (arctan(1/√2))
-            let rotZ = simd_quatf(angle: -.pi / 4, axis: SIMD3<Float>(0, 0, 1))
-            let tiltAngle = Float(atan(1.0 / sqrt(2.0))) // ~35.264°
-            let rotX = simd_quatf(angle: -tiltAngle, axis: SIMD3<Float>(1, 0, 0))
-            return rotX * rotZ
-
-        case .isometricFrontLeft:
-            let rotZ = simd_quatf(angle: .pi / 4, axis: SIMD3<Float>(0, 0, 1))
-            let tiltAngle = Float(atan(1.0 / sqrt(2.0)))
-            let rotX = simd_quatf(angle: -tiltAngle, axis: SIMD3<Float>(1, 0, 0))
-            return rotX * rotZ
-
-        case .isometricBackRight:
-            let rotZ = simd_quatf(angle: -.pi * 3 / 4, axis: SIMD3<Float>(0, 0, 1))
-            let tiltAngle = Float(atan(1.0 / sqrt(2.0)))
-            let rotX = simd_quatf(angle: -tiltAngle, axis: SIMD3<Float>(1, 0, 0))
-            return rotX * rotZ
-
-        case .isometricBackLeft:
-            let rotZ = simd_quatf(angle: .pi * 3 / 4, axis: SIMD3<Float>(0, 0, 1))
-            let tiltAngle = Float(atan(1.0 / sqrt(2.0)))
-            let rotX = simd_quatf(angle: -tiltAngle, axis: SIMD3<Float>(1, 0, 0))
-            return rotX * rotZ
+        case .top:    return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 0, 1))        // look −Z
+        case .bottom: return simd_quatf(angle: .pi, axis: SIMD3<Float>(1, 0, 0))      // look +Z
+        case .front:  return front                                                    // look +Y
+        case .back:   return yawed(.pi)                                               // look −Y
+        case .left:   return yawed(-.pi / 2)                                          // look +X
+        case .right:  return yawed(.pi / 2)                                           // look −X
+        case .isometricFrontRight: return iso(.pi / 4)
+        case .isometricFrontLeft:  return iso(-.pi / 4)
+        case .isometricBackRight:  return iso(.pi * 3 / 4)
+        case .isometricBackLeft:   return iso(-.pi * 3 / 4)
         }
     }
 
