@@ -110,7 +110,7 @@ public struct RadiusMeasurement: Identifiable, Sendable {
 }
 
 /// Mode for measurement interaction.
-public enum MeasurementMode: Sendable {
+public enum MeasurementMode: Sendable, Equatable {
     /// No measurement tool active.
     case none
     /// Measuring point-to-point distance.

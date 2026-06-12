@@ -2,6 +2,16 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.20] — 2026-06-12
+
+### Added
+- **Tap-to-measure** (issue #68). `ViewportController.measurementMode` (`.distance` / `.angle` / `.radius`) now actually drives interaction: while a mode is active, taps on geometry accumulate world-space surface points and commit a `ViewportMeasurement` (rendered by the existing `MeasurementOverlay`). Previously the property was published but consumed by nothing, so setting it did nothing — it read like a feature that silently didn't work.
+  - Point order per mode: `.distance` → start, end (2 taps); `.angle` → armA, vertex, armB (3 taps); `.radius` → center, edge (2 taps).
+  - New `ViewportBody.worldHitPoint(ray:triangleIndex:)` reconstructs the picked surface point in world space, **respecting the body's `transform`**.
+  - New controller surface: `pendingMeasurementPoints` (published, for in-progress feedback), `addMeasurementPoint(_:)`, `handleMeasurementPick(result:ndc:bodies:aspectRatio:)`, `cancelPendingMeasurement()`, `clearMeasurements()`, and `static pointCount(for:)`. Changing the mode clears in-progress points; taps register on `.face` picks only and don't disturb the selection stream.
+  - `MeasurementMode` is now `Equatable`.
+- New `MeasurementModeTests` (14). 160 tests total.
+
 ## [1.1.16] — 2026-06-08
 
 ### Fixed

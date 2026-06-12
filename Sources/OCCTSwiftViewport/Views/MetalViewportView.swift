@@ -216,9 +216,17 @@ public struct MetalViewportView: View {
         controller.dispatch(.tap(ndc: ndc, count: 1))
 
         let ctrl = controller
+        let snapshot = bodies
+        let aspect = controller.lastAspectRatio
         renderer?.performPick(at: pixel) { result in
             Task { @MainActor in
-                ctrl.handlePick(result: result, ndc: ndc)
+                // While a measurement tool is active, taps feed the measurement
+                // accumulator instead of the selection stream.
+                if ctrl.measurementMode != .none {
+                    ctrl.handleMeasurementPick(result: result, ndc: ndc, bodies: snapshot, aspectRatio: aspect)
+                } else {
+                    ctrl.handlePick(result: result, ndc: ndc)
+                }
             }
         }
     }

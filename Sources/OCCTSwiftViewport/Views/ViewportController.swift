@@ -88,7 +88,24 @@ public final class ViewportController: ObservableObject {
     @Published public var measurements: [ViewportMeasurement] = []
 
     /// Current measurement interaction mode.
-    @Published public var measurementMode: MeasurementMode = .none
+    ///
+    /// When set to anything other than `.none`, taps on geometry feed
+    /// `addMeasurementPoint(_:)` instead of the selection stream, accumulating
+    /// points until a measurement is complete (2 for `.distance`/`.radius`,
+    /// 3 for `.angle`). Changing the mode clears any in-progress points.
+    @Published public var measurementMode: MeasurementMode = .none {
+        didSet {
+            if measurementMode != oldValue {
+                pendingMeasurementPoints.removeAll()
+            }
+        }
+    }
+
+    /// World-space points picked so far for the in-progress measurement, in the
+    /// order they were tapped. Cleared when a measurement completes, the mode
+    /// changes, or `cancelPendingMeasurement()` is called. Drives in-progress
+    /// feedback (e.g. a rubber-band line) in the overlay.
+    @Published public private(set) var pendingMeasurementPoints: [SIMD3<Float>] = []
 
     // MARK: - Post-Process Toggles (runtime-tunable)
 
@@ -385,6 +402,96 @@ public final class ViewportController: ObservableObject {
     public func handlePick(result: PickResult?, ndc: SIMD2<Float>) {
         lastPickNDC = ndc
         handlePick(result: result)
+    }
+
+    // MARK: - Measurement Interaction
+
+    /// Number of world points a measurement of the given mode requires before it
+    /// is committed. `.none` returns 0.
+    public nonisolated static func pointCount(for mode: MeasurementMode) -> Int {
+        switch mode {
+        case .none: return 0
+        case .distance, .radius: return 2
+        case .angle: return 3
+        }
+    }
+
+    /// Feeds a world-space point into the active measurement.
+    ///
+    /// Call this from the tap/pick path while `measurementMode != .none` (the
+    /// view layer does this automatically). The point is appended to
+    /// `pendingMeasurementPoints`; once enough points for the current mode have
+    /// been gathered, a `ViewportMeasurement` is appended to `measurements` and
+    /// the pending buffer is cleared, ready for the next measurement. A no-op
+    /// when the mode is `.none`.
+    ///
+    /// Point order per mode:
+    /// - `.distance`: start, end
+    /// - `.angle`: armA, vertex, armB
+    /// - `.radius`: center, edge point
+    public func addMeasurementPoint(_ point: SIMD3<Float>) {
+        guard measurementMode != .none else { return }
+        pendingMeasurementPoints.append(point)
+
+        let needed = ViewportController.pointCount(for: measurementMode)
+        guard pendingMeasurementPoints.count >= needed else { return }
+
+        let pts = pendingMeasurementPoints
+        pendingMeasurementPoints.removeAll()
+
+        switch measurementMode {
+        case .none:
+            break
+        case .distance:
+            measurements.append(.distance(DistanceMeasurement(start: pts[0], end: pts[1])))
+        case .angle:
+            measurements.append(.angle(AngleMeasurement(pointA: pts[0], vertex: pts[1], pointB: pts[2])))
+        case .radius:
+            measurements.append(.radius(RadiusMeasurement(center: pts[0], edgePoint: pts[1])))
+        }
+    }
+
+    /// Routes a GPU pick to the active measurement instead of the selection
+    /// stream, reconstructing the world-space surface point under the tap.
+    ///
+    /// Called by the view layer (in place of `handlePick`) while
+    /// `measurementMode != .none`. Only `.face` picks yield a point; edge/vertex
+    /// picks and misses are ignored. The point is the ray/triangle intersection
+    /// in world space (respecting the body's transform), then fed to
+    /// `addMeasurementPoint(_:)`.
+    public func handleMeasurementPick(
+        result: PickResult?,
+        ndc: SIMD2<Float>,
+        bodies: [ViewportBody],
+        aspectRatio: Float
+    ) {
+        lastPickNDC = ndc
+        guard measurementMode != .none, let result, result.kind == .face else { return }
+
+        let body: ViewportBody?
+        if result.bodyIndex >= 0, result.bodyIndex < bodies.count,
+           bodies[result.bodyIndex].id == result.bodyID {
+            body = bodies[result.bodyIndex]
+        } else {
+            body = bodies.first { $0.id == result.bodyID }
+        }
+        guard let body else { return }
+
+        let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio)
+        guard let point = body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex) else { return }
+        addMeasurementPoint(point)
+    }
+
+    /// Discards any in-progress measurement points without committing a
+    /// measurement. The mode is left unchanged.
+    public func cancelPendingMeasurement() {
+        pendingMeasurementPoints.removeAll()
+    }
+
+    /// Removes all committed measurements and any in-progress points.
+    public func clearMeasurements() {
+        measurements.removeAll()
+        pendingMeasurementPoints.removeAll()
     }
 
     /// Clears the current selection.
