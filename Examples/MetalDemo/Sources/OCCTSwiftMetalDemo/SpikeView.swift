@@ -869,6 +869,9 @@ struct SpikeView: View {
         case v168ImportProgress
         case v169MeshProgress, v169ExportProgress
         case v1RootNodesAndEdgeRegularity
+        case v120TopologyAttributes, v130InstancedAssembly, v131PatternCutAndEdges
+        case v133MultiSectionPipe, v135HelicalSweep, v14ThreadedFasteners
+        case v143PolyHLRDrawing, v147BooleanGlueFuzzy
     }
 
     // MARK: - OCCT 8 Sub-groups
@@ -1062,6 +1065,14 @@ struct SpikeView: View {
         Button("v0.169 Mesh Progress") { loadOCCT8Demo(.v169MeshProgress) }
         Button("v0.169 Export Progress") { loadOCCT8Demo(.v169ExportProgress) }
         Button("v1.0 RootNodes & EdgeRegularity") { loadOCCT8Demo(.v1RootNodesAndEdgeRegularity) }
+        Button("v1.2 TopologyGraph Attributes") { loadOCCT8Demo(.v120TopologyAttributes) }
+        Button("v1.3.0 Instanced Assembly (4×4)") { loadOCCT8Demo(.v130InstancedAssembly) }
+        Button("v1.3.1 Pattern-Cut & Edge Selectors") { loadOCCT8Demo(.v131PatternCutAndEdges) }
+        Button("v1.3.3 Multi-Section Pipe Shell") { loadOCCT8Demo(.v133MultiSectionPipe) }
+        Button("v1.3.5 Helical Sweep (worm)") { loadOCCT8Demo(.v135HelicalSweep) }
+        Button("v1.4 Threaded Fasteners") { loadOCCT8Demo(.v14ThreadedFasteners) }
+        Button("v1.4.3 Poly HLR Drawing") { loadOCCT8Demo(.v143PolyHLRDrawing) }
+        Button("v1.4.7 Boolean Glue & Fuzzy") { loadOCCT8Demo(.v147BooleanGlueFuzzy) }
     }
 
     private func loadOCCT8Demo(_ demo: OCCT8Demo) {
@@ -1404,6 +1415,22 @@ struct SpikeView: View {
             result = OCCT8Gallery.v169ExportProgress()
         case .v1RootNodesAndEdgeRegularity:
             result = OCCT8Gallery.v1RootNodesAndEdgeRegularity()
+        case .v120TopologyAttributes:
+            result = OCCT8Gallery.v120TopologyAttributes()
+        case .v130InstancedAssembly:
+            result = OCCT8Gallery.v130InstancedAssembly()
+        case .v131PatternCutAndEdges:
+            result = OCCT8Gallery.v131PatternCutAndEdges()
+        case .v133MultiSectionPipe:
+            result = OCCT8Gallery.v133MultiSectionPipe()
+        case .v135HelicalSweep:
+            result = OCCT8Gallery.v135HelicalSweep()
+        case .v14ThreadedFasteners:
+            result = OCCT8Gallery.v14ThreadedFasteners()
+        case .v143PolyHLRDrawing:
+            result = OCCT8Gallery.v143PolyHLRDrawing()
+        case .v147BooleanGlueFuzzy:
+            result = OCCT8Gallery.v147BooleanGlueFuzzy()
         }
 
         bodies = result.bodies

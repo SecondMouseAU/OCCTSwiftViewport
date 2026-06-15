@@ -26,8 +26,8 @@ swift test --filter "CameraStateTests/Default initialization"
 # Clean build (use if stale PCH errors after renames)
 swift package clean && swift build
 
-# Run the demo app via SPM
-swift run OCCTSwiftMetalDemo
+# Run the demo app via SPM (separate package — run from its directory)
+cd Examples/MetalDemo && swift run OCCTSwiftMetalDemo
 ```
 
 The Xcode project (`ViewportKit.xcodeproj`) is generated from `project.yml` via [XcodeGen](https://github.com/yonaskolb/XcodeGen). It has two schemes: `OCCTSwiftMetalDemo_iOS` and `OCCTSwiftMetalDemo_macOS`. Regenerate after structural changes with `xcodegen`.
@@ -106,7 +106,7 @@ Three rotation styles: **arcball** (Ken Shoemake virtual sphere), **turntable** 
 
 ## Demo App
 
-`Sources/OCCTSwiftMetalDemo/` is a gallery-based demo app exercising OCCTSwift features. Entry point is `MetalSpikeApp.swift` → `SpikeView.swift`. Each OCCTSwift capability gets its own gallery file (e.g., `Curve2DGallery.swift`, `SurfaceGallery.swift`, `OCCT8Gallery.swift`, `NamingGallery.swift`, `AnnotationGallery.swift`). The `SelectionManager` handles body/face selection with highlighting. `CADFileLoader` handles STEP/STL/OBJ/BREP file import. New demos for each OCCTSwift release are added as gallery functions — see existing galleries for the pattern.
+`Examples/MetalDemo/Sources/OCCTSwiftMetalDemo/` is a gallery-based demo app exercising OCCTSwift features. It is a **standalone SPM package** (`Examples/MetalDemo/Package.swift`, taking Viewport via `path: "../.."`) — kept out of the root manifest to avoid a Viewport → Tools → Viewport cycle. Entry point is `MetalSpikeApp.swift` → `SpikeView.swift`. Each OCCTSwift capability gets its own gallery file (e.g., `Curve2DGallery.swift`, `SurfaceGallery.swift`, `OCCT8Gallery.swift`, `NamingGallery.swift`, `AnnotationGallery.swift`). The `SelectionManager` handles body/face selection with highlighting. `CADFileLoader` handles STEP/STL/OBJ/BREP file import. New demos for each OCCTSwift release are added as gallery functions — see existing galleries for the pattern.
 
 ## Script Harness
 
@@ -172,8 +172,8 @@ try ctx.emit(description: "My parametric design")
 | `OCCTSwiftScripts/Sources/Script/main.swift` | User-editable script (full OCCTSwift API) |
 | `OCCTSwiftScripts/Sources/ScriptHarness/ScriptContext.swift` | Shape/Wire/Edge accumulator, BREP+STEP writer |
 | `OCCTSwiftScripts/Sources/ScriptHarness/Manifest.swift` | `ScriptManifest` / `BodyDescriptor` Codable types |
-| `Sources/OCCTSwiftMetalDemo/ScriptWatcher.swift` | kqueue file watcher (macOS only) |
-| `Sources/OCCTSwiftMetalDemo/ScriptManifest.swift` | Demo-side manifest Codable types |
+| `Examples/MetalDemo/Sources/OCCTSwiftMetalDemo/ScriptWatcher.swift` | kqueue file watcher (macOS only) |
+| `Examples/MetalDemo/Sources/OCCTSwiftMetalDemo/ScriptManifest.swift` | Demo-side manifest Codable types |
 
 ### File Format Support
 

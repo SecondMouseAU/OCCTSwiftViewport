@@ -310,6 +310,14 @@ enum DemoTestRunner {
             ("v169MeshProgress", OCCT8Gallery.v169MeshProgress),
             ("v169ExportProgress", OCCT8Gallery.v169ExportProgress),
             ("v1RootNodesAndEdgeRegularity", OCCT8Gallery.v1RootNodesAndEdgeRegularity),
+            ("v120TopologyAttributes", OCCT8Gallery.v120TopologyAttributes),
+            ("v130InstancedAssembly", OCCT8Gallery.v130InstancedAssembly),
+            ("v131PatternCutAndEdges", OCCT8Gallery.v131PatternCutAndEdges),
+            ("v133MultiSectionPipe", OCCT8Gallery.v133MultiSectionPipe),
+            ("v135HelicalSweep", OCCT8Gallery.v135HelicalSweep),
+            ("v14ThreadedFasteners", OCCT8Gallery.v14ThreadedFasteners),
+            ("v143PolyHLRDrawing", OCCT8Gallery.v143PolyHLRDrawing),
+            ("v147BooleanGlueFuzzy", OCCT8Gallery.v147BooleanGlueFuzzy),
         ]
         for (name, run) in occt8 {
             demos.append(DemoEntry(category: "OCCT8", name: name, run: run))

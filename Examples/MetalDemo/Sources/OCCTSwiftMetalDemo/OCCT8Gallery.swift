@@ -17151,6 +17151,358 @@ enum OCCT8Gallery {
             description: descriptions.joined(separator: " | ")
         )
     }
+
+    // MARK: - v1.2.0: TopologyGraph attribute store + Codable snapshot
+
+    /// Demonstrates v1.2.0's pure-Swift attribute sidecar on `TopologyGraph`:
+    /// attach arbitrary typed metadata to any node, then round-trip it through a
+    /// canonical `GraphSnapshot` (the graph *structure* is re-derived from the
+    /// source BREP — only the attributes + source shape are serialized).
+    static func v120TopologyAttributes() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        guard let box = Shape.box(width: 4, height: 3, depth: 2),
+              let graph = TopologyGraph(shape: box) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "graph build FAILED")
+        }
+
+        // Attach typed metadata to a few face nodes. The store never touches the
+        // C++ graph — keys are caller-namespaced strings.
+        let faces = (0..<3).map { TopologyGraph.NodeRef(kind: .face, index: $0) }
+        graph.setAttribute("demo.material", .string("6061-T6"), for: faces[0])
+        graph.setAttribute("demo.finishRa", .double(0.8), for: faces[1])
+        graph.setAttribute("demo.region", .ints([3, 7, 11]), for: faces[2])
+        lines.append("annotated \(graph.attributes.annotatedNodeCount) face nodes")
+
+        // Snapshot → canonical JSON → decode → rebuild + reattach.
+        do {
+            let snap = try graph.snapshot()
+            let data = try GraphSnapshot.canonicalEncoder().encode(snap)
+            let decoded = try JSONDecoder().decode(GraphSnapshot.self, from: data)
+            let rebuilt = try TopologyGraph(snapshot: decoded)
+            let mat = rebuilt.attribute("demo.material", for: faces[0])?.stringValue ?? "?"
+            let region = rebuilt.attribute("demo.region", for: faces[2])?.intsValue ?? []
+            lines.append("snapshot \(data.count)B → rebuilt material=\(mat) region=\(region)")
+        } catch {
+            lines.append("snapshot FAILED: \(error)")
+        }
+
+        let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+            box, id: "v120-box", color: SIMD4(0.55, 0.75, 0.95, 1.0))
+        if let body { bodies.append(body) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.3.0: full 4×4 XCAF component locations (instanced assembly)
+
+    /// Demonstrates v1.3.0's `Shape.located(matrix:)` full rigid placement (rotation,
+    /// not just translation) and the instanced-assembly STEP writer added in v1.4.6
+    /// (`Exporter.writeSTEPAssembly`). One L-bracket geometry is placed eight times
+    /// around a bolt circle, each instance *rotated* to face outward — true
+    /// instancing: the STEP assembly stores one solid + eight located occurrences.
+    static func v130InstancedAssembly() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // One L-bracket part (extruded L-profile), built once.
+        let lProfile = Wire.polygon([
+            SIMD2(0, 0), SIMD2(3, 0), SIMD2(3, 1), SIMD2(1, 1),
+            SIMD2(1, 3), SIMD2(0, 3),
+        ])
+        guard let lProfile, let part = Shape.extrude(profile: lProfile,
+                                                     direction: SIMD3(0, 0, 1), length: 1.5) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "part build FAILED")
+        }
+
+        let count = 8
+        let ringRadius = 10.0
+        var instances: [Shape] = []
+        for i in 0..<count {
+            let theta = 2 * Double.pi * Double(i) / Double(count)
+            // Rotate about Z by theta, then translate out to the bolt circle.
+            let tx = ringRadius * cos(theta)
+            let ty = ringRadius * sin(theta)
+            let m = rotZTranslate(angle: theta, tx: tx, ty: ty, tz: 0)
+            guard let inst = part.located(matrix: m) else { continue }
+            instances.append(inst)
+            let hue = Float(i) / Float(count)
+            let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+                inst, id: "v130-inst-\(i)",
+                color: SIMD4(0.35 + 0.5 * hue, 0.6, 0.95 - 0.4 * hue, 1.0))
+            if let body { bodies.append(body) }
+        }
+        lines.append("placed \(instances.count)/\(count) rotated instances")
+
+        // Write an instanced STEP assembly (one geometry, N occurrences) to a temp file.
+        if let compound = Shape.compound(instances), let doc = Document.create() {
+            let label = doc.addShape(compound, makeAssembly: true)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("v130-assembly.step")
+            do {
+                try Exporter.writeSTEPAssembly(doc, to: url)
+                let size = (try? FileManager.default
+                    .attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+                lines.append("writeSTEPAssembly label=\(label) → \(size.map { "\($0)B" } ?? "ok")")
+            } catch {
+                lines.append("writeSTEPAssembly FAILED: \(error)")
+            }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.3.1: feature-aware patterning + geometric edge selection
+
+    /// Demonstrates v1.3.1's ergonomics helpers:
+    /// - `circularPatternCut` patterns the *tool* (one hole → bolt circle) and
+    ///   subtracts the compound — the "drill one, repeat around the axis" intent.
+    /// - `concaveEdges()` selects fillet candidates geometrically (no fragile
+    ///   raw-index picking) and feeds straight into `filleted(edges:radius:)`.
+    /// - `signedVolume` exposes the orientation-aware mass.
+    static func v131PatternCutAndEdges() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // (1) A round flange: one bolt hole patterned 8× around Z and cut in one call.
+        guard let blank = Shape.cylinder(radius: 12, height: 3),
+              let hole = Shape.cylinder(radius: 1.0, height: 4)?
+                .translated(by: SIMD3(8, 0, -0.5)) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "flange FAILED")
+        }
+        let flange = blank.circularPatternCut(
+            tool: hole, axisPoint: .zero, axisDirection: SIMD3(0, 0, 1), count: 8) ?? blank
+        lines.append("circularPatternCut(8) → signedVolume=\(String(format: "%.1f", flange.signedVolume))")
+        let (flangeBody, _) = CADFileLoader.shapeToBodyAndMetadata(
+            flange, id: "v131-flange", color: SIMD4(0.7, 0.7, 0.75, 1.0))
+        if let flangeBody { bodies.append(flangeBody) }
+
+        // (2) An L-bracket has a genuine concave inner edge — select it geometrically
+        //     (robust to parameter changes) and round it with filleted(edges:).
+        if let lProfile = Wire.polygon([
+            SIMD2(0, 0), SIMD2(8, 0), SIMD2(8, 2), SIMD2(2, 2),
+            SIMD2(2, 8), SIMD2(0, 8),
+        ]), let bracket = Shape.extrude(profile: lProfile,
+                                        direction: SIMD3(0, 0, 1), length: 4)?
+            .translated(by: SIMD3(18, -4, 0)) {
+            let concave = bracket.concaveEdges()
+            lines.append("bracket concaveEdges=\(concave.count)")
+            let finished = concave.isEmpty ? bracket
+                : (bracket.filleted(edges: concave, radius: 1.0) ?? bracket)
+            if !concave.isEmpty { lines.append("filleted concave edge ✓") }
+            let (bracketBody, _) = CADFileLoader.shapeToBodyAndMetadata(
+                finished, id: "v131-bracket", color: SIMD4(0.85, 0.55, 0.4, 1.0))
+            if let bracketBody { bodies.append(bracketBody) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.3.3: multi-section pipe shell (variable cross-section)
+
+    /// Demonstrates v1.3.3's `Shape.pipeShellMultiSection` — sweep several profiles
+    /// positioned along a spine into one variable-cross-section solid. Here a round
+    /// inlet ramps to a smaller round outlet along a straight spine (a reducer duct).
+    static func v133MultiSectionPipe() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        guard let spine = Wire.line(from: SIMD3(0, 0, 0), to: SIMD3(0, 0, 20)),
+              let inlet = Wire.circle(origin: SIMD3(0, 0, 0), normal: SIMD3(0, 0, 1), radius: 5),
+              let outlet = Wire.circle(origin: SIMD3(0, 0, 20), normal: SIMD3(0, 0, 1), radius: 2) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "profiles FAILED")
+        }
+
+        guard let duct = Shape.pipeShellMultiSection(
+            spine: spine, profiles: [inlet, outlet], solid: true) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "pipeShellMultiSection → nil")
+        }
+        lines.append("reducer duct Ø10→Ø4, volume=\(String(format: "%.1f", duct.volume ?? 0))")
+
+        let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+            duct, id: "v133-duct", color: SIMD4(0.4, 0.8, 0.85, 1.0))
+        if let body { bodies.append(body) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.3.5: helicalSweep (worm / screw-thread helicoid)
+
+    /// Demonstrates v1.3.5's turnkey `Shape.helicalSweep` — sweep a profile along a
+    /// helix while an internal auxiliary spine keeps the section radial, producing a
+    /// worm/screw-thread helicoid in one call (the recipe that reliably returned nil
+    /// when hand-rolled with `pipeShell(mode: .auxiliary(...))`).
+    static func v135HelicalSweep() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // A small triangular rib in the XZ plane (radial), swept into a worm thread.
+        guard let rib = Wire.polygon([
+            SIMD2(5, -0.6), SIMD2(6.5, 0), SIMD2(5, 0.6),
+        ]) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "rib FAILED")
+        }
+
+        guard let worm = Shape.helicalSweep(
+            profile: rib, axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+            radius: 5, pitch: 3, turns: 5) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "helicalSweep → nil")
+        }
+        lines.append("worm helicoid: radius=5 pitch=3 turns=5, volume=\(String(format: "%.1f", worm.volume ?? 0))")
+
+        let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+            worm, id: "v135-worm", color: SIMD4(0.85, 0.6, 0.3, 1.0))
+        if let body { bodies.append(body) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.4.0–v1.4.2: correct in-envelope thread geometry
+
+    /// Demonstrates the v1.4.x thread features — `threadedShaft` cuts a smooth
+    /// analytic ISO-68 helicoid into a cylindrical blank (with an automatic
+    /// screw-loft fallback for long/fine pitches, #193). Builds an M10×1.5 threaded
+    /// stud alongside a plain blank for comparison.
+    static func v14ThreadedFasteners() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        let spec = ThreadSpec.parse("M10x1.5")
+            ?? ThreadSpec(form: .iso68, nominalDiameter: 10, pitch: 1.5)
+
+        // Threaded stud: cut the thread into a Ø10 shaft.
+        guard let blank = Shape.cylinder(radius: spec.nominalDiameter / 2, height: 24) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "blank FAILED")
+        }
+        if let stud = blank.threadedShaft(
+            axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1), spec: spec, length: 20) {
+            lines.append("threadedShaft M10×1.5 ✓ (\(stud.faceCount) faces)")
+            let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+                stud, id: "v14-stud", color: SIMD4(0.75, 0.7, 0.55, 1.0))
+            if let body { bodies.append(body) }
+        } else {
+            lines.append("threadedShaft → nil")
+            let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+                blank, id: "v14-blank", color: SIMD4(0.75, 0.7, 0.55, 1.0))
+            if let body { bodies.append(body) }
+        }
+
+        // Threaded hole in a block, offset to the side.
+        if let block = Shape.box(origin: SIMD3(16, -6, 0), width: 12, height: 12, depth: 12),
+           let tapped = block.threadedHole(
+            axisOrigin: SIMD3(22, 0, 12), axisDirection: SIMD3(0, 0, -1), spec: spec, depth: 10) {
+            lines.append("threadedHole ✓")
+            let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+                tapped, id: "v14-tapped", color: SIMD4(0.55, 0.65, 0.8, 1.0))
+            if let body { bodies.append(body) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.4.3: fast 2D drawings via polyhedral HLR
+
+    /// Demonstrates v1.4.3's `hlrPolyEdges` — polyhedral hidden-line removal projects
+    /// the shape's *triangulation*, so it's fast on curved/threaded solids (measured
+    /// ~48× faster than exact HLR on an analytic thread). Projects a curved solid to a
+    /// front-view wireframe of its visible sharp + outline edges.
+    static func v143PolyHLRDrawing() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // A curved solid: a cylinder fused with an offset box.
+        guard let cyl = Shape.cylinder(radius: 6, height: 16),
+              let box = Shape.box(origin: SIMD3(-4, -4, 4), width: 14, height: 8, depth: 6),
+              let solid = cyl.union(box) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "solid FAILED")
+        }
+
+        let viewDir = SIMD3<Double>(0, -1, 0)   // look along -Y (front view)
+        var edgeShapes: [Shape] = []
+        if let sharp = solid.hlrPolyEdges(direction: viewDir, category: .visibleSharp) {
+            edgeShapes.append(sharp)
+        }
+        if let outline = solid.hlrPolyEdges(direction: viewDir, category: .visibleOutline) {
+            edgeShapes.append(outline)
+        }
+        lines.append("hlrPolyEdges: \(edgeShapes.count) edge categories")
+
+        if let drawing = Shape.compound(edgeShapes) {
+            let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+                drawing, id: "v143-hlr", color: SIMD4(0.1, 0.1, 0.1, 1.0))
+            if let body { bodies.append(body) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.4.7 / v1.5.0: boolean glue + fuzzy value (time-bounded)
+
+    /// Demonstrates v1.4.7's `fuzzyValue` + `glue` robustness levers on the boolean
+    /// ops (for coincident / near-tangent faces) and v1.5.0's wall-clock `timeout`
+    /// (booleans now return nil instead of hanging on pathological operands). Unions
+    /// two boxes that share an exact coincident face using `glue: .full`.
+    static func v147BooleanGlueFuzzy() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        guard let a = Shape.box(origin: SIMD3(0, 0, 0), width: 6, height: 6, depth: 6),
+              let b = Shape.box(origin: SIMD3(6, 0, 0), width: 6, height: 6, depth: 6) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "boxes FAILED")
+        }
+
+        // glue: .full — both operands are known to share the coincident x=6 face.
+        guard let fused = a.union(b, fuzzyValue: 1e-4, glue: .full, timeout: 30) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "union(glue: .full) → nil (timeout?)")
+        }
+        lines.append("union(fuzzy: 1e-4, glue: .full, timeout: 30s) → volume=\(String(format: "%.1f", fused.volume ?? 0)) faces=\(fused.faceCount)")
+
+        let (body, _) = CADFileLoader.shapeToBodyAndMetadata(
+            fused, id: "v147-fused", color: SIMD4(0.5, 0.8, 0.5, 1.0))
+        if let body { bodies.append(body) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.x demo helpers
+
+    /// Build a 12-element row-major rigid-placement matrix
+    /// `[r00 r01 r02 r10 r11 r12 r20 r21 r22 tx ty tz]` — rotation about Z by `angle`
+    /// then a translation. Feeds `Shape.located(matrix:)` / `Document.addComponent(matrix:)`.
+    private static func rotZTranslate(angle: Double, tx: Double, ty: Double, tz: Double) -> [Double] {
+        let c = cos(angle), s = sin(angle)
+        return [
+            c, -s, 0,
+            s,  c, 0,
+            0,  0, 1,
+            tx, ty, tz,
+        ]
+    }
 }
 
 // MARK: - Drawing annotation-store helper (bridge)
