@@ -144,6 +144,88 @@ func threadFormsScene() {
     }
 }
 
+// ── Threaded holes: a hex nut, a wing nut, and a lead-screw + anti-backlash nut+spring ──
+// A hex prism with a central bore, threaded internally (threadedHole works on any block).
+@MainActor
+func hexNut(acrossFlats: Double, thickness: Double, spec: ThreadSpec, z: Double = 0) -> Shape? {
+    let r = acrossFlats / sqrt(3.0)                       // circumradius from across-flats
+    let pts = (0..<6).map { i -> SIMD2<Double> in
+        let a = Double(i) * .pi / 3 + .pi / 6
+        return SIMD2(r * cos(a), r * sin(a))
+    }
+    guard let hex = Wire.polygon(pts),
+          let prism = Shape.extrude(profile: hex, direction: SIMD3(0, 0, 1), length: thickness),
+          let bore = Shape.cylinder(at: SIMD3(0, 0, -1), direction: SIMD3(0, 0, 1),
+                                    radius: spec.nominalDiameter / 2, height: thickness + 2),
+          let block = prism.subtracting(bore),
+          let tapped = block.threadedHole(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+                                          spec: spec, depth: thickness) else { return nil }
+    return z == 0 ? tapped : tapped.translated(by: SIMD3(0, 0, z))
+}
+
+@MainActor
+func nutScene() {
+    let spec = ThreadSpec(form: .iso68, nominalDiameter: 12, pitch: 1.75)   // M12 ISO hex nut
+    guard let nut = hexNut(acrossFlats: 19, thickness: 10, spec: spec) else { fail("nut") }
+    if let b = body(nut, "nut", steel) {
+        render([b], to: "threadedhole-nut.png", width: 480, height: 420, view: .isometric)
+    }
+    exportGLB(nut, "threadedhole-nut.glb", steel)
+}
+
+@MainActor
+func wingNutScene() {
+    let spec = ThreadSpec(form: .unified, nominalDiameter: 9.525, pitch: 25.4 / 16)   // 3/8-16 UNC
+    guard var part = Shape.cylinder(radius: 8, height: 9) else { fail("wingnut body") }
+    // Two wings: a tab built with its inner-bottom edge at the origin, tilted up ~22°, then placed
+    // at the body and mirrored to the far side.
+    func wing(mirror: Bool) -> Shape? {
+        guard let tab = Shape.box(origin: SIMD3(0, -1.4, 0), width: 13, height: 2.8, depth: 7),
+              let tilted = tab.rotated(axis: SIMD3(0, 1, 0), angle: -0.38) else { return nil }
+        let placed = tilted.translated(by: SIMD3(6.5, 0, 1.5))
+        return mirror ? placed?.rotated(axis: SIMD3(0, 0, 1), angle: .pi) : placed
+    }
+    if let w1 = wing(mirror: false), let u = part.union(w1) { part = u }
+    if let w2 = wing(mirror: true),  let u = part.union(w2) { part = u }
+    guard let bore = Shape.cylinder(at: SIMD3(0, 0, -1), direction: SIMD3(0, 0, 1),
+                                    radius: spec.nominalDiameter / 2, height: 11),
+          let block = part.subtracting(bore),
+          let wingnut = block.threadedHole(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+                                           spec: spec, depth: 9) else { fail("wingnut tap") }
+    if let b = body(wingnut, "wingnut", blue) {
+        render([b], to: "threadedhole-wingnut.png", width: 520, height: 420, view: .isometric)
+    }
+    exportGLB(wingnut, "threadedhole-wingnut.glb", blue)
+}
+
+// A square-thread lead screw with a split anti-backlash nut: two half-nuts pushed apart by a
+// compression spring so opposite flanks bear, taking up backlash. (Fun: it's a thread + a spring.)
+@MainActor
+func leadScrewScene() {
+    let scr = ThreadSpec(form: .square, nominalDiameter: 12, pitch: 3)
+    guard let stock = Shape.cylinder(radius: 6, height: 56),
+          let screw = stock.threadedShaft(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+                                          spec: scr, length: 52) else { fail("lead screw") }
+    guard let nutA = hexNut(acrossFlats: 18, thickness: 8, spec: scr, z: 14),
+          let nutB = hexNut(acrossFlats: 18, thickness: 8, spec: scr, z: 34) else { fail("nuts") }
+    // anti-backlash spring around the screw, between the two half-nuts (z 22…32); sized a touch
+    // wider than the nut flats so the coil is clearly visible.
+    guard let spine = Wire.helix(origin: SIMD3(0, 0, 22), radius: 11, pitch: 2.5, turns: 4),
+          let prof = Wire.circle(origin: SIMD3(11, 0, 22),
+                                 normal: simd_normalize(SIMD3(0, 11, 2.5 / (2 * .pi))), radius: 1.3),
+          let spring = Shape.pipeShell(spine: spine, profile: prof, mode: .correctedFrenet, solid: true)
+    else { fail("spring") }
+
+    var bodies: [ViewportBody] = []
+    if let b = body(screw, "screw", steel) { bodies.append(b) }
+    if let b = body(nutA, "nutA", blue)   { bodies.append(b) }
+    if let b = body(nutB, "nutB", blue)   { bodies.append(b) }
+    if let b = body(spring, "spring", amber) { bodies.append(b) }
+    render(bodies, to: "threadedhole-leadscrew.png", width: 460, height: 680, view: .isometric)
+    // GLB: one combined model isn't trivial to colour per-part here; export the screw alone as the poster's 3D.
+    exportGLB(screw, "threadedhole-leadscrew.glb", steel)
+}
+
 // Render only the scenes named on the command line after the output dir (default: all).
 let sceneArgs = Set(CommandLine.arguments.dropFirst(2).map { $0.lowercased() })
 func wants(_ name: String) -> Bool { sceneArgs.isEmpty || sceneArgs.contains(name) }
@@ -152,5 +234,8 @@ MainActor.assumeIsolated {
     if wants("booleans")    { booleansThreeOps() }
     if wants("threads")     { threadsScene() }
     if wants("threadforms") { threadFormsScene() }
+    if wants("nut")         { nutScene() }
+    if wants("wingnut")     { wingNutScene() }
+    if wants("leadscrew")   { leadScrewScene() }
     if wants("helices")     { helicesScene() }
 }
