@@ -176,7 +176,15 @@ func nutScene() {
 @MainActor
 func wingNutScene() {
     let spec = ThreadSpec(form: .unified, nominalDiameter: 9.525, pitch: 25.4 / 16)   // 3/8-16 UNC
-    guard var part = Shape.cylinder(radius: 8, height: 9) else { fail("wingnut body") }
+    // Thread the simple cylindrical body FIRST — the smooth internal cut runs on a clean cylinder
+    // (where it's robust) — then union the wings on afterward. Result: a smooth bore thread even
+    // though the finished body is complex. (Threading the unioned body directly falls back to faceted.)
+    guard let cyl = Shape.cylinder(radius: 8, height: 9),
+          let bore = Shape.cylinder(at: SIMD3(0, 0, -1), direction: SIMD3(0, 0, 1),
+                                    radius: spec.nominalDiameter / 2, height: 11),
+          let body0 = cyl.subtracting(bore),
+          var wingnut = body0.threadedHole(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+                                           spec: spec, depth: 9) else { fail("wingnut tap") }
     // Two wings: a tab built with its inner-bottom edge at the origin, tilted up ~22°, then placed
     // at the body and mirrored to the far side.
     func wing(mirror: Bool) -> Shape? {
@@ -185,13 +193,8 @@ func wingNutScene() {
         let placed = tilted.translated(by: SIMD3(6.5, 0, 1.5))
         return mirror ? placed?.rotated(axis: SIMD3(0, 0, 1), angle: .pi) : placed
     }
-    if let w1 = wing(mirror: false), let u = part.union(w1) { part = u }
-    if let w2 = wing(mirror: true),  let u = part.union(w2) { part = u }
-    guard let bore = Shape.cylinder(at: SIMD3(0, 0, -1), direction: SIMD3(0, 0, 1),
-                                    radius: spec.nominalDiameter / 2, height: 11),
-          let block = part.subtracting(bore),
-          let wingnut = block.threadedHole(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
-                                           spec: spec, depth: 9) else { fail("wingnut tap") }
+    if let w1 = wing(mirror: false), let u = wingnut.union(w1) { wingnut = u }
+    if let w2 = wing(mirror: true),  let u = wingnut.union(w2) { wingnut = u }
     if let b = body(wingnut, "wingnut", blue) {
         render([b], to: "threadedhole-wingnut.png", width: 520, height: 420, view: .isometric)
     }
