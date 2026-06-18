@@ -126,12 +126,31 @@ func helicesScene() {
     exportGLB(spring, "helices-spring.glb", steel)
 }
 
+// ── Thread forms gallery: a few visually-distinct forms (#thread-forms) ────
+@MainActor
+func threadFormsScene() {
+    let forms: [(name: String, form: ThreadForm, color: SIMD4<Float>)] = [
+        ("acme", .acme, amber), ("square", .square, blue), ("buttress", .buttress, steel),
+    ]
+    for f in forms {
+        guard let shank = Shape.cylinder(radius: 7, height: 24) else { continue }
+        let spec = ThreadSpec(form: f.form, nominalDiameter: 14, pitch: 3.0)
+        guard let t = shank.threadedShaft(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
+                                          spec: spec, length: 18) else { fail("forms: \(f.name)") }
+        if let b = body(t, f.name, f.color) {
+            render([b], to: "threads-\(f.name).png", width: 360, height: 460, view: .isometric)
+        }
+        exportGLB(t, "threads-\(f.name).glb", f.color)
+    }
+}
+
 // Render only the scenes named on the command line after the output dir (default: all).
 let sceneArgs = Set(CommandLine.arguments.dropFirst(2).map { $0.lowercased() })
 func wants(_ name: String) -> Bool { sceneArgs.isEmpty || sceneArgs.contains(name) }
 
 MainActor.assumeIsolated {
-    if wants("booleans") { booleansThreeOps() }
-    if wants("threads")  { threadsScene() }
-    if wants("helices")  { helicesScene() }
+    if wants("booleans")    { booleansThreeOps() }
+    if wants("threads")     { threadsScene() }
+    if wants("threadforms") { threadFormsScene() }
+    if wants("helices")     { helicesScene() }
 }
