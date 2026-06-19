@@ -312,6 +312,28 @@ func helicalSweepsScene() {
     }
 }
 
+// ── XCAF: a two-part assembly, each part its own colour (#210) ──
+// Built as a real XCAF Document so the GLB carries per-part colours (box blue, sphere amber).
+@MainActor
+func xcafScene() {
+    guard let box = Shape.box(width: 10, height: 20, depth: 30),
+          let sphere0 = Shape.sphere(radius: 5) else { fail("xcaf: prims") }
+    let sphere = sphere0.translated(by: SIMD3(50, 0, 0)) ?? sphere0
+    var bodies: [ViewportBody] = []
+    if let b = body(box, "box", blue) { bodies.append(b) }
+    if let b = body(sphere, "sphere", amber) { bodies.append(b) }
+    render(bodies, to: "xcaf-assembly.png", width: 680, height: 600, view: .isometric)
+    if let doc = Document.create() {
+        let bid = doc.addShape(box, makeAssembly: false)
+        doc.node(at: bid)?.setColor(Color(red: 0.30, green: 0.52, blue: 0.90))
+        let sid = doc.addShape(sphere, makeAssembly: false)
+        doc.node(at: sid)?.setColor(Color(red: 0.95, green: 0.62, blue: 0.22))
+        if doc.writeGLTF(to: modelsDir.appendingPathComponent("xcaf-assembly.glb"), binary: true) {
+            print("exported xcaf-assembly.glb")
+        }
+    }
+}
+
 // Render only the scenes named on the command line after the output dir (default: all).
 let sceneArgs = Set(CommandLine.arguments.dropFirst(2).map { $0.lowercased() })
 func wants(_ name: String) -> Bool { sceneArgs.isEmpty || sceneArgs.contains(name) }
@@ -326,4 +348,5 @@ MainActor.assumeIsolated {
     if wants("helices")     { helicesScene() }
     if wants("lofts")       { loftsScene() }
     if wants("helical")     { helicalSweepsScene() }
+    if wants("xcaf")        { xcafScene() }
 }
