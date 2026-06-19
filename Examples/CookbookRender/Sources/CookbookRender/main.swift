@@ -186,12 +186,15 @@ func wingNutScene() {
           var wingnut = body0.threadedHole(axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1),
                                            spec: spec, depth: 9) else { fail("wingnut tap") }
     // Two wings: a tab built with its inner-bottom edge at the origin, tilted up ~22°, then placed
-    // at the body and mirrored to the far side.
+    // at the body and mirrored to the far side. The tilt swings the tab's upper-inner corner in to
+    // ~r4.1 — inside the r4.76 bore — so each wing is trimmed against the bore column (`bore`) before
+    // the union, clipping it at the nut's inner edge so it can't intrude into the threaded bore (#219).
     func wing(mirror: Bool) -> Shape? {
         guard let tab = Shape.box(origin: SIMD3(0, -1.4, 0), width: 13, height: 2.8, depth: 7),
               let tilted = tab.rotated(axis: SIMD3(0, 1, 0), angle: -0.38) else { return nil }
         let placed = tilted.translated(by: SIMD3(6.5, 0, 1.5))
-        return mirror ? placed?.rotated(axis: SIMD3(0, 0, 1), angle: .pi) : placed
+        let oriented = mirror ? placed?.rotated(axis: SIMD3(0, 0, 1), angle: .pi) : placed
+        return oriented?.subtracting(bore)
     }
     if let w1 = wing(mirror: false), let u = wingnut.union(w1) { wingnut = u }
     if let w2 = wing(mirror: true),  let u = wingnut.union(w2) { wingnut = u }
