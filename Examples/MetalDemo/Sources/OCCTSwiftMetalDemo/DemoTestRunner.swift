@@ -318,6 +318,12 @@ enum DemoTestRunner {
             ("v14ThreadedFasteners", OCCT8Gallery.v14ThreadedFasteners),
             ("v143PolyHLRDrawing", OCCT8Gallery.v143PolyHLRDrawing),
             ("v147BooleanGlueFuzzy", OCCT8Gallery.v147BooleanGlueFuzzy),
+            ("v151SelfIntersecting", OCCT8Gallery.v151SelfIntersecting),
+            ("v152ShellsAndWireCurve", OCCT8Gallery.v152ShellsAndWireCurve),
+            ("v160ThreadForms", OCCT8Gallery.v160ThreadForms),
+            ("v160CustomThreadProfile", OCCT8Gallery.v160CustomThreadProfile),
+            ("v171NetworkSurface", OCCT8Gallery.v171NetworkSurface),
+            ("v171GraphUIDsAndContinuity", OCCT8Gallery.v171GraphUIDsAndContinuity),
         ]
         for (name, run) in occt8 {
             demos.append(DemoEntry(category: "OCCT8", name: name, run: run))

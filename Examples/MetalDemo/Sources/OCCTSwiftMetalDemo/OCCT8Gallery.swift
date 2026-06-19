@@ -17489,6 +17489,253 @@ enum OCCT8Gallery {
         )
     }
 
+    // MARK: - v1.5.1: bounded self-intersection check
+
+    /// Demonstrates v1.5.1's `Shape.isSelfIntersecting(timeout:)` — a wall-clock-bounded,
+    /// three-state (`true`/`false`/`nil` = indeterminate) global self-interference test
+    /// (`BOPAlgo_ArgumentAnalyzer`). It catches the self-intersecting B-spline solids that
+    /// `isValidSolid` (topology-only) reports valid yet that poison downstream booleans.
+    static func v151SelfIntersecting() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        func describe(_ r: Bool?) -> String { r == nil ? "indeterminate" : (r! ? "true" : "false") }
+
+        // A clean primitive → false (clean).
+        if let box = Shape.box(width: 4, height: 4, depth: 4) {
+            lines.append("box: isValidSolid=\(box.isValidSolid) isSelfIntersecting=\(describe(box.isSelfIntersecting(timeout: 10)))")
+            let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+                box, id: "v151-box", color: SIMD4(0.5, 0.8, 0.5, 1.0))
+            if let b { bodies.append(b) }
+        }
+
+        // A ruled:false loft through a twisted pair of squares — the B-spline-solid family
+        // cited in #208 as topology-valid but self-intersection-prone.
+        if let sq0 = Wire.polygon([SIMD2(-3, -3), SIMD2(3, -3), SIMD2(3, 3), SIMD2(-3, 3)]),
+           let sq1 = Wire.polygon3D([SIMD3(-2, 0, 8), SIMD3(0, -2, 8), SIMD3(2, 0, 8), SIMD3(0, 2, 8)]),
+           let twisted = Shape.loft(profiles: [sq0, sq1], solid: true, ruled: false) {
+            lines.append("twisted loft: isValidSolid=\(twisted.isValidSolid) isSelfIntersecting=\(describe(twisted.isSelfIntersecting(timeout: 15)))")
+            let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+                twisted.translated(by: SIMD3(10, 0, 0)) ?? twisted,
+                id: "v151-loft", color: SIMD4(0.85, 0.55, 0.45, 1.0))
+            if let b { bodies.append(b) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.5.2: outer/inner shells + arc-length wire sampling
+
+    /// Demonstrates v1.5.2's reconstruction helpers:
+    /// - `Shape.outerShell` / `innerShells` decompose a solid-with-cavity into its outer
+    ///   body shell and void shells (`BRepClass3d::OuterShell`).
+    /// - `WireCurve` (`BRepAdaptor_CompCurve`) treats a multi-edge wire as one arc-length
+    ///   curve, giving *even* arc-length sampling across edge boundaries.
+    static func v152ShellsAndWireCurve() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // A hollow ball (outer sphere minus a concentric inner sphere) → an enclosed void:
+        // outer body shell + one inner (cavity) shell.
+        if let outer = Shape.sphere(radius: 8),
+           let inner = Shape.sphere(radius: 5),
+           let hollow = outer.subtracting(inner) {
+            lines.append("hollow ball: shells=\(hollow.shells.count) outerShell=\(hollow.outerShell != nil ? "yes" : "no") innerShells=\(hollow.innerShells.count)")
+            // Render the outer body shell (the inner void shell is hidden inside).
+            let render = hollow.outerShell ?? hollow
+            let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+                render, id: "v152-outer", color: SIMD4(0.6, 0.7, 0.85, 1.0))
+            if let b { bodies.append(b) }
+        }
+
+        // A multi-edge polyline wire sampled at even arc length via WireCurve.
+        if let wire = Wire.polygon3D([
+            SIMD3(16, 0, 0), SIMD3(22, 0, 0), SIMD3(22, 6, 0),
+            SIMD3(16, 6, 4), SIMD3(16, 0, 8),
+        ], closed: false), let curve = WireCurve(wire) {
+            bodies.append(wireToBody(wire, id: "v152-wire", color: SIMD4(0.4, 0.8, 0.9, 1.0)))
+            let samples = curve.points(count: 12)
+            lines.append("WireCurve length=\(String(format: "%.2f", curve.length)), \(samples.count) even-abscissa points")
+            for (i, p) in samples.enumerated() {
+                bodies.append(makeMarker(
+                    at: SIMD3<Float>(Float(p.x), Float(p.y), Float(p.z)),
+                    radius: 0.25, id: "v152-pt-\(i)", color: SIMD4(1.0, 0.85, 0.2, 1.0)))
+            }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.6.0: standard thread forms gallery
+
+    /// Demonstrates v1.6.0's expanded `ThreadForm` family — beyond the 60° ISO V, the
+    /// feature now covers Whitworth (55°), ACME (29°), trapezoidal (30°), square, buttress
+    /// and knuckle forms. Threads one cylinder per form and lays them out in a row.
+    static func v160ThreadForms() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        let forms: [(ThreadForm, String, SIMD4<Float>)] = [
+            (.iso68, "ISO 60°V", SIMD4(0.75, 0.7, 0.55, 1.0)),
+            (.whitworth, "Whitworth 55°", SIMD4(0.7, 0.6, 0.5, 1.0)),
+            (.acme, "ACME 29°", SIMD4(0.6, 0.7, 0.6, 1.0)),
+            (.trapezoidal, "Trapezoidal", SIMD4(0.55, 0.65, 0.75, 1.0)),
+            (.square, "Square", SIMD4(0.75, 0.55, 0.55, 1.0)),
+            (.buttress, "Buttress", SIMD4(0.7, 0.6, 0.75, 1.0)),
+        ]
+
+        let spacing = 16.0
+        for (i, entry) in forms.enumerated() {
+            let (form, name, color) = entry
+            let spec = ThreadSpec(form: form, nominalDiameter: 10, pitch: 2)
+            guard let blank = Shape.cylinder(radius: spec.nominalDiameter / 2, height: 18) else { continue }
+            let x = (Double(i) - Double(forms.count - 1) / 2) * spacing
+            let threaded = blank.threadedShaft(
+                axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1), spec: spec, length: 16)
+            let placed = (threaded ?? blank).translated(by: SIMD3(x, 0, 0)) ?? (threaded ?? blank)
+            lines.append("\(name)\(threaded == nil ? "(blank)" : "")")
+            let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+                placed, id: "v160-\(form.rawValue)", color: color)
+            if let b { bodies.append(b) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: "Thread forms: " + lines.joined(separator: ", ")
+        )
+    }
+
+    // MARK: - v1.6.0: custom thread profile
+
+    /// Demonstrates v1.6.0's `ThreadProfile` + `ThreadSpec(customProfile:…)` — thread a
+    /// cylinder with an arbitrary normalized tooth cross-section (`axial` 0…1 × `depth`
+    /// 0 = crest … 1 = root). Here an asymmetric saw-tooth profile.
+    static func v160CustomThreadProfile() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // Asymmetric saw-tooth: steep rise to crest, gentle fall back to root.
+        guard let profile = ThreadProfile(vertices: [
+            .init(axial: 0.0, depth: 1.0),
+            .init(axial: 0.15, depth: 1.0),
+            .init(axial: 0.35, depth: 0.0),
+            .init(axial: 0.45, depth: 0.0),
+            .init(axial: 1.0, depth: 1.0),
+        ]) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "custom ThreadProfile rejected")
+        }
+
+        let spec = ThreadSpec(customProfile: profile, nominalDiameter: 12, pitch: 3, cutDepth: 1.2)
+        guard let blank = Shape.cylinder(radius: spec.nominalDiameter / 2, height: 24) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "blank FAILED")
+        }
+        let threaded = blank.threadedShaft(
+            axisOrigin: .zero, axisDirection: SIMD3(0, 0, 1), spec: spec, length: 20) ?? blank
+        lines.append("custom saw-tooth profile (\(profile.vertices.count) verts), cutDepth=1.2 → \(threaded.faceCount) faces")
+
+        let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+            threaded, id: "v160-custom", color: SIMD4(0.8, 0.65, 0.4, 1.0))
+        if let b { bodies.append(b) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.7.1: Gordon / network surface
+
+    /// Demonstrates v1.7.1's `Surface.networkSurface(profiles:guides:)` — a Gordon-style
+    /// surface skinned through a network of intersecting profile (U) and guide (V) curves
+    /// (`GeomFill_NetworkSurface`). Builds a curved patch from 3 profiles × 3 guides.
+    static func v171NetworkSurface() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        // A 3×3 control grid; bow the middle profile up in Z for curvature.
+        func pt(_ x: Double, _ y: Double, _ z: Double) -> SIMD3<Double> { SIMD3(x, y, z) }
+        let profiles: [Curve3D] = [
+            Curve3D.interpolate(points: [pt(0, 0, 0), pt(0, 5, 2), pt(0, 10, 0)]),
+            Curve3D.interpolate(points: [pt(5, 0, 2), pt(5, 5, 5), pt(5, 10, 2)]),
+            Curve3D.interpolate(points: [pt(10, 0, 0), pt(10, 5, 2), pt(10, 10, 0)]),
+        ].compactMap { $0 }
+        let guides: [Curve3D] = [
+            Curve3D.interpolate(points: [pt(0, 0, 0), pt(5, 0, 2), pt(10, 0, 0)]),
+            Curve3D.interpolate(points: [pt(0, 5, 2), pt(5, 5, 5), pt(10, 5, 2)]),
+            Curve3D.interpolate(points: [pt(0, 10, 0), pt(5, 10, 2), pt(10, 10, 0)]),
+        ].compactMap { $0 }
+
+        // Exact network builder first; fall back to the Gordon builder with an approximate
+        // (sampled B-spline) result, which is robust when exact knot alignment fails.
+        let (netSurface, netStatus) = Surface.networkSurface(profiles: profiles, guides: guides)
+        lines.append("networkSurface=\(netStatus) (\(profiles.count)×\(guides.count))")
+
+        var surface = netSurface
+        if surface == nil {
+            let gordon = Surface.gordonReport(profiles: profiles, guides: guides,
+                                              allowApproximateFallback: true)
+            lines.append("gordonReport=\(gordon.status) approximate=\(gordon.isApproximate)")
+            surface = gordon.surface
+        }
+
+        if let surface, let face = surface.toFace() {
+            let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+                face, id: "v171-network", color: SIMD4(0.45, 0.75, 0.85, 1.0))
+            if let b { bodies.append(b) }
+        }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
+    // MARK: - v1.7.1: durable BRepGraph identity (UID) + edge continuity
+
+    /// Demonstrates the OCCT 8.0.0p1 BRepGraph realignment (v1.7.0/v1.7.1):
+    /// - Durable `GraphUID`s persist across graph mutations (unlike `(kind, index)`
+    ///   `NodeRef`s), so a saved selection survives compaction.
+    /// - `Shape.maxContinuity(edge:)` replaces the now-no-op graph regularity API for
+    ///   reading an edge's geometric continuity (`BRep_Tool::MaxContinuity`).
+    static func v171GraphUIDsAndContinuity() -> Curve2DGallery.GalleryResult {
+        var bodies: [ViewportBody] = []
+        var lines: [String] = []
+
+        guard let cyl = Shape.cylinder(radius: 4, height: 8),
+              let graph = TopologyGraph(shape: cyl) else {
+            return Curve2DGallery.GalleryResult(bodies: [], description: "graph build FAILED")
+        }
+
+        // Durable identity for the first face node, then resolve it back.
+        lines.append("generation=\(graph.generation)")
+        if let uid = graph.uid(ofNodeKind: 2 /* face */, index: 0) {
+            let resolved = graph.node(forUID: uid)
+            lines.append("face[0] uid=(k\(uid.kind),#\(uid.counter)) contains=\(graph.contains(uid: uid)) → \(resolved.map { "(k\($0.kind),i\($0.index))" } ?? "nil")")
+        } else {
+            lines.append("uid(ofNodeKind:index:) → nil")
+        }
+
+        // Edge continuity via BRep_Tool (the graph regularity setters are p1 no-ops).
+        if let edge = cyl.edge(at: 0), let edgeShape = Shape.fromEdge(edge) {
+            lines.append("edge[0] maxContinuity=\(Shape.maxContinuity(edge: edgeShape))")
+        }
+
+        let (b, _) = CADFileLoader.shapeToBodyAndMetadata(
+            cyl, id: "v171-cyl", color: SIMD4(0.55, 0.7, 0.6, 1.0))
+        if let b { bodies.append(b) }
+
+        return Curve2DGallery.GalleryResult(
+            bodies: bodies,
+            description: lines.joined(separator: " | ")
+        )
+    }
+
     // MARK: - v1.x demo helpers
 
     /// Build a 12-element row-major rigid-placement matrix

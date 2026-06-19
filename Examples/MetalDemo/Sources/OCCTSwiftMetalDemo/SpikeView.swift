@@ -872,6 +872,9 @@ struct SpikeView: View {
         case v120TopologyAttributes, v130InstancedAssembly, v131PatternCutAndEdges
         case v133MultiSectionPipe, v135HelicalSweep, v14ThreadedFasteners
         case v143PolyHLRDrawing, v147BooleanGlueFuzzy
+        case v151SelfIntersecting, v152ShellsAndWireCurve
+        case v160ThreadForms, v160CustomThreadProfile
+        case v171NetworkSurface, v171GraphUIDsAndContinuity
     }
 
     // MARK: - OCCT 8 Sub-groups
@@ -1073,6 +1076,12 @@ struct SpikeView: View {
         Button("v1.4 Threaded Fasteners") { loadOCCT8Demo(.v14ThreadedFasteners) }
         Button("v1.4.3 Poly HLR Drawing") { loadOCCT8Demo(.v143PolyHLRDrawing) }
         Button("v1.4.7 Boolean Glue & Fuzzy") { loadOCCT8Demo(.v147BooleanGlueFuzzy) }
+        Button("v1.5.1 Self-Intersection Check") { loadOCCT8Demo(.v151SelfIntersecting) }
+        Button("v1.5.2 Shells & WireCurve") { loadOCCT8Demo(.v152ShellsAndWireCurve) }
+        Button("v1.6 Thread Forms") { loadOCCT8Demo(.v160ThreadForms) }
+        Button("v1.6 Custom Thread Profile") { loadOCCT8Demo(.v160CustomThreadProfile) }
+        Button("v1.7.1 Network (Gordon) Surface") { loadOCCT8Demo(.v171NetworkSurface) }
+        Button("v1.7.1 Graph UIDs & Continuity") { loadOCCT8Demo(.v171GraphUIDsAndContinuity) }
     }
 
     private func loadOCCT8Demo(_ demo: OCCT8Demo) {
@@ -1431,6 +1440,18 @@ struct SpikeView: View {
             result = OCCT8Gallery.v143PolyHLRDrawing()
         case .v147BooleanGlueFuzzy:
             result = OCCT8Gallery.v147BooleanGlueFuzzy()
+        case .v151SelfIntersecting:
+            result = OCCT8Gallery.v151SelfIntersecting()
+        case .v152ShellsAndWireCurve:
+            result = OCCT8Gallery.v152ShellsAndWireCurve()
+        case .v160ThreadForms:
+            result = OCCT8Gallery.v160ThreadForms()
+        case .v160CustomThreadProfile:
+            result = OCCT8Gallery.v160CustomThreadProfile()
+        case .v171NetworkSurface:
+            result = OCCT8Gallery.v171NetworkSurface()
+        case .v171GraphUIDsAndContinuity:
+            result = OCCT8Gallery.v171GraphUIDsAndContinuity()
         }
 
         bodies = result.bodies
