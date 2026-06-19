@@ -350,6 +350,25 @@ func gordonScene() {
     exportGLB(face, "gordon-dome.glb", blue)
 }
 
+// ── Surfaces from points: a B-spline through a 6x6 wavy height field (#210) ──
+@MainActor
+func pointsGridScene() {
+    var pts = [SIMD3<Double>]()
+    let n = 6
+    for v in 0..<n {
+        for u in 0..<n {
+            let x = Double(u) * 4, y = Double(v) * 4
+            pts.append(SIMD3(x, y, 3 * sin(x * 0.3) * cos(y * 0.3)))
+        }
+    }
+    guard let surf = Surface.fromPointGrid(points: pts, uCount: n, vCount: n),
+          let face = surf.toFace() else { fail("points-grid: build") }
+    if let b = body(face, "pointsgrid", blue) {
+        render([b], to: "points-grid.png", width: 600, height: 520, view: .isometric)
+    }
+    exportGLB(face, "points-grid.glb", blue)
+}
+
 // Render only the scenes named on the command line after the output dir (default: all).
 let sceneArgs = Set(CommandLine.arguments.dropFirst(2).map { $0.lowercased() })
 func wants(_ name: String) -> Bool { sceneArgs.isEmpty || sceneArgs.contains(name) }
@@ -366,4 +385,5 @@ MainActor.assumeIsolated {
     if wants("helical")     { helicalSweepsScene() }
     if wants("xcaf")        { xcafScene() }
     if wants("gordon")      { gordonScene() }
+    if wants("pointsgrid")  { pointsGridScene() }
 }
