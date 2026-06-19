@@ -32,7 +32,8 @@ struct Uniforms {
                                        // z = backgroundExposure, w = hasEnvMap (>0.5)
     float4   clipPlanes[4];            // xyz = normal, w = distance (dot(N,P)+w < 0 → clip)
     uint     clipPlaneCount;           // number of active clip planes (0–4)
-    float3   _clipPad;                 // padding to 16-byte alignment
+    uint     unlit;                    // 1 = unlit/flat-colour (skip lighting + tone map)
+    float2   _clipPad;                 // padding to 16-byte alignment
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).
@@ -280,6 +281,22 @@ fragment ShadedFragmentOut shaded_fragment(
         if (dot(plane.xyz, in.worldPosition) + plane.w < 0.0) {
             discard_fragment();
         }
+    }
+
+    // Unlit / flat-colour mode (issue #77): emit the body's base colour directly,
+    // skipping all lighting, ambient, shadows, fresnel, curvature and tone mapping —
+    // so vivid diagnostic colours stay faithful and distinguishable. Clip planes and
+    // selection tint still apply.
+    if (uniforms.unlit != 0u) {
+        float3 flatColor = bodyUniforms.color.rgb;
+        if (bodyUniforms.isSelected == 1) {
+            flatColor = mix(flatColor, float3(0.3, 0.5, 1.0), 0.15);
+        } else if (bodyUniforms.isSelected == 2) {
+            flatColor = mix(flatColor, float3(0.4, 0.6, 1.0), 0.08);
+        }
+        ShadedFragmentOut unlitOut;
+        unlitOut.color = float4(flatColor, bodyUniforms.color.a);
+        return unlitOut;
     }
 
     float3 N = normalize(in.worldNormal);

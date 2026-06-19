@@ -23,6 +23,12 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     /// Flat shading without smooth interpolation.
     case flat
 
+    /// Unlit / flat-colour rendering — each body drawn in its constant base colour
+    /// with no lighting, ambient, shadows, fresnel, or tone mapping. Intended for
+    /// diagnostic / debug renders where faithful, distinguishable per-body colours
+    /// matter more than realistic shading (issue #77).
+    case unlit
+
     /// X-ray mode - transparent with visible internal edges.
     case xray
 
@@ -38,6 +44,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
         case .shaded: return "Shaded"
         case .shadedWithEdges: return "Shaded + Edges"
         case .flat: return "Flat"
+        case .unlit: return "Unlit"
         case .xray: return "X-Ray"
         case .rendered: return "Rendered"
         }
@@ -48,7 +55,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
         switch self {
         case .wireframe:
             return false
-        case .shaded, .shadedWithEdges, .flat, .xray, .rendered:
+        case .shaded, .shadedWithEdges, .flat, .unlit, .xray, .rendered:
             return true
         }
     }
@@ -58,7 +65,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
         switch self {
         case .wireframe, .shadedWithEdges, .xray:
             return true
-        case .shaded, .flat, .rendered:
+        case .shaded, .flat, .unlit, .rendered:
             return false
         }
     }
@@ -68,7 +75,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
         switch self {
         case .flat:
             return false
-        case .wireframe, .shaded, .shadedWithEdges, .xray, .rendered:
+        case .wireframe, .shaded, .shadedWithEdges, .unlit, .xray, .rendered:
             return true
         }
     }

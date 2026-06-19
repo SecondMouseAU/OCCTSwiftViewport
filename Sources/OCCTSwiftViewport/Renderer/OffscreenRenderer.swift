@@ -447,7 +447,8 @@ public final class OffscreenRenderer: Sendable {
                 lightViewProjectionMatrix: lightVP,
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
-                iblParams: .zero
+                iblParams: .zero,
+                unlit: options.displayMode == .unlit ? 1 : 0
             )
         }
 

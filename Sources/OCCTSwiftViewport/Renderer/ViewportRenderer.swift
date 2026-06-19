@@ -34,7 +34,8 @@ struct Uniforms {
                                               // z = backgroundExposure, w = hasEnvMap
     var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
     var clipPlaneCount: UInt32 = 0
-    var _clipPad: SIMD3<Float> = .zero
+    var unlit: UInt32 = 0                      // 1 = unlit/flat-colour (skip lighting + tone map)
+    var _clipPad: SIMD2<Float> = .zero
 }
 
 // Per-body shader uniforms.
@@ -1274,7 +1275,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 shadowParams2: shadowParams2,
                 iblParams: iblParams,
                 clipPlanes: clipPlaneVecs,
-                clipPlaneCount: clipPlaneCount
+                clipPlaneCount: clipPlaneCount,
+                unlit: controller.displayMode == .unlit ? 1 : 0
             )
         }
 
@@ -1314,7 +1316,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             : nil
 
         let silhouettesEnabled = controller.configuration.enableSilhouettes
-        let ssaoEnabled = (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil && displayMode.showsSurfaces
+        // Unlit mode bypasses the SSAO/tone-map composite pass entirely so diagnostic
+        // colours are never desaturated by ACES tone mapping (issue #77).
+        let ssaoEnabled = (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil && displayMode.showsSurfaces && displayMode != .unlit
         let taaEnabled = controller.enableTAA && taaPipeline != nil
         let w = Int(drawableSize.width)
         let h = Int(drawableSize.height)
