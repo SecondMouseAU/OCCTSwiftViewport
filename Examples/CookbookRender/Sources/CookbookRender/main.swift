@@ -334,6 +334,22 @@ func xcafScene() {
     }
 }
 
+// ── Gordon surface: a domed surface through a 2x2 profile/guide network (#210) ──
+@MainActor
+func gordonScene() {
+    guard let p1 = Curve3D.interpolate(points: [SIMD3(0, 0, 0), SIMD3(5, 0, 3), SIMD3(10, 0, 0)]),
+          let p2 = Curve3D.interpolate(points: [SIMD3(0, 10, 0), SIMD3(5, 10, 3), SIMD3(10, 10, 0)]),
+          let g1 = Curve3D.interpolate(points: [SIMD3(0, 0, 0), SIMD3(0, 5, 2), SIMD3(0, 10, 0)]),
+          let g2 = Curve3D.interpolate(points: [SIMD3(10, 0, 0), SIMD3(10, 5, 2), SIMD3(10, 10, 0)])
+    else { fail("gordon: curves") }
+    guard let surf = Surface.gordon(profiles: [p1, p2], guides: [g1, g2], tolerance: 1e-3),
+          let face = surf.toFace() else { fail("gordon: build") }
+    if let b = body(face, "gordon", blue) {
+        render([b], to: "gordon-dome.png", width: 600, height: 520, view: .isometric)
+    }
+    exportGLB(face, "gordon-dome.glb", blue)
+}
+
 // Render only the scenes named on the command line after the output dir (default: all).
 let sceneArgs = Set(CommandLine.arguments.dropFirst(2).map { $0.lowercased() })
 func wants(_ name: String) -> Bool { sceneArgs.isEmpty || sceneArgs.contains(name) }
@@ -349,4 +365,5 @@ MainActor.assumeIsolated {
     if wants("lofts")       { loftsScene() }
     if wants("helical")     { helicalSweepsScene() }
     if wants("xcaf")        { xcafScene() }
+    if wants("gordon")      { gordonScene() }
 }
