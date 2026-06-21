@@ -142,6 +142,10 @@ struct SkyboxUniformsSwift {
 
 private struct BodyBuffers {
     let vertexBuffer: MTLBuffer?
+    /// De-interleaved normal buffer (stride 12) for the direct-mesh path (Option A). When non-nil,
+    /// `vertexBuffer` holds positions only (stride 12) and the body draws via `directMeshPipeline`
+    /// in the opaque shaded pass; the shadow / pick / depth passes skip it.
+    var normalBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
@@ -187,6 +191,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let commandQueue: MTLCommandQueue
     // MSAA pipelines (sampleCount matches view — 4 or 1)
     private let shadedPipeline: MTLRenderPipelineState
+    /// Direct-mesh shaded pipeline (Option A): same shaders as `shadedPipeline`, but its vertex
+    /// descriptor reads position from buffer 0 and normal from buffer 2 (de-interleaved), so bodies
+    /// built via `ViewportBody.directMesh(...)` render without a CPU interleave. Opaque main pass
+    /// only in this prototype — direct bodies are skipped by the shadow / pick / depth passes.
+    private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
@@ -375,6 +384,39 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.shadedPipeline = shadedPipeline
+
+        // Direct-mesh pipeline (Option A): de-interleaved position (buffer 0) + normal (buffer 2).
+        // Vertex-stage buffer 1 is the uniforms; the fragment table is separate, so buffer 2 is free
+        // in the vertex stage. Reuses shaded_vertex/shaded_fragment unchanged (attributes via stage_in).
+        let directVertexDesc = MTLVertexDescriptor()
+        directVertexDesc.attributes[0].format = .float3      // position
+        directVertexDesc.attributes[0].offset = 0
+        directVertexDesc.attributes[0].bufferIndex = 0
+        directVertexDesc.attributes[1].format = .float3      // normal
+        directVertexDesc.attributes[1].offset = 0
+        directVertexDesc.attributes[1].bufferIndex = 2
+        directVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 3
+        directVertexDesc.layouts[2].stride = MemoryLayout<Float>.size * 3
+
+        let directDesc = MTLRenderPipelineDescriptor()
+        directDesc.vertexFunction = library.makeFunction(name: "shaded_vertex")
+        directDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
+        directDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        directDesc.colorAttachments[1].pixelFormat = .invalid
+        directDesc.colorAttachments[0].isBlendingEnabled = true
+        directDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        directDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        directDesc.depthAttachmentPixelFormat = depthFormat
+        directDesc.stencilAttachmentPixelFormat = depthFormat
+        directDesc.rasterSampleCount = sampleCount
+        directDesc.vertexDescriptor = directVertexDesc
+
+        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc) else {
+            return nil
+        }
+        self.directMeshPipeline = directMeshPipeline
 
         // Wireframe pipeline (MSAA)
         let wireDesc = MTLRenderPipelineDescriptor()
@@ -2413,7 +2455,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0 else { return }
 
-        if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
+        if let nb = buffers.normalBuffer {
+            // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.
+            encoder.setRenderPipelineState(directMeshPipeline)
+            encoder.setVertexBuffer(vb, offset: 0, index: 0)
+            encoder.setVertexBuffer(nb, offset: 0, index: 2)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: buffers.indexCount,
+                indexType: .uint32,
+                indexBuffer: ib,
+                indexBufferOffset: 0
+            )
+        } else if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
             encoder.setRenderPipelineState(msPipeline)
             encoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
             encoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -2472,11 +2527,34 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Build vertex + index buffers (nil for edge-only bodies)
         var vertexBuffer: MTLBuffer?
+        var normalBuffer: MTLBuffer?
         var indexBuffer: MTLBuffer?
         var indexCount = 0
         var vertexCount = 0
 
-        if !body.vertexData.isEmpty, !body.indices.isEmpty {
+        if body.usesDirectMesh, !body.indices.isEmpty {
+            // Direct-mesh path (Option A): upload de-interleaved positions + normals straight to
+            // separate buffers — no CPU interleave, no NormalSmoothing (the producer supplies
+            // normals). This is the shape OCCT's Mesh already provides. Tessellation / mesh-shader
+            // paths are skipped for direct bodies (they consume the interleaved buffer + faceIndices).
+            vertexBuffer = device.makeBuffer(
+                bytes: body.meshPositions,
+                length: body.meshPositions.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+            normalBuffer = device.makeBuffer(
+                bytes: body.meshNormals,
+                length: body.meshNormals.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+            indexBuffer = device.makeBuffer(
+                bytes: body.indices,
+                length: body.indices.count * MemoryLayout<UInt32>.size,
+                options: .storageModeShared
+            )
+            indexCount = body.indices.count
+            vertexCount = body.meshPositions.count / 3
+        } else if !body.vertexData.isEmpty, !body.indices.isEmpty {
             // Optionally apply crease-aware normal smoothing (issue #48) so meshes
             // with flat / per-face normals can be rounded by Phong tessellation.
             // Done once here (generation-gated), and the tessellation patch builder
@@ -2589,9 +2667,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
         guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty else { return }
 
-        // Build tessellation patch data if tessellation is enabled
+        // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
+        // the patch builder consumes an interleaved stride-6 buffer + faceIndices, neither of which
+        // a direct body has (it brings its own normals; no PN refinement needed).
         var tessBuffers: TessellationBuffers?
-        if tessellationEnabled,
+        if tessellationEnabled, !body.usesDirectMesh,
            let tessMgr = tessellationManager,
            let vb = vertexBuffer, let ib = indexBuffer,
            indexCount > 0 {
@@ -2646,6 +2726,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         bodyBufferCache[body.id] = BodyBuffers(
             vertexBuffer: vertexBuffer,
+            normalBuffer: normalBuffer,
             indexBuffer: indexBuffer,
             indexCount: indexCount,
             edgeVertexBuffer: edgeVB,
