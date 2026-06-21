@@ -1,0 +1,25 @@
+# GitHub Pages (Jekyll) config for the OCCTSwiftViewport docs site — served from /docs on main.
+#
+# Theme: just-the-docs (left sidebar nav + search). Pinned to v0.3.3, the last release
+# compatible with GitHub Pages' native (no-Actions) build, which pins Jekyll 3.9.
+# Sidebar entries/order come from each page's `title` / `nav_order` front matter;
+# `nav_exclude: true` hides internal pages. GitHub Pages' default plugins still apply
+# (optional-front-matter, readme-index, relative-links).
+title: OCCTSwiftViewport
+description: A reusable Metal 3D viewport for CAD apps on iOS / macOS / visionOS — camera, picking, lighting, measurement, and headless rendering. Companion to OCCTSwift.
+remote_theme: just-the-docs/just-the-docs@v0.3.3
+
+# just-the-docs options
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "GitHub": ["https://github.com/gsdali/OCCTSwiftViewport"]
+aux_links_new_tab: true
+
+exclude:
+  - "*.sh"
+  - "*.stl"
+  - "*.STL"
+  - "*.jpg"
+  - Gemfile
+  - Gemfile.lock
