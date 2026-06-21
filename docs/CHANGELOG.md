@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.22] — 2026-06-22
+
+### Fixed
+- **`NormalSmoothing` "brushed" striations on anisotropic meshes** (issue #81; root cause of OCCTSwift#255). `NormalSmoothing.smoothNormals` discarded the per-vertex normals it was given and recomputed each from an area-weighted *face*-normal average. On a highly anisotropic mesh — long thin triangles along a sweep, e.g. a `threadedShaft` helical flank — that average is directionally biased and renders as fine periodic "brushed" striations (a shading artifact that looks like a geometric ripple).
+  - The fix assigns the **area-weighted average of the original per-vertex normals** within each crease group (snapshotted before the in-place write); face normals are still used for crease *detection* (hard edges stay crisp).
+  - **Smooth B-rep meshes:** OCCT's accurate analytic normals are reproduced exactly (verified byte-identical to a raw-normal render of an M10×1.5 thread) → striations gone.
+  - **Flat meshes (imported STL, vertex normal == face normal):** the vertex-normal average equals the old face-normal average → behaviour unchanged, backward-compatible.
+  - New `smoothInputNormalsPreserved` + `flatInputMatchesFaceNormalAverage` tests; updated the crease test to seed realistic per-face normals. 163 tests pass.
+
 ## [1.1.21] — 2026-06-20
 
 ### Added
