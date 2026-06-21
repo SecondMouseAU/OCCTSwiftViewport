@@ -112,6 +112,10 @@ public final class OffscreenRenderer: Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let shadedPipeline: MTLRenderPipelineState
+    /// Direct-mesh shaded pipeline (Option A spike): same shaders as `shadedPipeline`, but its
+    /// vertex descriptor reads position from buffer 0 and normal from buffer 2 (de-interleaved),
+    /// so bodies built via `ViewportBody.directMesh(...)` render without a CPU interleave.
+    private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
@@ -193,6 +197,38 @@ public final class OffscreenRenderer: Sendable {
 
         guard let shadedPipeline = try? device.makeRenderPipelineState(descriptor: shadedDesc) else { return nil }
         self.shadedPipeline = shadedPipeline
+
+        // Direct-mesh pipeline (Option A spike): de-interleaved position (buffer 0) + normal
+        // (buffer 2). Vertex-stage buffer 1 is the uniforms; the fragment-stage table is separate,
+        // so buffer 2 is free in the vertex stage. Reuses shaded_vertex/shaded_fragment unchanged
+        // (the attributes still arrive via [[stage_in]]).
+        let directVertexDesc = MTLVertexDescriptor()
+        directVertexDesc.attributes[0].format = .float3      // position
+        directVertexDesc.attributes[0].offset = 0
+        directVertexDesc.attributes[0].bufferIndex = 0
+        directVertexDesc.attributes[1].format = .float3      // normal
+        directVertexDesc.attributes[1].offset = 0
+        directVertexDesc.attributes[1].bufferIndex = 2
+        directVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 3
+        directVertexDesc.layouts[2].stride = MemoryLayout<Float>.size * 3
+
+        let directDesc = MTLRenderPipelineDescriptor()
+        directDesc.vertexFunction = library.makeFunction(name: "shaded_vertex")
+        directDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
+        directDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        directDesc.colorAttachments[1].pixelFormat = .invalid
+        directDesc.colorAttachments[0].isBlendingEnabled = true
+        directDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        directDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        directDesc.depthAttachmentPixelFormat = depthFormat
+        directDesc.stencilAttachmentPixelFormat = depthFormat
+        directDesc.rasterSampleCount = sampleCount
+        directDesc.vertexDescriptor = directVertexDesc
+
+        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc) else { return nil }
+        self.directMeshPipeline = directMeshPipeline
 
         // Wireframe pipeline
         let wireDesc = MTLRenderPipelineDescriptor()
@@ -559,8 +595,15 @@ public final class OffscreenRenderer: Sendable {
 
             // Shaded
             if displayMode.showsSurfaces, hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
-                mainEncoder.setRenderPipelineState(shadedPipeline)
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                if let nb = buffers.normalBuffer {
+                    // Direct-mesh path (Option A): position@0 + normal@2, no interleave.
+                    mainEncoder.setRenderPipelineState(directMeshPipeline)
+                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                } else {
+                    mainEncoder.setRenderPipelineState(shadedPipeline)
+                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
@@ -753,11 +796,20 @@ public final class OffscreenRenderer: Sendable {
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen { return }
 
         var vertexBuffer: MTLBuffer?
+        var normalBuffer: MTLBuffer?
         var indexBuffer: MTLBuffer?
         var indexCount = 0
         var vertexCount = 0
 
-        if !body.vertexData.isEmpty, !body.indices.isEmpty {
+        if body.usesDirectMesh, !body.indices.isEmpty {
+            // Direct-mesh path (Option A): upload de-interleaved positions + normals straight to
+            // separate buffers — no CPU interleave. This is the shape OCCT's Mesh already provides.
+            vertexBuffer = device.makeBuffer(bytes: body.meshPositions, length: body.meshPositions.count * MemoryLayout<Float>.size, options: .storageModeShared)
+            normalBuffer = device.makeBuffer(bytes: body.meshNormals, length: body.meshNormals.count * MemoryLayout<Float>.size, options: .storageModeShared)
+            indexBuffer = device.makeBuffer(bytes: body.indices, length: body.indices.count * MemoryLayout<UInt32>.size, options: .storageModeShared)
+            indexCount = body.indices.count
+            vertexCount = body.meshPositions.count / 3
+        } else if !body.vertexData.isEmpty, !body.indices.isEmpty {
             vertexBuffer = device.makeBuffer(bytes: body.vertexData, length: body.vertexData.count * MemoryLayout<Float>.size, options: .storageModeShared)
             indexBuffer = device.makeBuffer(bytes: body.indices, length: body.indices.count * MemoryLayout<UInt32>.size, options: .storageModeShared)
             indexCount = body.indices.count
@@ -815,6 +867,7 @@ public final class OffscreenRenderer: Sendable {
 
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
             vertexBuffer: vertexBuffer,
+            normalBuffer: normalBuffer,
             indexBuffer: indexBuffer,
             indexCount: indexCount,
             edgeVertexBuffer: edgeVB,
@@ -879,6 +932,9 @@ public final class OffscreenRenderer: Sendable {
 
 private struct BodyBuffersOffscreen {
     let vertexBuffer: MTLBuffer?
+    /// De-interleaved normal buffer (stride 12) for the direct-mesh path. When non-nil,
+    /// `vertexBuffer` holds positions only (stride 12) and the body draws via `directMeshPipeline`.
+    var normalBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?

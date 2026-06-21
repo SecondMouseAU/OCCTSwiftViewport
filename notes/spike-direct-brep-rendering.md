@@ -161,6 +161,49 @@ a tiny fraction of option B's cost.
    ceiling). It's a research epic and a deliberate break from the viewport's OCCT-free design — scope
    it as its own project, not a tweak.
 
+## Prototype (built on this branch — Option A, proof of concept)
+
+Implemented the direct-mesh render path end-to-end in the **headless** renderer and proved it
+renders identically to the interleaved path.
+
+**What was added (viewport-only — no OCCT dependency introduced):**
+- `ViewportBody`: de-interleaved storage `meshPositions` / `meshNormals` (stride-3), a
+  `usesDirectMesh` flag, and a `ViewportBody.directMesh(id:positions:normals:indices:color:…)`
+  factory. This is exactly the shape OCCT's `Mesh` already exposes (`vertexData` / `normalData` /
+  `indices`) — so the producer hands those straight through, no interleave loop. The factory also
+  derives `vertices` (SIMD3) for bounding-box / fit / CPU picking, so those paths keep working.
+- `OffscreenRenderer`: a second shaded pipeline (`directMeshPipeline`) whose vertex descriptor reads
+  **position from buffer 0 and normal from buffer 2** (de-interleaved). The fragment/vertex shaders
+  are **unchanged** — attributes still arrive via `[[stage_in]]`. `ensureBuffers` uploads
+  positions + normals to separate `MTLBuffer`s for direct bodies; the shaded draw binds the second
+  buffer and selects the direct pipeline.
+- `DirectMeshRenderingTests`: builds the same sphere both ways (interleaved vs. direct, from the
+  *same* float data) and differential-renders them.
+
+**Result:** the direct render is **identical on the surface** — interior pixels match bit-for-bit
+(renderer baseline noise = 0); only a thin **silhouette fringe** (~86 of 2292 lit pixels) differs,
+and only by **≤5/255**, i.e. sub-pixel edge antialiasing between two distinct pipeline-state objects.
+No normal misread, no shading change. **162 tests pass.**
+
+**Confirms the spike's estimate:** the technique is straightforward and **layer-clean** — the
+viewport learned to hold + draw de-interleaved buffers without learning anything about OCCT/B-Rep.
+The change to the headless renderer was ~1 pipeline + ~15 lines in `ensureBuffers`/draw.
+
+**What a production version still needs (not done here — it's a spike):**
+1. **Mirror in the interactive `ViewportRenderer`** (same second pipeline + de-interleaved upload in
+   its `ensureBuffers`; also the transparent / shadow / pick sub-passes if direct bodies must be
+   translucent or pickable-by-GPU — CPU pick already works via the derived `vertices`).
+2. **Thin the bridge** in `OCCTSwiftTools.shapeToBodyAndMetadata` to call
+   `ViewportBody.directMesh(positions: mesh.vertexData, normals: mesh.normalData, indices: …)` and
+   **skip the interleave loop + `NormalSmoothing`**. (Separate repo — out of scope here.)
+3. **Decide on normal smoothing:** OCCT's per-face normals can look faceted on coarse meshes;
+   `NormalSmoothing` is why the current path re-smooths. Either keep it (defeats part of the win),
+   gate it on deflection, or rely on OCCT meshing with `controlSurfaceDeflection`.
+
+**Honest framing:** this removes the *interstitial `ViewportBody` repack* (interleave + re-smooth +
+one CPU copy) — a load-time/memory win on big scenes. It does **not** remove triangulation; OCCT
+still meshes. There is still no "B-Rep on the GPU" (that's Option B).
+
 ## Pointers (for whoever picks this up)
 - Repack to remove: `OCCTSwiftTools/Sources/OCCTSwiftTools/CADFileLoader.swift` → `shapeToBodyAndMetadata` (the interleave loop + `NormalSmoothing`).
 - Metal-ready source buffers already exist: `OCCTSwift/Sources/OCCTSwift/Mesh.swift` → `metalBufferData()` / `.vertices` / `.normals` / `.indices`.
