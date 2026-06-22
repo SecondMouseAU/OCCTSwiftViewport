@@ -1,0 +1,10 @@
+okf_version: 1
+repo: OCCTSwiftViewport
+cluster: kernel
+visibility: public
+status: active
+language: Swift
+summary: Reusable Metal-based 3D viewport library for CAD apps on iOS/macOS — geometry-agnostic rendering, camera, GPU picking, with no OCCT dependency.
+products: []
+depends_on: []
+maintainer: gsdali
