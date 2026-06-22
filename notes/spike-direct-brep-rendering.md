@@ -199,8 +199,19 @@ compiles); `swift build` clean, 163 tests pass. **Live pixel verification (the M
 still needs a device/sim run** — it isn't driveable headlessly; the OffscreenRenderer differential
 test covers pixel-correctness for the identical shaders/descriptor/binding.
 
+**Live verification (macOS, 2026-06-22).** `Examples/DirectMeshLiveDemo` — a viewport-only windowed
+SwiftUI app (no OCCT dep) showing the same sphere interleaved vs. `directMesh(...)` side by side
+through the **interactive `ViewportRenderer`**. Run under **Metal API + GPU validation** with
+`MTL_DEBUG_LAYER_ERROR_MODE=assert`: both panes drew frames continuously for 9+ s with **zero
+validation errors / asserts / crashes**. That exercises the real GPU command stream — any bad buffer
+binding, stride mismatch, or OOB fetch in the direct path (or the skip-guarded shadow/pick/depth
+passes) would have asserted. (A pixel screenshot was blocked by the terminal's Screen-Recording
+permission; the OffscreenRenderer differential test already covers pixel-correctness, and the live
+run covers command-stream validity.) Real iOS-device deploy still TODO if device-specific behaviour
+matters.
+
 **What a production version still needs:**
-1. **Live device/sim pass** on the interactive renderer (visual confirm) + GPU-pick / shadow support
+1. **iOS device/sim pass** (macOS live run done, validation-clean) + GPU-pick / shadow support
    for direct bodies if needed (today they render but don't cast shadows or GPU-pick; CPU pick works
    via the derived `vertices`). A position-only shadow/pick pipeline would lift those limits.
 2. **Thin the bridge** in `OCCTSwiftTools.shapeToBodyAndMetadata` to call
