@@ -6,6 +6,13 @@ nav_order: 1
 
 # Getting Started
 
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
+
+<model-viewer src="../../models/rounded-block.glb" camera-controls auto-rotate environment-image="neutral" exposure="1.1" shadow-intensity="1" style="width:340px;height:300px;background:#eef1f5;border-radius:6px"></model-viewer>
+
+*The viewport rendering a solid (interactive).*
+
+
 This page takes you from a blank SwiftUI project to a Metal 3D viewport with an
 interactive primitive on screen. It covers the minimum viable setup and points you
 toward the other cookbook pages for depth.

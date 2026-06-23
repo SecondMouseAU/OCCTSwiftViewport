@@ -5,6 +5,13 @@ nav_order: 1
 
 # OCCTSwiftViewport documentation
 
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
+
+<model-viewer src="models/l-bracket.glb" camera-controls auto-rotate environment-image="neutral" exposure="1.1" shadow-intensity="1" style="width:340px;height:300px;background:#eef1f5;border-radius:6px"></model-viewer>
+
+*A B-Rep solid rendered live in the viewport — drag to orbit, scroll to zoom.*
+
+
 A reusable **Metal-based 3D viewport** for CAD applications on **iOS 18+ / macOS 15+ / visionOS** —
 camera control, GPU picking, PBR lighting, measurement overlays, and a headless offscreen renderer.
 It is the rendering companion to [OCCTSwift](https://github.com/gsdali/OCCTSwift): the two libraries
