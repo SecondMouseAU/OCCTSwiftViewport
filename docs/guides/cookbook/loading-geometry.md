@@ -6,6 +6,13 @@ nav_order: 7
 
 # Loading Geometry
 
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
+
+<model-viewer src="../../models/drilled-block.glb" camera-controls auto-rotate environment-image="neutral" exposure="1.1" shadow-intensity="1" style="width:340px;height:300px;background:#eef1f5;border-radius:6px"></model-viewer>
+
+*A loaded model displayed as a ViewportBody.*
+
+
 `ViewportBody` is the geometry-source-agnostic container that feeds every rendering pass in the Metal viewport. It carries interleaved vertex data, triangle indices, edge polylines, analytic arcs, and a collection of per-body properties — color, material, transform, visibility, and pickability. The viewport has no dependency on OpenCASCADE; bridging from B-Rep to `ViewportBody` is the responsibility of the consuming app (typically via OCCTSwiftTools).
 
 Bodies are passed to the view through a `Binding<[ViewportBody]>`:
