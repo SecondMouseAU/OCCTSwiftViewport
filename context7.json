@@ -1,0 +1,25 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "OCCTSwiftViewport",
+  "description": "A reusable Metal-based 3D viewport for CAD apps on iOS and macOS — a geometry-agnostic rendering companion to OCCTSwift with no OCCT dependency. Blinn-Phong shading with shadow maps and environment mapping, orbit/pan/zoom camera, GPU face/vertex picking, clip planes, a view cube, normal smoothing, and SwiftUI integration.",
+  "folders": [
+    "docs",
+    "Sources/OCCTSwiftViewport"
+  ],
+  "excludeFolders": [
+    "Tests",
+    "UITests",
+    "Examples",
+    "Samples",
+    "scripts",
+    "okf"
+  ],
+  "rules": [
+    "Import with `import OCCTSwiftViewport`. The library is geometry-agnostic and has NO OCCT dependency — it renders meshes, not OCCT shapes.",
+    "The SwiftUI view is `MetalViewportView`, driven by a `ViewportController`; add geometry to the controller's scene.",
+    "Supply geometry as `ViewportBody` (positions / normals / indices). Convert from OCCT in your app (e.g. via OCCTSwiftTools) — never import OCCT here.",
+    "Drive the camera with `CameraController` / `CameraState`; start from a `*Configuration` preset rather than hand-setting fields.",
+    "GPU face/vertex picking returns a `PickResult`; use `SceneRaycast` for explicit ray queries and `ProjectionUtility` for screen-to-world math.",
+    "Section views use `ClipPlane`; `ViewCubeView` is the standard orientation widget; `NormalSmoothing` controls shaded-normal generation."
+  ]
+}
