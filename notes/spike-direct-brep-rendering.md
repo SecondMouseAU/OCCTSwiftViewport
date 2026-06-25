@@ -231,3 +231,42 @@ still meshes. There is still no "B-Rep on the GPU" (that's Option B).
 - Renderer upload + vertex descriptor: `Sources/OCCTSwiftViewport/Renderer/ViewportRenderer.swift` → `ensureBuffers(for:)` (~L2467) and the stride-6 `MTLVertexDescriptor` (~L342).
 - Existing GPU tessellation (NOT a B-Rep path): `Sources/OCCTSwiftViewport/Renderer/TessellationManager.swift` + `Shaders.metal` `compute_pn_patches` / `compute_tess_factors`.
 - Analytic surface/trim data on the kernel side (for B1): `OCCTSwift/Sources/OCCTSwift/Face.swift` (`surfaceType`, `outerWire`), `Surface.swift` (`poles`, `trimmed`, uv bounds).
+
+---
+
+## Progress log — auxiliary pass parity (2026-06-25)
+
+Branch `spike/direct-brep-rendering` continued: closing the render passes that originally
+*skipped* direct-mesh bodies (the `normalBuffer == nil` guards). Each adds a sibling pipeline
+built on `directVertexDesc` (position@0 / normal@2) and branches on `buffers.normalBuffer != nil`.
+Committed + pushed individually for the audit trail.
+
+| Item | Commit | What changed | Verification |
+|---|---|---|---|
+| Shadow casting | `dcbb5c1` | `shadowDirectPipeline` in both renderers; direct bodies cast shadows | (test below) |
+| **1a** shadow test | `dea8e68` | differential: direct caster's cast shadow == interleaved's over a ground receiver, and is materially present vs a shadows-off control | **headless ✓** |
+| **1b** depth prepass | `0b9afdf` | `depthOnlyDirectPipeline` (ViewportRenderer only — Offscreen has no SSAO pass); direct bodies feed SSAO + silhouettes | compile/config ✓; draw-time → Phase 4 |
+| **1c** GPU + CPU pick | `1561c40` | `pickShadedDirectPipeline` (R32Uint pick texture); **+ SceneRaycast crash fix** | CPU pick **headless ✓**; GPU pick-texture → Phase 4 |
+
+**1c surfaced a real bug (now fixed):** `SceneRaycast` read `body.vertexData` (stride-6) indexed by
+`body.indices`. A direct-mesh body leaves `vertexData` EMPTY (positions live in `vertices`), so the
+narrowphase indexed an empty array → **out-of-bounds crash on any raycast against a direct body**.
+The earlier note that "CPU pick works via the derived `vertices`" was wrong — the raycaster read the
+wrong field. Fix: narrowphase reads `vertices` when `vertexData` is empty. Regression test added.
+
+**Testability ceiling (why some items are Phase-4 / live only):** OffscreenRenderer is the headless
+twin but has **no pick pass and no SSAO/silhouette pass**, and `ViewportRenderer.draw(in:)` needs a
+live `currentDrawable`. So the GPU pick-texture readback and the SSAO/silhouette depth draw can only
+be validated live (Metal API+GPU validation or device). Their pipelines are compile-verified via
+`ViewportRenderer.init` (a compile failure → nil init → the construct tests fail).
+
+**Still outstanding:**
+- **1d** overlay-layer direct bodies (the `.overlay` surface draw still has the guard; low priority —
+  overlay = UI affordances, rarely direct-mesh).
+- **Phase 2** OffscreenRenderer parity audit (has shaded + shadow direct; no pick/SSAO by design).
+- **Phase 3** the `OCCTSwiftTools.shapeToBodyAndMetadata` bridge (separate repo — where the actual
+  load-time/memory win lands).
+- **Phase 4** live/device verification of GPU pick + SSAO/silhouette draw on direct bodies.
+- **Phase 5** merge decision (normal-smoothing policy; opt-in vs default; version bump).
+
+Direct-mesh suite now **5 tests**, **168 total**, `swift build`/`swift test` clean.
