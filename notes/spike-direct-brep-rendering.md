@@ -270,3 +270,27 @@ be validated live (Metal API+GPU validation or device). Their pipelines are comp
 - **Phase 5** merge decision (normal-smoothing policy; opt-in vs default; version bump).
 
 Direct-mesh suite now **5 tests**, **168 total**, `swift build`/`swift test` clean.
+
+## Progress log — 1d + Phase 2 audit (2026-06-26)
+
+- **1d** overlay-layer direct bodies `bf86324`: the two inline overlay passes (surface draw +
+  pick loop) didn't go through `encodeShadedSurface` / the main pick loop, so they kept their own
+  `normalBuffer == nil` guards. Routed them through `directMeshPipeline` / `pickShadedDirectPipeline`
+  (vb@0 + nb@2). Overlay is interactive-only → compile/config-verified (construct test); draw → Phase 4.
+  This was the **last pass that skipped direct bodies** in ViewportRenderer.
+- **Phase 2** OffscreenRenderer parity audit `f2dd88e`: found one real bug — the **transparent
+  surface pass** set `shadedPipeline` once outside the loop and bound only vb@0 (no `normalBuffer`
+  branch). A translucent direct body would bind its stride-12 position buffer against the stride-6
+  descriptor → misread. Fixed (per-body pipeline select; `directMeshPipeline` shares the blend
+  config). **Headlessly tested** (differential translucent panel interleaved vs direct over an opaque
+  box; box shows through). The opaque main pass + shadow pass were already correct.
+- **Audit conclusion:** ViewportRenderer opaque + transparent both flow through the shared
+  `encodeShadedSurface` (direct branch first), so its transparent pass was already correct — the gap
+  was OffscreenRenderer-only because it inlined the transparent draw rather than sharing a helper.
+  All passes in both renderers now route direct bodies; OffscreenRenderer has no pick/SSAO/overlay
+  by design.
+
+**Direct-mesh suite now 7 tests, 170 total. In-repo render-pass parity is COMPLETE.** Remaining is
+out-of-repo / out-of-process: Phase 3 (the `OCCTSwiftTools` bridge), Phase 4 (live/device verify of
+GPU pick + SSAO/silhouette + overlay draws), Phase 5 (merge decision — NormalSmoothing policy,
+opt-in vs default, version bump).
