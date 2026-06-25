@@ -220,6 +220,37 @@ struct DirectMeshRenderingTests {
         #expect(renderer != nil, "ViewportRenderer init failed — depthOnlyDirectPipeline did not compile")
     }
 
+    /// CPU picking (item 1c): the direct-mesh body must be raycast-pickable just like the
+    /// interleaved one. `SceneRaycast` reads stride-6 `vertexData` for interleaved bodies but a
+    /// direct body leaves `vertexData` empty and carries its positions in `vertices` — so the
+    /// raycaster must read the right array (reading `vertexData[idx*6]` on a direct body indexes
+    /// an empty array → crash). This is the headlessly-verifiable half of GPU pick parity; the
+    /// GPU pick-texture path is wired (pickShadedDirectPipeline) but live-verified in Phase 4.
+    @Test("CPU raycast hits a direct-mesh body the same as the interleaved body")
+    func cpuRaycastHitsDirectMesh() {
+        let interleaved = ViewportBody.sphere(id: "s", radius: 1.5, color: color)
+        let (positions, normals) = deinterleave(interleaved.vertexData)
+        let direct = ViewportBody.directMesh(id: "s", positions: positions, normals: normals,
+                                             indices: interleaved.indices, color: color)
+
+        let ray = Ray(origin: SIMD3<Float>(0, 0, 10), direction: SIMD3<Float>(0, 0, -1))
+        guard let bbInter = interleaved.boundingBox, let bbDirect = direct.boundingBox else {
+            Issue.record("bounding box unavailable")
+            return
+        }
+        let hitInter = SceneRaycast.cast(ray: ray, bodies: [interleaved], boundingBoxCache: ["s": bbInter])
+        let hitDirect = SceneRaycast.cast(ray: ray, bodies: [direct], boundingBoxCache: ["s": bbDirect])
+
+        #expect(hitInter != nil, "interleaved sphere should be hit")
+        #expect(hitDirect != nil, "direct sphere should be hit (regression guard: empty-vertexData crash)")
+        if let a = hitInter, let b = hitDirect {
+            // Same vertices fed both ways → same intersection.
+            #expect(abs(a.distance - b.distance) < 0.01,
+                    "direct hit distance \(b.distance) vs interleaved \(a.distance)")
+            #expect(abs(b.point.z - 1.5) < 0.1, "expected hit near the sphere front (z≈1.5), got \(b.point.z)")
+        }
+    }
+
     // MARK: - Helpers
 
     /// Split interleaved stride-6 `[px,py,pz,nx,ny,nz, …]` vertex data into the separate

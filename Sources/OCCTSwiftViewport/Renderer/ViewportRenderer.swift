@@ -201,6 +201,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
     private let pickShadedPipeline: MTLRenderPipelineState
+    /// Direct-mesh face-pick pipeline (Option A): `pick_vertex` with the two-buffer descriptor
+    /// (position@0 / normal@2) so direct-mesh bodies are stamped into the R32Uint pick texture.
+    /// The pick vertex shader reads only position; the normal binding satisfies attribute 1.
+    private let pickShadedDirectPipeline: MTLRenderPipelineState
     /// Line-primitive pick pipeline for edge picking. Same vertex shader as
     /// `pick_vertex`; fragment emits kind=1 in the pick encoding.
     private let pickLinePipeline: MTLRenderPipelineState?
@@ -524,6 +528,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.pickShadedPipeline = pickShadedPipeline
+
+        // Direct-mesh face-pick pipeline (Option A): same pick shaders, two-buffer descriptor.
+        let pickShadedDirectDesc = MTLRenderPipelineDescriptor()
+        pickShadedDirectDesc.label = "pick_shaded_direct"
+        pickShadedDirectDesc.vertexFunction = library.makeFunction(name: "pick_vertex")
+        pickShadedDirectDesc.fragmentFunction = library.makeFunction(name: "pick_fragment")
+        pickShadedDirectDesc.colorAttachments[0].pixelFormat = .r32Uint
+        pickShadedDirectDesc.depthAttachmentPixelFormat = .depth32Float
+        pickShadedDirectDesc.rasterSampleCount = 1
+        pickShadedDirectDesc.vertexDescriptor = directVertexDesc
+
+        guard let pickShadedDirectPipeline = try? device.makeRenderPipelineState(descriptor: pickShadedDirectDesc) else {
+            return nil
+        }
+        self.pickShadedDirectPipeline = pickShadedDirectPipeline
 
         // 1x line pick pipeline (edge picking) — reuses pick_vertex; fragment emits kind=1.
         let pickLineDesc = MTLRenderPipelineDescriptor()
@@ -1985,7 +2004,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         // Overlay bodies are picked in the second pick loop (always-pass depth).
                         if body.renderLayer == .overlay { continue }
 
-                        let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0 && buffers.normalBuffer == nil
+                        // Direct-mesh bodies are stamped via pickShadedDirectPipeline (the standard
+                        // branch below), so they are NOT excluded here.
+                        let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
 
                         if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                             var uniforms = makeUniforms()
@@ -2021,6 +2042,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                     patchIndexBufferOffset: 0,
                                     instanceCount: 1,
                                     baseInstance: 0
+                                )
+                            } else if let nb = buffers.normalBuffer {
+                                // Direct-mesh body (Option A): position@0 + normal@2.
+                                pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
+                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.drawIndexedPrimitives(
+                                    type: .triangle,
+                                    indexCount: buffers.indexCount,
+                                    indexType: .uint32,
+                                    indexBuffer: ib,
+                                    indexBufferOffset: 0
                                 )
                             } else {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
