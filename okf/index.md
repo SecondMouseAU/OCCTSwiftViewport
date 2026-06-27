@@ -40,3 +40,8 @@ changelog, the Swift Package Index page, and OpenCASCADE upstream.
 - Two products historically share this manifest, but the published library is just
   `OCCTSwiftViewport` (pure Metal, no deps). Cross-platform iOS 18+ / macOS 15+ / visionOS 1+.
 - LGPL-2.1-only with the Open CASCADE Technology Exception 1.0.
+
+## Policies
+
+- [Query `context` first for OCCT / OCCTSwift docs](policies/context-first.md)
+- [Documentation updates are mandatory](policies/docs-current.md)
