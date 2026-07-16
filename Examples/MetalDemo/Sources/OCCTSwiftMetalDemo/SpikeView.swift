@@ -265,6 +265,9 @@ struct SpikeView: View {
             }
 
             DisclosureGroup("Geometry Demos") {
+                DisclosureGroup("Direct Mesh (spike)") {
+                    directMeshDemoButtons
+                }
                 DisclosureGroup("Curves 2D") {
                     curve2DDemoButtons
                 }
@@ -560,6 +563,36 @@ struct SpikeView: View {
         Button("Helix & Spirals") { loadCurve3DDemo(.helixAndSpirals) }
         Button("Curvature Combs") { loadCurve3DDemo(.curvatureCombs) }
         Button("BSpline Fitting") { loadCurve3DDemo(.bsplineFitting) }
+    }
+
+    // MARK: - Direct-Mesh Demo (spike Phase 4)
+
+    @ViewBuilder
+    private var directMeshDemoButtons: some View {
+        Button("Direct Mesh (Option A)") { loadDirectMeshDemo() }
+    }
+
+    /// Loads the direct-mesh (Option A) verification bodies. On device, tap each
+    /// body to confirm GPU pick readback works on a `usesDirectMesh` body, and
+    /// observe SSAO + silhouettes rendering on direct bodies (Phase 4 of the
+    /// `spike/direct-brep-rendering` spike). SSAO is enabled explicitly here;
+    /// silhouettes come from the app's default configuration.
+    private func loadDirectMeshDemo() {
+        let result = DirectMeshGallery.optionA()
+        bodies = result.bodies
+        cadMetadata = [:]
+        loadedShapes = []
+        originalColors = [:]
+        for body in bodies {
+            originalColors[body.id] = body.color
+        }
+        selectionManager.clearSelection()
+        controller.clearSelection()
+        controller.lightingConfiguration.enableSSAO = true
+        operationStatus = result.description
+        proximityInfo = nil
+        focusOnBounds()
+        controller.goToStandardView(.isometricFrontRight)
     }
 
     private func loadCurve3DDemo(_ demo: Curve3DDemo) {

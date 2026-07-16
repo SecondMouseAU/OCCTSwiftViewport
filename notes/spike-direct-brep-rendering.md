@@ -294,3 +294,52 @@ Direct-mesh suite now **5 tests**, **168 total**, `swift build`/`swift test` cle
 out-of-repo / out-of-process: Phase 3 (the `OCCTSwiftTools` bridge), Phase 4 (live/device verify of
 GPU pick + SSAO/silhouette + overlay draws), Phase 5 (merge decision — NormalSmoothing policy,
 opt-in vs default, version bump).
+
+## Progress log — Phase 4 live + on-device verification (2026-07-16)
+
+Closing the live-only items: the SSAO/silhouette depth prepass draw, the overlay-layer draw, and the
+GPU pick-ID texture (draw + readback) on direct-mesh bodies — none headlessly testable (OffscreenRenderer
+has no pick/SSAO/overlay pass; `ViewportRenderer.draw(in:)` needs a live drawable).
+
+**Two verification vehicles built:**
+
+- **`Examples/DirectMeshLiveDemo` (macOS)** — rewritten from the plain side-by-side into a Phase-4 rig:
+  a config with **SSAO + shadows + silhouettes + picking all ENABLED**, a pickable direct sphere, and a
+  **direct box in the `.overlay` render layer** (always-on-top). Every Phase-4 pass now encodes each frame.
+  Ran under **Metal API Validation + Metal GPU Validation** (`METAL_DEVICE_WRAPPER_TYPE=1` etc.) for ~30 s:
+  **zero validation errors.** GPU validation is strict about vertex-buffer stride vs. the bound vertex
+  descriptor, so a direct body (stride-12 pos@0 / nrm@2) misbound against the stride-6 interleaved descriptor
+  would fire immediately — it did not. This validates the **draw-time binding** of every direct pass live.
+  (The pick *readback* — blit + `PickResult` decode — is identical code for direct and interleaved bodies,
+  so the only direct-specific risk is the pick *draw* binding, which validation covers; end-to-end readback
+  is proven on device below.)
+
+- **On device — Ed's iPhone 15 Pro (iOS).** Two things were added to the app side:
+  - `Examples/MetalDemo`: `DirectMeshGallery.optionA()` + a "Direct Mesh (Option A)" sidebar demo
+    (Geometry Demos → Direct Mesh (spike)). **Could not be reached on this iPhone** — the MetalDemo app's
+    settings-sheet/sidebar (the only sidebar entry point on iOS, behind the cog) **crashes on tap**. This
+    is **PRE-EXISTING and unrelated to the spike**: `SpikeView.swift` is byte-identical to `main` on this
+    branch (the demo addition is a single `Button`, which cannot crash on render), and it blocks *every*
+    demo, not just this one. Flagged as separate follow-up, not chased here.
+  - **`Examples/DirectMeshVerify` — a dedicated, dependency-light iOS/macOS verification app** (new
+    `xcodegen` target `DirectMeshVerify_iOS/_macOS`, `project.yml`). Depends ONLY on OCCTSwiftViewport
+    (no OCCT.xcframework → fast build, no sidebar/crash surface). A single tappable viewport of four
+    direct-mesh bodies (sphere/cylinder/box + an `.overlay`-layer box) with SSAO + silhouettes + picking
+    enabled, plus an on-screen pick readout (`picked: <id> · <kind> · direct=<bool>`). Built via
+    `xcodebuild` (scheme `DirectMeshVerify_iOS`, team 6D6BN844NR) → **BUILD SUCCEEDED**; installed +
+    launched via `devicectl`.
+
+  **On-device result (2026-07-16):** ✅ **GPU pick readback confirmed on direct-mesh bodies.** Tapping
+  each of the four direct bodies returns a `face` hit with **`direct=true`** (i.e. `PickResult.bodyIndex`
+  maps to a `usesDirectMesh` body). This is the headless-impossible proof — OffscreenRenderer has no pick
+  pass. Together with the macOS GPU-validation run (pick *draw* binding), the GPU-pick path is verified
+  end-to-end on real hardware.
+
+Neither vehicle changes library code — Phase-4 is verification only. The direct-mesh render paths were
+already in place (auxiliary-pass parity commits, 2026-06-25/26). **New app-side files:**
+`Examples/DirectMeshVerify/DirectMeshVerifyApp.swift`, `Examples/MetalDemo/.../DirectMeshGallery.swift`,
+the `DirectMeshVerify` target in `project.yml`, and the enhanced `Examples/DirectMeshLiveDemo`.
+
+**Pre-existing follow-up (filed here, out of spike scope):** the MetalDemo iOS settings-sheet/sidebar
+crashes on tap on this iOS build — needs its own investigation (grab the crash report with the device
+unlocked: `idevicecrashreport -k -e <dir>`, or Xcode → Devices → View Device Logs).

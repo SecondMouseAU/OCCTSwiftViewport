@@ -34,3 +34,6 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Xcode derivedDataPath used for on-device spike builds
+build/
