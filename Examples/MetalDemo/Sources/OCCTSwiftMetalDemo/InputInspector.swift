@@ -45,6 +45,8 @@ final class InputEventLog: ObservableObject {
             return "2-finger pan end v(\(f(v.x)), \(f(v.y)))"
         case let .pinchChanged(scale):
             return "pinch ×\(String(format: "%.3f", scale))"
+        case let .pinchAtChanged(scale, centerNDC, _):
+            return "pinch-at ×\(String(format: "%.3f", scale)) @(\(f(centerNDC.x)), \(f(centerNDC.y)))"
         case .pinchEnded:
             return "pinch end"
         case let .rotateChanged(radians):
