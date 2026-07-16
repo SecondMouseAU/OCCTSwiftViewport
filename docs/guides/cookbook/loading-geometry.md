@@ -287,6 +287,45 @@ if let (body, metadata) = try? CADFileLoader.shapeToBodyAndMetadata(
 
 ---
 
+## Direct-mesh bodies (skip the interleave)
+
+`ViewportBody.directMesh(...)` takes **de-interleaved** position and normal arrays and uploads them as two separate GPU buffers, instead of one interleaved stride-6 buffer. Reach for it when your geometry source already gives you flat, contiguous position and normal arrays — which is exactly what a CAD kernel's triangulation hands you.
+
+```swift
+let body = ViewportBody.directMesh(
+    id: "bracket",
+    positions: mesh.vertexData,     // [Float] — flat [px, py, pz, …]
+    normals: mesh.normalData,       // [Float] — flat [nx, ny, nz, …], parallel
+    indices: mesh.indices,
+    color: SIMD4<Float>(0.72, 0.74, 0.76, 1.0),
+    faceIndices: mesh.faceIndices
+)
+```
+
+### Why
+
+The interleaved path has to walk every vertex and repack position+normal into one array before upload. That is a full extra pass and an extra copy of the mesh in memory — pure overhead when the kernel already stores the two arrays contiguously. Skipping it is a **load-time and peak-memory win**, and it grows with mesh size (it matters on a 700k-triangle part, not on a box).
+
+It also skips `NormalSmoothing` entirely, which is the *right* thing when your normals come from OCCT: they are already analytically correct, so re-deriving them is wasted work — and, on highly anisotropic meshes, re-deriving them from face normals was the source of the "brushed" striations fixed in v1.1.22.
+
+### What to know before switching
+
+- **It is opt-in and additive.** Bodies built with `init(vertexData:)` are untouched; both kinds can coexist in one scene.
+- **Your normals are used verbatim.** `ViewportConfiguration.autoSmoothNormals` does **not** apply to direct bodies. If your source normals are flat/faceted and you were relying on auto-smoothing to round them, stay on the interleaved path (or smooth them yourself before handing them over).
+- **Tessellation is skipped** for direct bodies — `renderingQuality = .enhanced` has no effect on them.
+- **Everything else works:** bounding box, `CameraState.fit(to:)`, CPU raycasting, shadows, SSAO, silhouettes, the overlay layer, transparency, and GPU picking all support direct bodies, in both `ViewportRenderer` and `OffscreenRenderer`.
+- **Pick caveat:** a direct body's `vertices` holds its *mesh* vertices, so it does not additionally carry B-Rep corner-vertex or per-segment edge pick indices. Face picking, CPU raycast, and edge display are unaffected.
+
+`usesDirectMesh` tells you which path a body will take:
+
+```swift
+if body.usesDirectMesh {
+    // renderer binds positions @ buffer 0, normals @ buffer 2
+}
+```
+
+---
+
 ## Generation counter and cache invalidation
 
 Each `ViewportBody.init` call atomically increments a static counter and stamps the new body's `generation` property with a unique `UInt64`. The renderer compares generations to detect geometry changes and decide whether to re-upload vertex, index, or edge buffers to the GPU. This means:

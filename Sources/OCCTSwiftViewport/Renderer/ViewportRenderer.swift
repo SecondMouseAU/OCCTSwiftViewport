@@ -142,6 +142,10 @@ struct SkyboxUniformsSwift {
 
 private struct BodyBuffers {
     let vertexBuffer: MTLBuffer?
+    /// De-interleaved normal buffer (stride 12) for the direct-mesh path (Option A). When non-nil,
+    /// `vertexBuffer` holds positions only (stride 12) and the body draws via `directMeshPipeline`
+    /// in the opaque shaded pass; the shadow / pick / depth passes skip it.
+    var normalBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
@@ -187,11 +191,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let commandQueue: MTLCommandQueue
     // MSAA pipelines (sampleCount matches view — 4 or 1)
     private let shadedPipeline: MTLRenderPipelineState
+    /// Direct-mesh shaded pipeline (Option A): same shaders as `shadedPipeline`, but its vertex
+    /// descriptor reads position from buffer 0 and normal from buffer 2 (de-interleaved), so bodies
+    /// built via `ViewportBody.directMesh(...)` render without a CPU interleave. Opaque main pass
+    /// only in this prototype — direct bodies are skipped by the shadow / pick / depth passes.
+    private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
     private let pickShadedPipeline: MTLRenderPipelineState
+    /// Direct-mesh face-pick pipeline (Option A): `pick_vertex` with the two-buffer descriptor
+    /// (position@0 / normal@2) so direct-mesh bodies are stamped into the R32Uint pick texture.
+    /// The pick vertex shader reads only position; the normal binding satisfies attribute 1.
+    private let pickShadedDirectPipeline: MTLRenderPipelineState
     /// Line-primitive pick pipeline for edge picking. Same vertex shader as
     /// `pick_vertex`; fragment emits kind=1 in the pick encoding.
     private let pickLinePipeline: MTLRenderPipelineState?
@@ -209,8 +222,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let pickEdgeOrPointDepthState: MTLDepthStencilState
     // Depth-only pipeline for SSAO depth pass
     private let depthOnlyPipeline: MTLRenderPipelineState
+    /// Direct-mesh depth-only pipeline (Option A): `depth_only_vertex` with the two-buffer
+    /// descriptor (position@0 / normal@2) so direct-mesh bodies are written into the SSAO/
+    /// silhouette depth prepass too. The depth shader reads only position; the normal binding
+    /// just satisfies the descriptor's attribute 1.
+    private let depthOnlyDirectPipeline: MTLRenderPipelineState
     // Shadow mapping
     private let shadowPipeline: MTLRenderPipelineState
+    /// Direct-mesh shadow pipeline (Option A): `shadow_vertex` with the two-buffer descriptor
+    /// (position@0 / normal@2) so direct-mesh bodies cast shadows too. The shadow shader reads only
+    /// position; the normal binding just satisfies the descriptor's attribute 1.
+    private let shadowDirectPipeline: MTLRenderPipelineState
     private let shadowMapManager: ShadowMapManager
     // Selection outline
     private let outlinePipeline: MTLRenderPipelineState
@@ -376,6 +398,39 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.shadedPipeline = shadedPipeline
 
+        // Direct-mesh pipeline (Option A): de-interleaved position (buffer 0) + normal (buffer 2).
+        // Vertex-stage buffer 1 is the uniforms; the fragment table is separate, so buffer 2 is free
+        // in the vertex stage. Reuses shaded_vertex/shaded_fragment unchanged (attributes via stage_in).
+        let directVertexDesc = MTLVertexDescriptor()
+        directVertexDesc.attributes[0].format = .float3      // position
+        directVertexDesc.attributes[0].offset = 0
+        directVertexDesc.attributes[0].bufferIndex = 0
+        directVertexDesc.attributes[1].format = .float3      // normal
+        directVertexDesc.attributes[1].offset = 0
+        directVertexDesc.attributes[1].bufferIndex = 2
+        directVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 3
+        directVertexDesc.layouts[2].stride = MemoryLayout<Float>.size * 3
+
+        let directDesc = MTLRenderPipelineDescriptor()
+        directDesc.vertexFunction = library.makeFunction(name: "shaded_vertex")
+        directDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
+        directDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        directDesc.colorAttachments[1].pixelFormat = .invalid
+        directDesc.colorAttachments[0].isBlendingEnabled = true
+        directDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        directDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        directDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        directDesc.depthAttachmentPixelFormat = depthFormat
+        directDesc.stencilAttachmentPixelFormat = depthFormat
+        directDesc.rasterSampleCount = sampleCount
+        directDesc.vertexDescriptor = directVertexDesc
+
+        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc) else {
+            return nil
+        }
+        self.directMeshPipeline = directMeshPipeline
+
         // Wireframe pipeline (MSAA)
         let wireDesc = MTLRenderPipelineDescriptor()
         wireDesc.vertexFunction = library.makeFunction(name: "wireframe_vertex")
@@ -474,6 +529,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.pickShadedPipeline = pickShadedPipeline
 
+        // Direct-mesh face-pick pipeline (Option A): same pick shaders, two-buffer descriptor.
+        let pickShadedDirectDesc = MTLRenderPipelineDescriptor()
+        pickShadedDirectDesc.label = "pick_shaded_direct"
+        pickShadedDirectDesc.vertexFunction = library.makeFunction(name: "pick_vertex")
+        pickShadedDirectDesc.fragmentFunction = library.makeFunction(name: "pick_fragment")
+        pickShadedDirectDesc.colorAttachments[0].pixelFormat = .r32Uint
+        pickShadedDirectDesc.depthAttachmentPixelFormat = .depth32Float
+        pickShadedDirectDesc.rasterSampleCount = 1
+        pickShadedDirectDesc.vertexDescriptor = directVertexDesc
+
+        guard let pickShadedDirectPipeline = try? device.makeRenderPipelineState(descriptor: pickShadedDirectDesc) else {
+            return nil
+        }
+        self.pickShadedDirectPipeline = pickShadedDirectPipeline
+
         // 1x line pick pipeline (edge picking) — reuses pick_vertex; fragment emits kind=1.
         let pickLineDesc = MTLRenderPipelineDescriptor()
         pickLineDesc.label = "pick_line"
@@ -544,6 +614,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.depthOnlyPipeline = depthOnlyPipeline
 
+        // Direct-mesh depth-only pipeline (Option A): same depth shaders, two-buffer descriptor.
+        let depthOnlyDirectDesc = MTLRenderPipelineDescriptor()
+        depthOnlyDirectDesc.label = "depth_only_direct"
+        depthOnlyDirectDesc.vertexFunction = library.makeFunction(name: "depth_only_vertex")
+        depthOnlyDirectDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
+        depthOnlyDirectDesc.depthAttachmentPixelFormat = .depth32Float
+        depthOnlyDirectDesc.rasterSampleCount = 1
+        depthOnlyDirectDesc.vertexDescriptor = directVertexDesc
+
+        guard let depthOnlyDirectPipeline = try? device.makeRenderPipelineState(descriptor: depthOnlyDirectDesc) else {
+            return nil
+        }
+        self.depthOnlyDirectPipeline = depthOnlyDirectPipeline
+
         // Shadow map pipeline (depth-only from light perspective)
         let shadowDesc = MTLRenderPipelineDescriptor()
         shadowDesc.label = "shadow_map"
@@ -557,6 +641,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.shadowPipeline = shadowPipeline
+
+        // Direct-mesh shadow pipeline (Option A): same shadow shaders, two-buffer descriptor.
+        let shadowDirectDesc = MTLRenderPipelineDescriptor()
+        shadowDirectDesc.label = "shadow_map_direct"
+        shadowDirectDesc.vertexFunction = library.makeFunction(name: "shadow_vertex")
+        shadowDirectDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
+        shadowDirectDesc.depthAttachmentPixelFormat = .depth32Float
+        shadowDirectDesc.rasterSampleCount = 1
+        shadowDirectDesc.vertexDescriptor = directVertexDesc
+        guard let shadowDirectPipeline = try? device.makeRenderPipelineState(descriptor: shadowDirectDesc) else {
+            return nil
+        }
+        self.shadowDirectPipeline = shadowDirectPipeline
         self.shadowMapManager = ShadowMapManager(device: device)
 
         // Selection outline pipeline (MSAA, renders expanded geometry where stencil != 1)
@@ -1391,6 +1488,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         guard let buffers = bodyBufferCache[body.id] else { continue }
                         // Overlay bodies don't cast shadows — they are UI affordances.
                         if body.renderLayer == .overlay { continue }
+                        // Direct-mesh bodies cast shadows via shadowDirectPipeline (handled in the
+                        // standard draw branch below), so they are NOT excluded here.
                         let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
 
                         if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
@@ -1428,8 +1527,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                     baseInstance: 0
                                 )
                             } else {
-                                shadowEncoder.setRenderPipelineState(shadowPipeline)
-                                shadowEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                if let nb = buffers.normalBuffer {
+                                    // Direct-mesh body (Option A): position@0 + normal@2.
+                                    shadowEncoder.setRenderPipelineState(shadowDirectPipeline)
+                                    shadowEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                    shadowEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                                } else {
+                                    shadowEncoder.setRenderPipelineState(shadowPipeline)
+                                    shadowEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                }
                                 shadowEncoder.setVertexBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
                                 shadowEncoder.drawIndexedPrimitives(
                                     type: .triangle,
@@ -1536,6 +1642,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let selState: UInt32 = selectedIDs.contains(body.id) ? 1 : (hoveredID == body.id ? 2 : 0)
             var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex, isSelected: selState)
 
+            // Main opaque pass — direct-mesh bodies ARE rendered here (encodeShadedSurface picks
+            // the directMeshPipeline when normalBuffer is set). The shadow / pick / depth / overlay
+            // passes above & below now route direct bodies through their own *Direct pipelines
+            // (two-buffer descriptor: position@0 / normal@2) rather than skipping them.
             let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
@@ -1816,13 +1926,22 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 uniforms.modelMatrix = body.transform
                 var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex, isSelected: 0)
 
+                // Direct-mesh overlay bodies draw via directMeshPipeline (handled below), so
+                // they are NOT excluded here.
                 let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
                 let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
                 if displayMode.showsSurfaces, hasMesh,
                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
-                    mainEncoder.setRenderPipelineState(shadedPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    if let nb = buffers.normalBuffer {
+                        // Direct-mesh body (Option A): position@0 + normal@2, shared shaded shaders.
+                        mainEncoder.setRenderPipelineState(directMeshPipeline)
+                        mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                        mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                    } else {
+                        mainEncoder.setRenderPipelineState(shadedPipeline)
+                        mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    }
                     mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
@@ -1894,6 +2013,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         // Overlay bodies are picked in the second pick loop (always-pass depth).
                         if body.renderLayer == .overlay { continue }
 
+                        // Direct-mesh bodies are stamped via pickShadedDirectPipeline (the standard
+                        // branch below), so they are NOT excluded here.
                         let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
 
                         if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
@@ -1930,6 +2051,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                     patchIndexBufferOffset: 0,
                                     instanceCount: 1,
                                     baseInstance: 0
+                                )
+                            } else if let nb = buffers.normalBuffer {
+                                // Direct-mesh body (Option A): position@0 + normal@2.
+                                pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
+                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.drawIndexedPrimitives(
+                                    type: .triangle,
+                                    indexCount: buffers.indexCount,
+                                    indexType: .uint32,
+                                    indexBuffer: ib,
+                                    indexBufferOffset: 0
                                 )
                             } else {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
@@ -2061,8 +2196,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             uniforms.modelMatrix = body.transform
                             var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex)
 
-                            pickEncoder.setRenderPipelineState(pickShadedPipeline)
-                            pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                            if let nb = buffers.normalBuffer {
+                                // Direct-mesh overlay body (Option A): position@0 + normal@2.
+                                pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
+                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                                pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                            } else {
+                                pickEncoder.setRenderPipelineState(pickShadedPipeline)
+                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                            }
                             pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                             pickEncoder.drawIndexedPrimitives(
@@ -2174,6 +2316,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         objectIndex += 1
                         continue
                     }
+                    // Direct-mesh bodies are written via depthOnlyDirectPipeline (handled in the
+                    // standard branch below), so they are NOT excluded here.
                     let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
                     if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                         var uniforms = makeUniforms()
@@ -2205,6 +2349,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 patchIndexBufferOffset: 0,
                                 instanceCount: 1,
                                 baseInstance: 0
+                            )
+                        } else if let nb = buffers.normalBuffer {
+                            // Direct-mesh body (Option A): position@0 + normal@2.
+                            depthEncoder.setRenderPipelineState(depthOnlyDirectPipeline)
+                            depthEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                            depthEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                            depthEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.drawIndexedPrimitives(
+                                type: .triangle,
+                                indexCount: buffers.indexCount,
+                                indexType: .uint32,
+                                indexBuffer: ib,
+                                indexBufferOffset: 0
                             )
                         } else {
                             depthEncoder.setRenderPipelineState(depthOnlyPipeline)
@@ -2413,7 +2570,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0 else { return }
 
-        if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
+        if let nb = buffers.normalBuffer {
+            // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.
+            encoder.setRenderPipelineState(directMeshPipeline)
+            encoder.setVertexBuffer(vb, offset: 0, index: 0)
+            encoder.setVertexBuffer(nb, offset: 0, index: 2)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: buffers.indexCount,
+                indexType: .uint32,
+                indexBuffer: ib,
+                indexBufferOffset: 0
+            )
+        } else if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
             encoder.setRenderPipelineState(msPipeline)
             encoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
             encoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -2472,11 +2642,34 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Build vertex + index buffers (nil for edge-only bodies)
         var vertexBuffer: MTLBuffer?
+        var normalBuffer: MTLBuffer?
         var indexBuffer: MTLBuffer?
         var indexCount = 0
         var vertexCount = 0
 
-        if !body.vertexData.isEmpty, !body.indices.isEmpty {
+        if body.usesDirectMesh, !body.indices.isEmpty {
+            // Direct-mesh path (Option A): upload de-interleaved positions + normals straight to
+            // separate buffers — no CPU interleave, no NormalSmoothing (the producer supplies
+            // normals). This is the shape OCCT's Mesh already provides. Tessellation / mesh-shader
+            // paths are skipped for direct bodies (they consume the interleaved buffer + faceIndices).
+            vertexBuffer = device.makeBuffer(
+                bytes: body.meshPositions,
+                length: body.meshPositions.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+            normalBuffer = device.makeBuffer(
+                bytes: body.meshNormals,
+                length: body.meshNormals.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+            indexBuffer = device.makeBuffer(
+                bytes: body.indices,
+                length: body.indices.count * MemoryLayout<UInt32>.size,
+                options: .storageModeShared
+            )
+            indexCount = body.indices.count
+            vertexCount = body.meshPositions.count / 3
+        } else if !body.vertexData.isEmpty, !body.indices.isEmpty {
             // Optionally apply crease-aware normal smoothing (issue #48) so meshes
             // with flat / per-face normals can be rounded by Phong tessellation.
             // Done once here (generation-gated), and the tessellation patch builder
@@ -2589,9 +2782,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
         guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty else { return }
 
-        // Build tessellation patch data if tessellation is enabled
+        // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
+        // the patch builder consumes an interleaved stride-6 buffer + faceIndices, neither of which
+        // a direct body has (it brings its own normals; no PN refinement needed).
         var tessBuffers: TessellationBuffers?
-        if tessellationEnabled,
+        if tessellationEnabled, !body.usesDirectMesh,
            let tessMgr = tessellationManager,
            let vb = vertexBuffer, let ib = indexBuffer,
            indexCount > 0 {
@@ -2646,6 +2841,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         bodyBufferCache[body.id] = BodyBuffers(
             vertexBuffer: vertexBuffer,
+            normalBuffer: normalBuffer,
             indexBuffer: indexBuffer,
             indexCount: indexCount,
             edgeVertexBuffer: edgeVB,

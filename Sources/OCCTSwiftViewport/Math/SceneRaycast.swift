@@ -56,9 +56,24 @@ public enum SceneRaycast {
             // Early-out: no triangle in this body can be closer
             if aabbEntry > bestDistance { break }
 
-            let stride = 6
             let indexCount = body.indices.count
             guard indexCount >= 3 else { continue }
+
+            // Position accessor for either layout: interleaved bodies carry stride-6 `vertexData`;
+            // direct-mesh bodies (Option A) carry de-interleaved positions reshaped into `vertices`
+            // and leave `vertexData` empty. Reading the wrong one here would index an empty array.
+            let stride = 6
+            let direct = body.vertexData.isEmpty
+            func position(_ idx: Int) -> SIMD3<Float> {
+                if direct {
+                    return body.vertices[idx]
+                }
+                return SIMD3<Float>(
+                    body.vertexData[idx * stride],
+                    body.vertexData[idx * stride + 1],
+                    body.vertexData[idx * stride + 2]
+                )
+            }
 
             var i = 0
             while i < indexCount {
@@ -66,21 +81,9 @@ public enum SceneRaycast {
                 let i1 = Int(body.indices[i + 1])
                 let i2 = Int(body.indices[i + 2])
 
-                let v0 = SIMD3<Float>(
-                    body.vertexData[i0 * stride],
-                    body.vertexData[i0 * stride + 1],
-                    body.vertexData[i0 * stride + 2]
-                )
-                let v1 = SIMD3<Float>(
-                    body.vertexData[i1 * stride],
-                    body.vertexData[i1 * stride + 1],
-                    body.vertexData[i1 * stride + 2]
-                )
-                let v2 = SIMD3<Float>(
-                    body.vertexData[i2 * stride],
-                    body.vertexData[i2 * stride + 1],
-                    body.vertexData[i2 * stride + 2]
-                )
+                let v0 = position(i0)
+                let v1 = position(i1)
+                let v2 = position(i2)
 
                 if let t = ray.intersectsTriangle(v0: v0, v1: v1, v2: v2), t < bestDistance {
                     bestDistance = t

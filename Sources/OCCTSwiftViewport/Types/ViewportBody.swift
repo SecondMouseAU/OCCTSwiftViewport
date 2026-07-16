@@ -178,6 +178,22 @@ public struct ViewportBody: Identifiable, Sendable {
     /// (e.g., during a manipulator drag) without re-uploading vertex data.
     public var transform: simd_float4x4
 
+    /// **Direct-mesh path (Option A spike).** De-interleaved triangle positions, stride 3
+    /// (`[px, py, pz, …]`). When non-empty alongside `meshNormals`, the renderer uploads these
+    /// straight to GPU buffers and skips the interleaved `vertexData`, so geometry coming from a
+    /// kernel that already holds separate position/normal arrays (e.g. OCCT's `Poly_Triangulation`,
+    /// surfaced as `Mesh.metalBufferData()`) renders without a CPU interleave/repack. Empty for the
+    /// normal interleaved path.
+    public var meshPositions: [Float]
+
+    /// **Direct-mesh path (Option A spike).** De-interleaved per-vertex normals, stride 3, parallel
+    /// to `meshPositions`. See ``meshPositions``.
+    public var meshNormals: [Float]
+
+    /// True when this body carries de-interleaved position/normal arrays for the direct-mesh render
+    /// path (rather than interleaved `vertexData`). See ``meshPositions``.
+    public var usesDirectMesh: Bool { !meshPositions.isEmpty && meshNormals.count == meshPositions.count }
+
     public init(
         id: String,
         vertexData: [Float],
@@ -200,13 +216,17 @@ public struct ViewportBody: Identifiable, Sendable {
         isPickable: Bool = true,
         renderLayer: RenderLayer = .geometry,
         pickLayer: PickLayer = .userGeometry,
-        transform: simd_float4x4 = matrix_identity_float4x4
+        transform: simd_float4x4 = matrix_identity_float4x4,
+        meshPositions: [Float] = [],
+        meshNormals: [Float] = []
     ) {
         ViewportBody._nextGeneration += 1
         self.generation = ViewportBody._nextGeneration
         self.id = id
         self.vertexData = vertexData
         self.indices = indices
+        self.meshPositions = meshPositions
+        self.meshNormals = meshNormals
         self.edges = edges
         self.arcs = arcs
         self.faceIndices = faceIndices
@@ -226,6 +246,53 @@ public struct ViewportBody: Identifiable, Sendable {
         self.renderLayer = renderLayer
         self.pickLayer = pickLayer
         self.transform = transform
+    }
+}
+
+// MARK: - Direct mesh (Option A spike)
+
+extension ViewportBody {
+
+    /// Build a body from **de-interleaved** position/normal/index arrays — the shape a geometry
+    /// kernel already produces (e.g. OCCT's `Mesh.vertexData` / `.normalData` / `.indices`), so no
+    /// CPU interleave/repack is needed before upload. The renderer detects ``usesDirectMesh`` and
+    /// uploads `positions`/`normals` to separate GPU buffers.
+    ///
+    /// `positions` and `normals` are stride-3 (`[x, y, z, …]`) and must be the same length.
+    /// `vertices` (for bounding box / fit / CPU picking) is derived from `positions`.
+    public static func directMesh(
+        id: String,
+        positions: [Float],
+        normals: [Float],
+        indices: [UInt32],
+        color: SIMD4<Float>,
+        faceIndices: [Int32] = [],
+        edges: [[SIMD3<Float>]] = [],
+        material: PBRMaterial? = nil,
+        transform: simd_float4x4 = matrix_identity_float4x4
+    ) -> ViewportBody {
+        // Derive SIMD3 vertices for bounding box / fit / CPU raycast (cheap reshape, no normals).
+        var verts: [SIMD3<Float>] = []
+        verts.reserveCapacity(positions.count / 3)
+        var i = 0
+        while i + 2 < positions.count {
+            verts.append(SIMD3(positions[i], positions[i + 1], positions[i + 2]))
+            i += 3
+        }
+        return ViewportBody(
+            id: id,
+            vertexData: [],
+            indices: indices,
+            edges: edges,
+            faceIndices: faceIndices,
+            vertices: verts,
+            vertexIndices: indices.map { Int32($0) },
+            color: color,
+            material: material,
+            transform: transform,
+            meshPositions: positions,
+            meshNormals: normals
+        )
     }
 }
 
