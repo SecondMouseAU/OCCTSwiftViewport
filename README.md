@@ -18,6 +18,7 @@ Your App
 - **Camera system** — Arcball, turntable, and first-person rotation with inertia and animation
 - **ViewCube** — Interactive orientation widget with 26 clickable regions
 - **GPU picking** — TBDR imageblock-based pick ID buffer for body and face selection
+- **Direct-mesh path** — render a kernel's triangulation from de-interleaved arrays, skipping the interleave repack
 - **Display modes** — Wireframe, shaded, shaded-with-edges
 - **Lighting presets** — `.threePoint`, `.studio`, `.architectural`, `.flat`
 - **Gesture presets** — `.default`, `.blender`, `.fusion360`
@@ -238,6 +239,38 @@ can keep sub-component picking by maintaining a triangle→component map and usi
 
 > Renderer-side scaling work (frustum culling, reduced per-body overhead) is
 > tracked in [issue #42](https://github.com/gsdali/OCCTSwiftViewport/issues/42).
+
+### Direct-mesh bodies (cutting load time)
+
+The above levers address *frame* cost. **Load** cost has its own lever:
+`ViewportBody.directMesh(...)` takes **de-interleaved** position and normal
+arrays and uploads them as two GPU buffers, instead of one interleaved stride-6
+buffer:
+
+```swift
+let body = ViewportBody.directMesh(
+    id: "bracket",
+    positions: mesh.vertexData,   // [Float] — flat [px, py, pz, …]
+    normals: mesh.normalData,     // [Float] — flat [nx, ny, nz, …], parallel
+    indices: mesh.indices,
+    color: SIMD4<Float>(0.72, 0.74, 0.76, 1.0)
+)
+```
+
+The standard path walks every vertex to repack position+normal before upload — an
+extra pass and an extra in-memory copy. A CAD kernel's triangulation already
+stores those arrays flat and contiguous, so that repack is pure overhead. Skipping
+it is a **load-time and peak-memory win that scales with mesh size** (it matters on
+a 700k-triangle part, not on a box). It also skips `NormalSmoothing`, which is
+correct for OCCT-sourced geometry — those normals are already analytically accurate.
+
+It is **opt-in**: interleaved bodies are unchanged, and both kinds coexist in one
+scene. All passes support direct bodies (shaded, transparent, shadows, SSAO,
+silhouettes, overlay, GPU pick) in both renderers. Two caveats: `autoSmoothNormals`
+and adaptive tessellation do **not** apply to direct bodies (their normals are used
+verbatim), and a direct body carries no separate B-Rep corner-vertex / per-segment
+edge pick indices. See the
+[Loading Geometry cookbook](docs/guides/cookbook/loading-geometry.md#direct-mesh-bodies-skip-the-interleave).
 
 ## Smooth Round Geometry
 
