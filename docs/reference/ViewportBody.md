@@ -95,6 +95,8 @@ Creates a body and assigns it the next unique `generation` value. The two requir
 | `renderLayer` | `.geometry` (normal depth test) or `.overlay` (always-on-top). Default `.geometry`. |
 | `pickLayer` | `.userGeometry` routes hits to `ViewportController.pickResult`; `.widget` routes to `widgetPickResult`. Default `.userGeometry`. |
 | `transform` | Per-body model matrix applied on top of the scene model matrix in the vertex shader. Default `matrix_identity_float4x4`. |
+| `meshPositions` | De-interleaved positions `[px, py, pz, …]` for the direct-mesh path. Default `[]`. See [`directMesh`](#directmesh-direct-mesh-path). |
+| `meshNormals` | De-interleaved normals `[nx, ny, nz, …]`, parallel to `meshPositions`. Default `[]`. |
 
 **Example — shaded mesh from tessellated BREP data:**
 
@@ -112,6 +114,62 @@ let body = ViewportBody(
 )
 viewportController.bodies["bracket"] = body
 ```
+
+---
+
+### `directMesh` (direct-mesh path)
+
+```swift
+public static func directMesh(
+    id: String,
+    positions: [Float],
+    normals: [Float],
+    indices: [UInt32],
+    color: SIMD4<Float>,
+    faceIndices: [Int32] = [],
+    edges: [[SIMD3<Float>]] = [],
+    material: PBRMaterial? = nil,
+    transform: simd_float4x4 = matrix_identity_float4x4
+) -> ViewportBody
+```
+
+Builds a body from **de-interleaved** position and normal arrays, which the renderer uploads as two separate GPU buffers (position @ buffer 0, normal @ buffer 2, stride 12 each) instead of one interleaved stride-6 buffer.
+
+Use this when your geometry source **already hands you flat, contiguous position and normal arrays** — as OCCT's `Poly_Triangulation` does. It skips the CPU interleave/repack and the extra copy that `init(vertexData:)` requires, which is a load-time and peak-memory win on large meshes.
+
+| Parameter | Description |
+|---|---|
+| `positions` | Flat `[px, py, pz, …]`. Length must be a multiple of 3. |
+| `normals` | Flat `[nx, ny, nz, …]`, **same length** as `positions` (one normal per position). |
+| `indices` | Triangle index list, indexing *vertices* (not floats). |
+| `faceIndices` | Per-triangle B-Rep face index, for face pick mapping. Default `[]`. |
+| `edges` | Wireframe polylines, as on `init`. Default `[]`. |
+
+```swift
+// positions/normals come straight from the kernel — no interleaving
+let body = ViewportBody.directMesh(
+    id: "bracket",
+    positions: mesh.vertexData,      // [Float] — flat xyz
+    normals: mesh.normalData,        // [Float] — flat xyz, parallel
+    indices: mesh.indices,
+    color: SIMD4<Float>(0.72, 0.74, 0.76, 1.0),
+    faceIndices: mesh.faceIndices
+)
+```
+
+#### Behaviour and trade-offs
+
+- **Opt-in.** Nothing changes unless you call `directMesh(...)`. Bodies built with `init(vertexData:)` keep the interleaved path and all existing behaviour.
+- **`NormalSmoothing` is skipped.** A direct body renders the normals you supply, verbatim. This is the point: OCCT's analytic per-vertex normals are already correct, and re-deriving them is wasted work. It also means `ViewportConfiguration.autoSmoothNormals` does **not** apply to direct bodies — if your source normals are flat/faceted, either smooth them yourself or use the interleaved path.
+- **`vertexData` is left empty**; `vertices` is populated with the reshaped positions so bounding box, `CameraState.fit(to:)`, and CPU raycasting (`SceneRaycast`) all work.
+- **Tessellation and mesh shaders are skipped** for direct bodies (`renderingQuality = .enhanced` has no effect on them).
+- **Pick caveat:** because `vertices` holds *mesh* vertices, a direct body does not carry separate B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast, and edge *display* all work.
+
+All render passes support direct bodies: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the overlay layer, and the GPU pick pass — in both `ViewportRenderer` and `OffscreenRenderer`.
+
+#### `usesDirectMesh: Bool`
+
+`true` when `meshPositions` is non-empty and `meshNormals` matches its length — i.e. the renderer will take the direct path for this body. Computed, read-only.
 
 ---
 

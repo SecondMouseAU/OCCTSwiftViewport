@@ -2,6 +2,22 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.23] — 2026-07-16
+
+### Added
+- **Direct-mesh rendering path** — `ViewportBody.directMesh(id:positions:normals:indices:color:faceIndices:edges:material:transform:)` builds a body from **de-interleaved** position and normal arrays, uploaded as two separate GPU buffers (position @ buffer 0, normal @ buffer 2, stride 12 each) instead of one interleaved stride-6 buffer.
+  - **Why:** the interleaved path walks every vertex to repack position+normal before upload — a full extra pass and an extra in-memory copy. A CAD kernel's triangulation (OCCT's `Poly_Triangulation`) already stores the two arrays flat and contiguous, so that repack is pure overhead. Skipping it is a load-time and peak-memory win that scales with mesh size.
+  - It also skips `NormalSmoothing`, which is correct for OCCT-sourced geometry: those per-vertex normals are already analytically accurate, so re-deriving them is wasted work (and re-deriving them from *face* normals was the root cause of the striations fixed in 1.1.22).
+  - **Opt-in and source-compatible.** Nothing changes unless you call `directMesh(...)`; interleaved bodies keep the existing path, including `autoSmoothNormals`. Both kinds coexist in one scene.
+  - New public API: `ViewportBody.meshPositions`, `ViewportBody.meshNormals`, and the computed `ViewportBody.usesDirectMesh`. `ViewportBody.init` gains defaulted `meshPositions:`/`meshNormals:` parameters.
+  - **Full render-pass parity**, in both `ViewportRenderer` and `OffscreenRenderer`: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the always-on-top overlay layer, and the GPU pick pass. Each is routed by a sibling pipeline built on a direct vertex descriptor, selected per body via `usesDirectMesh`.
+  - **Limitations (by design):** `autoSmoothNormals` and PN-triangle tessellation (`renderingQuality = .enhanced`) do not apply to direct bodies; because `vertices` carries the *mesh* vertices (for bounding box / `fit(to:)` / CPU raycast), a direct body does not additionally carry B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast and edge display are unaffected.
+  - `DirectMeshRenderingTests` (7): differential renders proving a direct body is pixel-identical to its interleaved twin (opaque, transparent, and cast shadows), plus pipeline-construction and CPU-raycast coverage. **170 tests total.**
+  - Verified live and on device beyond the headless suite: macOS under Metal API + GPU Validation with SSAO, silhouettes, shadows, overlay and picking all enabled (zero validation errors), and GPU pick readback confirmed on an iPhone 15 Pro. New `Examples/DirectMeshVerify` rig (`DirectMeshVerify_iOS`/`_macOS` schemes) — depends only on `OCCTSwiftViewport`, for on-device viewport checks.
+
+### Fixed
+- **`SceneRaycast` crash on direct-mesh bodies.** The narrowphase read `body.vertexData` (stride 6) indexed by `body.indices`. A direct-mesh body leaves `vertexData` empty, so any raycast against one indexed an empty array and trapped. The narrowphase now reads `vertices` when `vertexData` is empty. Affects CPU picking, `PivotStrategy`, and tap-to-measure against direct bodies.
+
 ## [1.1.22] — 2026-06-22
 
 ### Fixed
