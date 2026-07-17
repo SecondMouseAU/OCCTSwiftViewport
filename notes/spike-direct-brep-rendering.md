@@ -1,11 +1,60 @@
 # Spike — directly rendering B-Rep solids (skip the interstitial mesh body)
 
-**Branch:** `spike/direct-brep-rendering` · **Status:** investigation only (no code changes) · 2026-06-21
+**Status: COMPLETE — shipped. Branch `spike/direct-brep-rendering` merged (PR #83) and deleted.**
+Opened 2026-06-21 as an investigation; closed 2026-07-17.
 
-> Question: can we render B-Rep solids "directly" without the interstitial step of building a
-> `ViewportBody` mesh? How hard would it be?
+> Original question: can we render B-Rep solids "directly" without the interstitial step of building
+> a `ViewportBody` mesh? How hard would it be?
 
-## TL;DR
+## Outcome
+
+**Option A shipped; Option B rejected.** The rest of this document is the design analysis and the
+dated audit trail that got there — kept for the reasoning, not as a to-do list. **Progress logs below
+are historical: their "still outstanding" lists were true on their date and are superseded by this
+section.**
+
+| Phase | Outcome |
+|---|---|
+| Core direct-mesh render path | **Shipped** — viewport `v1.1.23` |
+| Auxiliary passes (shadow, SSAO/silhouette prepass, overlay, GPU pick), both renderers | **Shipped** — full parity |
+| Phase 3 — `OCCTSwiftTools` bridge (where the load-time win reaches apps) | **Shipped** — Tools `v1.3.0` |
+| Phase 4 — live + on-device verification | **Done** — see the 2026-07-16 log |
+| Phase 5 — merge decision | **Done** — NormalSmoothing **kept**; direct path **opt-in**; PATCH bump |
+| Downstream adoption | **Shipped** — OCCTMCP `v1.16.1` |
+
+What shipped: `ViewportBody.directMesh(id:positions:normals:indices:color:…)` plus `meshPositions` /
+`meshNormals` / `usesDirectMesh`. Opt-in and source-compatible — interleaved bodies are unchanged,
+including `autoSmoothNormals`; both kinds coexist in one scene. Also fixed a `SceneRaycast` crash on
+direct bodies (narrowphase indexed the empty `vertexData`).
+
+Docs: CHANGELOG `1.1.23`, README ("Direct-mesh bodies" under Performance & Scaling),
+`docs/guides/cookbook/loading-geometry.md`, `docs/reference/ViewportBody.md`.
+
+### The one deferred item — B-Rep vertex/edge pick parity
+
+`directMesh()` puts **mesh** vertices in `vertices` (needed for bounding box / `fit(to:)` / CPU
+raycast), so a direct body carries no separate B-Rep corner-vertex or per-segment edge pick indices.
+Face display, GPU pick, CPU raycast and edge *display* all work; **B-Rep vertex-picking and
+per-segment edge-picking do not.** Tools' metadata still carries the full pick vertices for app-side
+use, so the capability is not lost — just not routed through the direct body.
+
+Closing it needs two viewport-side changes:
+1. `SceneRaycast` reads `meshPositions` for direct bodies, freeing `vertices` to hold B-Rep pick verts.
+2. Extend `directMesh()` to accept `edgeIndices` + separate pick vertices.
+
+**Deliberately deferred — no consumer needs it today.** Worth doing when a real requirement appears
+rather than speculatively; the `OCCTSwiftUX` resolver / pick→signature work is the likeliest trigger.
+Documented as a known limitation in the CHANGELOG, README, cookbook, reference, and OCCTSwiftTools#31.
+
+### Verification vehicles left behind
+
+- **`Examples/DirectMeshVerify`** (`DirectMeshVerify_iOS` / `_macOS`) — dependency-light on-device rig:
+  viewport only, **no OCCT.xcframework**, so it builds in seconds and has no sidebar. Reusable for any
+  future on-device viewport check.
+- **`Examples/DirectMeshLiveDemo`** (macOS) — side-by-side interleaved vs direct under Metal API + GPU
+  Validation, with SSAO / silhouettes / shadows / overlay / picking all enabled.
+
+## TL;DR (original analysis, 2026-06-21)
 
 **It depends entirely on what "directly" means, and the two readings are wildly different in cost.**
 
@@ -260,7 +309,7 @@ live `currentDrawable`. So the GPU pick-texture readback and the SSAO/silhouette
 be validated live (Metal API+GPU validation or device). Their pipelines are compile-verified via
 `ViewportRenderer.init` (a compile failure → nil init → the construct tests fail).
 
-**Still outstanding:**
+**Still outstanding _(as of 2026-06-25 — ALL of these are now DONE; see Outcome at the top)_:**
 - **1d** overlay-layer direct bodies (the `.overlay` surface draw still has the guard; low priority —
   overlay = UI affordances, rarely direct-mesh).
 - **Phase 2** OffscreenRenderer parity audit (has shaded + shadow direct; no pick/SSAO by design).
@@ -290,10 +339,10 @@ Direct-mesh suite now **5 tests**, **168 total**, `swift build`/`swift test` cle
   All passes in both renderers now route direct bodies; OffscreenRenderer has no pick/SSAO/overlay
   by design.
 
-**Direct-mesh suite now 7 tests, 170 total. In-repo render-pass parity is COMPLETE.** Remaining is
-out-of-repo / out-of-process: Phase 3 (the `OCCTSwiftTools` bridge), Phase 4 (live/device verify of
-GPU pick + SSAO/silhouette + overlay draws), Phase 5 (merge decision — NormalSmoothing policy,
-opt-in vs default, version bump).
+**Direct-mesh suite now 7 tests, 170 total. In-repo render-pass parity is COMPLETE.** Remaining _(as
+of 2026-06-26 — all since done; see Outcome at the top)_ is out-of-repo / out-of-process: Phase 3 (the
+`OCCTSwiftTools` bridge), Phase 4 (live/device verify of GPU pick + SSAO/silhouette + overlay draws),
+Phase 5 (merge decision — NormalSmoothing policy, opt-in vs default, version bump).
 
 ## Progress log — Phase 4 live + on-device verification (2026-07-16)
 
