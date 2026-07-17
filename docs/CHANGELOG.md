@@ -46,6 +46,34 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   - `MeasurementMode` is now `Equatable`.
 - New `MeasurementModeTests` (14). 160 tests total.
 
+## [1.1.19] — 2026-06-11
+
+### Fixed
+- **`StandardView` side views were all the top view — Z-up rewrite.** Reported as "clicking anything on the view cube defaults to top". `StandardView` mixed a **Y-up, front-is-identity** convention with **Z-axis yaws**. This engine is **Z-up** (turntable orbits Z; the navigation cube's top face is +Z), so the identity look direction *is* −Z — and yawing about Z does nothing to a −Z look. The result: `.front` / `.back` / `.left` / `.right` all produced the identical top-down rotation, and `.top` looked along −Y.
+  - Rewritten for Z-up: `.top` = identity; side views tilt onto the horizon (`rotX π/2` = front, look +Y, up +Z) then yaw about world Z; isometrics tilt 54.7356° from the zenith then yaw to the corner.
+  - All ten views are now distinct, side views keep a level Z-up horizon, and the default isometric camera is a true three-face corner view (it was a tilted, front-ish two-face view).
+  - Regression tests: per-view look axes, pairwise distinctness, level horizons, and cube face-centre hit-test round-trips at isometric. 146 tests.
+
+## [1.1.18] — 2026-06-11
+
+### Added
+- **Zoom-at-cursor / zoom-at-fingers everywhere.** New `ViewportInputEvent` case **`.pinchAtChanged(scale:centerNDC:aspectRatio:)`** carries the gesture centre, and new `CameraController.zoomToward(factor:cursorNormalized:aspectRatio:)` (the scroll-zoom pivot-shift math generalised to any factor) keeps the world point under the fingers/cursor stationary. Both platforms' magnify gestures now route through it; scroll-wheel zoom already did.
+
+### Fixed
+- **Jumpy / oversensitive trackpad zoom.** `ScrollCaptureMTKView` fed raw `scrollingDeltaY` into a linear `1 + delta·k` factor. Precise devices (trackpads, Magic Mouse) report **pixel** deltas — ±60 per event during a flick, i.e. an 8× zoom from a single event. Precise deltas are now normalised (÷10) at the AppKit source, so one unit means the same zoom on every device.
+- **Zoom was not smooth.** `scrollZoom` now uses an exponential mapping `exp(delta·k)` — smooth, symmetric (in and out cancel), and never non-positive.
+- **Centre-locked pinch.** Trackpad/touch pinch dispatched a plain `.pinchChanged` → `zoom(factor:)` about the view centre, ignoring where the gesture actually was. Now routed through `.pinchAtChanged` (above).
+- 142 tests.
+
+## [1.1.17] — 2026-06-10
+
+### Added
+- **`GestureConfiguration.invertOrbitHorizontal` / `invertOrbitVertical`** — let a consumer flip either orbit axis independently (object-follows-finger vs. camera-orbits-object). Applied in `ViewportInputRouter` for both drag and inertia (`endDrag`).
+
+### Fixed
+- **Taps were being swallowed as micro-orbits**, making tap-to-select feel broken. The orbit gesture's `minimumDistance` was 1 pt, which caught the sub-pixel jitter of a tap, so `SpatialTapGesture` rarely fired. Raised to 8 pt, which cleanly separates a tap (select) from a drag (orbit).
+- 142 tests.
+
 ## [1.1.16] — 2026-06-08
 
 ### Fixed
