@@ -1,8 +1,11 @@
 # OCCTSwiftViewport
 
-A reusable Metal-based 3D viewport library for CAD applications on iOS and macOS. Designed as a rendering companion to [OCCTSwift](https://github.com/gsdali/OCCTSwift) — the two libraries are fully independent, with your app bridging geometry and display.
+[![Swift](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FSecondMouseAU%2FOCCTSwiftViewport%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/SecondMouseAU/OCCTSwiftViewport)
+[![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FSecondMouseAU%2FOCCTSwiftViewport%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/SecondMouseAU/OCCTSwiftViewport)
 
-Part of the [OCCTSwift ecosystem](https://github.com/gsdali/OCCTSwift/blob/main/docs/ecosystem.md) — see the ecosystem map for how this package fits with the kernel, bridge, and sibling layers. SemVer-stable from v1.0.0.
+A reusable Metal-based 3D viewport library for CAD applications on iOS and macOS. Designed as a rendering companion to [OCCTSwift](https://github.com/SecondMouseAU/OCCTSwift) — the two libraries are fully independent, with your app bridging geometry and display.
+
+Part of the [OCCTSwift ecosystem](https://github.com/SecondMouseAU/OCCTSwift/blob/main/docs/ecosystem.md) — see the ecosystem map for how this package fits with the kernel, bridge, and sibling layers. SemVer-stable from v1.0.0.
 
 ```
 Your App
@@ -48,7 +51,7 @@ This package provides two library products:
 // Package.swift
 dependencies: [
     .package(path: "../OCCTSwiftViewport"),
-    // or: .package(url: "https://github.com/gsdali/OCCTSwiftViewport.git", from: "1.0.0")
+    // or: .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.1.23")
 ],
 targets: [
     .target(
@@ -238,7 +241,7 @@ can keep sub-component picking by maintaining a triangle→component map and usi
   contained.
 
 > Renderer-side scaling work (frustum culling, reduced per-body overhead) is
-> tracked in [issue #42](https://github.com/gsdali/OCCTSwiftViewport/issues/42).
+> tracked in [issue #42](https://github.com/SecondMouseAU/OCCTSwiftViewport/issues/42).
 
 ### Direct-mesh bodies (cutting load time)
 
@@ -302,7 +305,7 @@ let controller = ViewportController(configuration: .cadHighQuality)
   `NormalSmoothing.smoothNormals(vertexData:indices:creaseAngle:)`.
 - **Feature edges:** edges are drawn as polylines, so a circular edge is only as
   smooth as its sampling. Sample BREP edges finely (e.g. 64+ points per circle)
-  until analytic arc edges land — see [issue #48](https://github.com/gsdali/OCCTSwiftViewport/issues/48).
+  until analytic arc edges land — see [issue #48](https://github.com/SecondMouseAU/OCCTSwiftViewport/issues/48).
 - **Tradeoff:** tessellation adds GPU work — prefer `.performance` for very large
   many-body scenes (see Performance & Scaling above).
 
@@ -360,7 +363,7 @@ ViewCubeView(controller: controller)
 
 ## Script Harness (CadQuery/OpenSCAD-style workflow)
 
-A companion package [OCCTSwiftScripts](https://github.com/gsdali/OCCTSwiftScripts) provides a scripting workflow: edit Swift code, run it, and see geometry live in the viewport.
+A companion package [OCCTSwiftScripts](https://github.com/SecondMouseAU/OCCTSwiftScripts) provides a scripting workflow: edit Swift code, run it, and see geometry live in the viewport.
 
 ```
 main.swift (full OCCTSwift API)
@@ -380,7 +383,7 @@ Demo app (ScriptWatcher auto-loads new geometry)
 ### Setup
 
 ```bash
-git clone https://github.com/gsdali/OCCTSwiftScripts.git
+git clone https://github.com/SecondMouseAU/OCCTSwiftScripts.git
 cd OCCTSwiftScripts
 swift build          # First build ~30s (pulls OCCTSwift)
 ```
@@ -442,7 +445,7 @@ let result = Bracket.build(holeRadius: 6)
 let body = convertToViewportBody(result.shape)
 ```
 
-See [docs/SCRIPT_WORKFLOW.md](https://github.com/gsdali/OCCTSwiftScripts/blob/main/docs/SCRIPT_WORKFLOW.md) for the full workflow guide including HLR 2D views, dimension annotations, and library extraction patterns.
+See [docs/SCRIPT_WORKFLOW.md](https://github.com/SecondMouseAU/OCCTSwiftScripts/blob/main/docs/SCRIPT_WORKFLOW.md) for the full workflow guide including HLR 2D views, dimension annotations, and library extraction patterns.
 
 ## Architecture
 
@@ -560,8 +563,8 @@ xcodegen                             # Regenerate Xcode project from project.yml
 **Note:** OCCTSwift is a local path dependency (`../OCCTSwift` in Package.swift). Clone both repositories as siblings:
 
 ```bash
-git clone https://github.com/gsdali/OCCTSwift.git
-git clone https://github.com/gsdali/OCCTSwiftViewport.git
+git clone https://github.com/SecondMouseAU/OCCTSwift.git
+git clone https://github.com/SecondMouseAU/OCCTSwiftViewport.git
 # They should be at the same directory level
 ```
 
