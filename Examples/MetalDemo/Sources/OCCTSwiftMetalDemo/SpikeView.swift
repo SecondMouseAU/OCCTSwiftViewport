@@ -8,6 +8,36 @@ import OCCTSwift
 import OCCTSwiftViewport
 import OCCTSwiftTools
 
+/// A `DisclosureGroup` wrapped in its own `View` type.
+///
+/// This exists to keep the sidebar off the iOS main thread's 1 MB stack (issue #87).
+/// SwiftUI's `List.body` is generic over its content and gets specialised for that
+/// concrete type; Swift then reserves stack for every intermediate value in the
+/// specialised function. Written inline, the sidebar's whole tree (23 groups, 235
+/// buttons) is one type, so that single frame asked for more than 1 MB and
+/// `__chkstk_darwin` hit the guard page — `EXC_BAD_ACCESS` the moment the settings
+/// sheet laid out. macOS survived on its 8 MB stack, and the Simulator survived
+/// because simulator apps are macOS processes and inherit that 8 MB, so this only
+/// ever reproduced on device.
+///
+/// Being a separate `View` is load-bearing: `List` then sees a tuple of small
+/// structs, and each group's subtree is built later in its own `body` frame. A
+/// computed property or an inline closure does *not* do this — it is materialised
+/// into the parent's frame. Keep the sidebar's groups using this type.
+private struct SidebarGroup<Content: View>: View {
+    private let title: String
+    @ViewBuilder private let content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
+        DisclosureGroup(title) { content() }
+    }
+}
+
 struct SpikeView: View {
     @StateObject private var controller = ViewportController(configuration: SpikeView.makeConfiguration())
 
@@ -243,12 +273,12 @@ struct SpikeView: View {
 
     private var sidebar: some View {
         List {
-            DisclosureGroup("Debug") {
+            SidebarGroup("Debug") {
                 Toggle("Input event inspector", isOn: $showInputInspector)
                     .accessibilityIdentifier("inputInspectorToggle")
             }
 
-            DisclosureGroup("File & Tools") {
+            SidebarGroup("File & Tools") {
                 fileSection
                 exportSection
                 healingSection
@@ -256,7 +286,7 @@ struct SpikeView: View {
                 scriptWatcherSection
             }
 
-            DisclosureGroup("Materials") {
+            SidebarGroup("Materials") {
                 MaterialEditorPanel(
                     bodies: $bodies,
                     controller: controller,
@@ -264,66 +294,66 @@ struct SpikeView: View {
                 )
             }
 
-            DisclosureGroup("Geometry Demos") {
-                DisclosureGroup("Direct Mesh (spike)") {
+            SidebarGroup("Geometry Demos") {
+                SidebarGroup("Direct Mesh (spike)") {
                     directMeshDemoButtons
                 }
-                DisclosureGroup("Curves 2D") {
+                SidebarGroup("Curves 2D") {
                     curve2DDemoButtons
                 }
-                DisclosureGroup("Curves 3D") {
+                SidebarGroup("Curves 3D") {
                     curve3DDemoButtons
                 }
-                DisclosureGroup("Surfaces") {
+                SidebarGroup("Surfaces") {
                     surfaceDemoButtons
                 }
-                DisclosureGroup("Sweeps") {
+                SidebarGroup("Sweeps") {
                     sweepDemoButtons
                 }
-                DisclosureGroup("Projections") {
+                SidebarGroup("Projections") {
                     projectionDemoButtons
                 }
-                DisclosureGroup("Plates") {
+                SidebarGroup("Plates") {
                     plateDemoButtons
                 }
             }
 
-            DisclosureGroup("Modeling Demos") {
-                DisclosureGroup("Medial Axis") {
+            SidebarGroup("Modeling Demos") {
+                SidebarGroup("Medial Axis") {
                     medialAxisDemoButtons
                 }
-                DisclosureGroup("Naming") {
+                SidebarGroup("Naming") {
                     namingDemoButtons
                 }
-                DisclosureGroup("Annotations") {
+                SidebarGroup("Annotations") {
                     annotationDemoButtons
                 }
             }
 
-            DisclosureGroup("OCCT 8 Features") {
-                DisclosureGroup("Primitives & Analysis") {
+            SidebarGroup("OCCT 8 Features") {
+                SidebarGroup("Primitives & Analysis") {
                     occt8PrimitivesButtons
                 }
-                DisclosureGroup("Modeling Operations") {
+                SidebarGroup("Modeling Operations") {
                     occt8ModelingButtons
                 }
-                DisclosureGroup("Advanced Operations") {
+                SidebarGroup("Advanced Operations") {
                     occt8AdvancedButtons
                 }
-                DisclosureGroup("Curves & Geometry") {
+                SidebarGroup("Curves & Geometry") {
                     occt8CurvesButtons
                 }
-                DisclosureGroup("Transforms & OCAF") {
+                SidebarGroup("Transforms & OCAF") {
                     occt8TransformsButtons
                 }
-                DisclosureGroup("I/O & Assembly") {
+                SidebarGroup("I/O & Assembly") {
                     occt8IOButtons
                 }
             }
 
             gdtSection
 
-            DisclosureGroup("Viewport") {
+            SidebarGroup("Viewport") {
                 selectionModeSection
                 selectionSection
                 standardViewsSection
