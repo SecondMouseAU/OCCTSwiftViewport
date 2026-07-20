@@ -235,42 +235,60 @@ public struct MetalViewportView: View {
         Group {
             if let renderer = renderer {
                 #if os(macOS)
-                MetalViewRepresentable(
-                    renderer: renderer,
-                    backgroundColor: canvasBackgroundColor,
-                    sampleCount: controller.configuration.msaaSampleCount,
-                    onScrollWheel: { delta, cursorInView, viewSize in
-                        guard viewSize.width > 0, viewSize.height > 0 else { return }
-                        let nx = Float((cursorInView.x / viewSize.width) * 2 - 1)
-                        let ny = Float((1 - cursorInView.y / viewSize.height) * 2 - 1)
-                        let aspect = Float(viewSize.width / viewSize.height)
-                        controller.dispatch(.scroll(
-                            delta: Float(delta),
-                            cursorNDC: SIMD2<Float>(nx, ny),
-                            aspectRatio: aspect
-                        ))
-                        controller.scheduleDynamicPivotUpdate(bodies: bodies)
-                    },
-                    onMouseDown: { location, viewSize in
-                        handlePickAt(location, viewSize: viewSize)
-                    }
-                )
+                macOSMetalView(renderer: renderer)
                 #else
-                MetalViewRepresentable(
-                    renderer: renderer,
-                    backgroundColor: canvasBackgroundColor,
-                    sampleCount: controller.configuration.msaaSampleCount
-                )
+                otherPlatformMetalView(renderer: renderer)
                 #endif
             } else {
-                Color(
-                    red: Double(canvasBackgroundColor.x),
-                    green: Double(canvasBackgroundColor.y),
-                    blue: Double(canvasBackgroundColor.z)
-                )
+                metalViewFallback
             }
         }
     }
+
+    private var metalViewFallback: some View {
+        Color(
+            red: Double(canvasBackgroundColor.x),
+            green: Double(canvasBackgroundColor.y),
+            blue: Double(canvasBackgroundColor.z)
+        )
+    }
+
+    #if os(macOS)
+    @ViewBuilder
+    private func macOSMetalView(renderer: ViewportRenderer) -> some View {
+        let onScrollWheel: (CGFloat, CGPoint, CGSize) -> Void = { delta, cursorInView, viewSize in
+            guard viewSize.width > 0, viewSize.height > 0 else { return }
+            let nx = Float((cursorInView.x / viewSize.width) * 2 - 1)
+            let ny = Float((1 - cursorInView.y / viewSize.height) * 2 - 1)
+            let aspect = Float(viewSize.width / viewSize.height)
+            controller.dispatch(.scroll(
+                delta: Float(delta),
+                cursorNDC: SIMD2<Float>(nx, ny),
+                aspectRatio: aspect
+            ))
+            controller.scheduleDynamicPivotUpdate(bodies: bodies)
+        }
+        let onMouseDown: (CGPoint, CGSize) -> Void = { location, viewSize in
+            handlePickAt(location, viewSize: viewSize)
+        }
+        MetalViewRepresentable(
+            renderer: renderer,
+            backgroundColor: canvasBackgroundColor,
+            sampleCount: controller.configuration.msaaSampleCount,
+            onScrollWheel: onScrollWheel,
+            onMouseDown: onMouseDown
+        )
+    }
+    #else
+    @ViewBuilder
+    private func otherPlatformMetalView(renderer: ViewportRenderer) -> some View {
+        MetalViewRepresentable(
+            renderer: renderer,
+            backgroundColor: canvasBackgroundColor,
+            sampleCount: controller.configuration.msaaSampleCount
+        )
+    }
+    #endif
 
     // MARK: - iOS / visionOS Gestures
 

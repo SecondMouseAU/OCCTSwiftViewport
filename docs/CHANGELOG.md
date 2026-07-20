@@ -2,6 +2,13 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.25] — 2026-07-20
+
+### Fixed
+- **`swift build -c release` failed to type-check `MetalViewportView.metalView`** (issue #91). The computed property built its `#if os(macOS)`/`#else` branches, two inferred-closure-parameter trailing closures (`onScrollWheel`, `onMouseDown`), and the `Color(...)` fallback branch as one `ViewBuilder` expression — under `-c release`'s optimizer the type checker couldn't resolve it in reasonable time, failing the build entirely (debug builds were unaffected). Reported via a downstream consumer's CI (OCCTSwiftScripts#79) resolving this package transitively.
+  - Split into `macOSMetalView(renderer:)` / `otherPlatformMetalView(renderer:)` `@ViewBuilder` methods (one compiled per platform) plus a standalone `metalViewFallback` property, so the type checker resolves each piece independently instead of the whole tree at once. `onScrollWheel`/`onMouseDown` are now typed local closures rather than inferred trailing-closure literals.
+  - No behaviour or public API change. Verified with a clean `swift build -c release` (was failing, now completes) and the full `swift test` suite (170 tests, unaffected).
+
 ## [1.1.23] — 2026-07-16
 
 ### Added
