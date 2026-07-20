@@ -404,6 +404,63 @@ public final class ViewportController: ObservableObject {
         handlePick(result: result)
     }
 
+    // MARK: - Region Picking
+
+    /// Weak back-reference to the renderer currently driving this controller's on-screen
+    /// viewport, set by `ViewportRenderer.init`. Lets the controller forward region-pick
+    /// requests to the live GPU pick texture without extending the renderer's lifetime — the
+    /// renderer itself is owned by `MetalViewportView`'s view state, not the controller.
+    weak var attachedRenderer: ViewportRenderer?
+
+    /// Drawable pixel size of the attached renderer's viewport, or `.zero` before the first
+    /// frame has drawn (or if no renderer is attached yet). Use this to convert a
+    /// screen-space rectangle — in SwiftUI view points, e.g. from your own drag/lasso gesture
+    /// — into the pixel space `performRegionPick(pixelRect:completion:)` expects:
+    /// ```swift
+    /// let scale = controller.drawablePixelSize.width / viewSize.width
+    /// let pixelRect = CGRect(x: dragRect.minX * scale, y: dragRect.minY * scale,
+    ///                        width: dragRect.width * scale, height: dragRect.height * scale)
+    /// ```
+    public var drawablePixelSize: CGSize { attachedRenderer?.lastDrawableSize ?? .zero }
+
+    /// Requests a batched/region GPU pick (issue #90) — the screen-space-rectangle analogue
+    /// of the tap-driven single-pixel pick that already populates `pickResult`. Blits the
+    /// whole rectangle from the pick texture in one GPU round trip, instead of one
+    /// `performPick` call per pixel.
+    ///
+    /// Pull-based: unlike a point pick, this does not update `pickResult` or fire `onPick` —
+    /// results go only to `completion`. `selectionFilter` is honoured with the same
+    /// widget-bypass semantics as `handlePick(result:)`: widget-layer picks pass through
+    /// unfiltered (that stream is owned by an external consumer), and a user-geometry pick
+    /// that fails the filter is dropped. Apply your own enclosure semantics (fully-inside vs.
+    /// any-intersecting) over the returned candidates — this only resolves which primitives
+    /// are under the rectangle, occlusion-aware and pixel-accurate.
+    ///
+    /// - Parameters:
+    ///   - pixelRect: The rectangle to sample, in drawable **pixel** coordinates — see
+    ///     `drawablePixelSize` to convert from SwiftUI view points.
+    ///   - completion: Called with every distinct primitive under the rectangle, in scan
+    ///     order of first appearance. `[]` if no renderer is attached yet, the rectangle
+    ///     misses the pick texture, or every primitive was filtered out.
+    public func performRegionPick(pixelRect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void) {
+        guard let attachedRenderer else {
+            completion([])
+            return
+        }
+        let filter = selectionFilter
+        attachedRenderer.performRegionPick(rect: pixelRect) { results in
+            completion(Self.applySelectionFilter(results, filter: filter))
+        }
+    }
+
+    /// Applies `selectionFilter`'s widget-bypass semantics — mirroring the per-primitive
+    /// routing in `handlePick(result:)` — to a batch of region-pick results. Pulled out as a
+    /// pure function so the routing logic is directly unit-testable.
+    nonisolated static func applySelectionFilter(_ results: [PickResult], filter: SelectionFilter?) -> [PickResult] {
+        guard let filter else { return results }
+        return results.filter { $0.pickLayer == .widget || filter.matches($0) }
+    }
+
     // MARK: - Measurement Interaction
 
     /// Number of world points a measurement of the given mode requires before it

@@ -316,6 +316,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let pickTextureManager: PickTextureManager
     /// Shared-mode buffer for single-pixel readback of pick ID.
     private let pickReadbackBuffer: MTLBuffer
+    /// Shared-mode buffer for region readback of pick IDs (issue #90). Grown on demand to fit
+    /// the largest rectangle requested so far; reused below that.
+    private var regionReadbackBuffer: MTLBuffer?
+    private var regionReadbackCapacity: Int = 0
     /// Maps objectIndex → bodyID, rebuilt each frame.
     private var currentIndexMap: [Int: String] = [:]
     /// Maps bodyID → PickLayer, rebuilt each frame. Used to route GPU pick results
@@ -1103,6 +1107,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
 
         super.init()
+
+        // Lets the controller forward performRegionPick(pixelRect:completion:) (issue #90)
+        // to this renderer without the controller extending its lifetime — see
+        // ViewportController.attachedRenderer.
+        controller.attachedRenderer = self
     }
 
     // MARK: - Public
@@ -2910,5 +2919,151 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         commandBuffer.commit()
+    }
+
+    /// Returns (creating or growing if needed) a shared-mode buffer of at least
+    /// `minimumBytes`, reused across calls to avoid reallocating on every region pick.
+    private func ensureRegionReadbackBuffer(minimumBytes: Int) -> MTLBuffer? {
+        if let buffer = regionReadbackBuffer, regionReadbackCapacity >= minimumBytes {
+            return buffer
+        }
+        guard let buffer = device.makeBuffer(length: minimumBytes, options: .storageModeShared) else {
+            return nil
+        }
+        regionReadbackBuffer = buffer
+        regionReadbackCapacity = minimumBytes
+        return buffer
+    }
+
+    /// Reads a screen-space rectangle from the pick ID buffer in a single GPU round trip and
+    /// returns the de-duplicated set of primitives it touches (issue #90).
+    ///
+    /// Unlike `performPick(at:)`, which blits a single pixel, this blits the whole rectangle in
+    /// one command-buffer submission — one GPU round trip regardless of the rectangle's pixel
+    /// count, instead of one `performPick` call per pixel. Results are occlusion-aware and
+    /// pixel-accurate (including face interiors), unlike a CPU vertex-projection approximation.
+    ///
+    /// - Parameters:
+    ///   - rect: The rectangle to sample, in drawable **pixel** coordinates — the same space as
+    ///     `performPick(at:)`'s `pixel` parameter, not view points (see `MetalViewportView`'s
+    ///     point→pixel conversion). Clamped to the pick texture's bounds; a rect that doesn't
+    ///     intersect it completes with an empty array.
+    ///   - completion: Called once with every distinct primitive under the rectangle, in scan
+    ///     order of first appearance. Background pixels are excluded, so a rect entirely over
+    ///     empty space completes with `[]`. Apply a `SelectionFilter` to the result the same way
+    ///     you would a single `performPick` result.
+    public func performRegionPick(rect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void) {
+        guard let pickTexture = pickTextureManager.texture else {
+            completion([])
+            return
+        }
+
+        guard let region = Self.clampRegionPickRect(
+            rect, textureWidth: pickTextureManager.width, textureHeight: pickTextureManager.height
+        ) else {
+            completion([])
+            return
+        }
+        let (x, y, w, h) = region
+
+        // Metal blit copies from a texture into a buffer expect each row on an aligned
+        // stride, not necessarily a tightly-packed `width * bytesPerPixel` — pad every row
+        // rather than risk decoding garbage past row 0 on real hardware.
+        let bytesPerRow = Self.alignedBytesPerRow(forWidth: w)
+        let byteCount = bytesPerRow * h
+
+        guard let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: byteCount),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            completion([])
+            return
+        }
+
+        // Blit the whole rectangle from the private pick texture to the shared readback
+        // buffer in one copy — the batched alternative to N per-pixel blits.
+        blitEncoder.copy(
+            from: pickTexture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: x, y: y, z: 0),
+            sourceSize: MTLSize(width: w, height: h, depth: 1),
+            to: readbackBuffer,
+            destinationOffset: 0,
+            destinationBytesPerRow: bytesPerRow,
+            destinationBytesPerImage: byteCount
+        )
+        blitEncoder.endEncoding()
+
+        let indexMap = currentIndexMap
+        let layerMap = currentLayerMap
+
+        commandBuffer.addCompletedHandler { _ in
+            // De-stride: read exactly the w*4 live bytes from each padded row, skipping the
+            // alignment padding, into one flat row-major array for decodeRegionPickResults.
+            let base = readbackBuffer.contents()
+            var rawValues: [UInt32] = []
+            rawValues.reserveCapacity(w * h)
+            for row in 0..<h {
+                let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
+                rawValues.append(contentsOf: UnsafeBufferPointer(start: rowValues, count: w))
+            }
+            let results = Self.decodeRegionPickResults(rawValues, indexMap: indexMap, layerMap: layerMap)
+            Task { @MainActor in
+                completion(results)
+            }
+        }
+
+        commandBuffer.commit()
+    }
+
+    /// Rounds `width * bytesPerPixel` up to a 256-byte-aligned row stride — the safe
+    /// conservative choice for a texture→buffer blit's `destinationBytesPerRow` (Metal's true
+    /// minimum per-format alignment can be smaller, but never larger, for a plain 4-byte
+    /// uncompressed format like the R32Uint pick texture).
+    nonisolated static func alignedBytesPerRow(forWidth width: Int, bytesPerPixel: Int = MemoryLayout<UInt32>.size) -> Int {
+        let alignment = 256
+        let unaligned = width * bytesPerPixel
+        let remainder = unaligned % alignment
+        return remainder == 0 ? unaligned : unaligned + (alignment - remainder)
+    }
+
+    /// Clamps `rect` (drawable pixel coordinates) to the pick texture's `[0,width) x [0,height)`
+    /// bounds, rounding outward so a fractional rect isn't under-sampled, and returns the
+    /// integer origin/size to blit. Returns `nil` if the rect doesn't intersect the texture at
+    /// all, or the texture has zero size (e.g. no frame has drawn yet).
+    nonisolated static func clampRegionPickRect(
+        _ rect: CGRect, textureWidth: Int, textureHeight: Int
+    ) -> (x: Int, y: Int, width: Int, height: Int)? {
+        let clipped = rect.intersection(CGRect(x: 0, y: 0, width: textureWidth, height: textureHeight))
+        guard !clipped.isNull else { return nil }
+
+        let x = max(0, Int(clipped.origin.x.rounded(.down)))
+        let y = max(0, Int(clipped.origin.y.rounded(.down)))
+        let w = min(textureWidth - x, max(1, Int(clipped.width.rounded(.up))))
+        let h = min(textureHeight - y, max(1, Int(clipped.height.rounded(.up))))
+        guard w > 0, h > 0 else { return nil }
+        return (x, y, w, h)
+    }
+
+    /// Decodes a flat array of raw R32Uint pick values — as read back by `performRegionPick`,
+    /// in row-major scan order — into the de-duplicated set of primitives they represent, kept
+    /// in order of first appearance. Background (sentinel) pixels are dropped. Pulled out of
+    /// the GPU readback path as a pure function so the dedup/decode logic is unit-testable
+    /// without a live draw (the pick texture itself is only populated by an actual frame).
+    nonisolated static func decodeRegionPickResults(
+        _ rawValues: [UInt32],
+        indexMap: [Int: String],
+        layerMap: [String: PickLayer]
+    ) -> [PickResult] {
+        var seen = Set<UInt32>()
+        var results: [PickResult] = []
+        for rawValue in rawValues {
+            guard rawValue != PickResult.sentinel, !seen.contains(rawValue) else { continue }
+            seen.insert(rawValue)
+            if let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap) {
+                results.append(result)
+            }
+        }
+        return results
     }
 }

@@ -2,6 +2,18 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.26] — 2026-07-20
+
+### Added
+- **Batched/region GPU pick readback** (issue #90). `ViewportRenderer.performRegionPick(rect:completion:)` blits an arbitrary screen-space rectangle from the pick texture in one GPU round trip and returns the de-duplicated, occlusion-aware set of primitives it touches — instead of the only prior option, one `performPick(at:)` call per pixel. Filed from OCCTSwiftAIS#33's rectangle/lasso selection, which had shipped a CPU-side vertex-projection workaround (no occlusion handling, vertex-only approximation for curved edges/face interiors) because there was no batched entry point.
+  - **New public surface on `ViewportController`** — not just the renderer. The renderer instance driving the live viewport was previously unreachable from outside `MetalViewportView` (a private `@State`), so `performPick`/a hypothetical renderer-only `performRegionPick` had no way to be called by an external consumer against the actual on-screen scene. `ViewportRenderer.init` now registers itself on its controller (`ViewportController.attachedRenderer`, weak, internal); the controller exposes:
+    - `performRegionPick(pixelRect:completion:)` — pull-based (does not touch `pickResult`/`onPick`); honours `selectionFilter` with the same widget-bypass semantics as `handlePick(result:)` (widget-layer picks pass through unfiltered, a user-geometry pick failing the filter is dropped).
+    - `drawablePixelSize` — the attached renderer's drawable pixel size (`.zero` before the first frame), for converting a consumer's own drag/lasso rectangle from SwiftUI view points into the pixel space `performRegionPick` expects.
+  - Each row of the GPU→CPU blit is padded to a 256-byte-aligned stride (Metal's texture→buffer blit convention) and de-strided on readback — not assumed tightly packed — so a narrow region can't read garbage past its first row.
+  - The region readback buffer grows on demand and is reused across calls (no per-pick allocation once warmed up to the largest rectangle requested so far).
+  - `RegionPickTests` (24): pure-function coverage for rectangle clamping, row-stride alignment, raw-value decode/dedup (repeat pixels, sentinel exclusion, unknown object indices, first-appearance ordering), `SelectionFilter` composition, and the `ViewportController` ↔ `ViewportRenderer` attachment wiring — all headlessly verifiable without a live draw. The GPU blit/pixel path itself follows the project's existing convention (see the direct-mesh pick pass in `DirectMeshRenderingTests`) of being live-verified rather than headlessly pixel-tested, since the pick texture is only populated by an actual frame. **194 tests total.**
+  - Source-compatible; no existing API changed.
+
 ## [1.1.25] — 2026-07-20
 
 ### Fixed
