@@ -2,12 +2,39 @@
   "originHash" : "775c7e77659a6e1c12baf58f1be1aa695cfa014cdf7986ee74ec3510eace6508",
   "pins" : [
     {
-      "identity" : "occtswiftio",
+      "identity" : "nodal",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/gsdali/OCCTSwiftIO.git",
+      "location" : "https://github.com/tomasf/Nodal.git",
       "state" : {
-        "revision" : "05881da56a557873d3bd8a1a3b48f997eef504a6",
+        "revision" : "a4dbde9c2d0b70e10e834bd62c46b9d78a67e5f0",
         "version" : "1.0.1"
+      }
+    },
+    {
+      "identity" : "swiftgltf",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/schwa/SwiftGLTF.git",
+      "state" : {
+        "revision" : "e17b478ca157733543a7cf9da370d34dbabc9236",
+        "version" : "1.0.2"
+      }
+    },
+    {
+      "identity" : "threemf",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tomasf/ThreeMF.git",
+      "state" : {
+        "revision" : "dc0156a495932b05928fdacb9ff4e4644102f0a6",
+        "version" : "0.2.4"
+      }
+    },
+    {
+      "identity" : "zip",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tomasf/Zip.git",
+      "state" : {
+        "revision" : "3a22aaf3f449ceded0354695af96967d1df4e5e0",
+        "version" : "2.1.2"
       }
     }
   ],
