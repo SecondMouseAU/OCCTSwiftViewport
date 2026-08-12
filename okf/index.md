@@ -49,3 +49,4 @@ changelog, the Swift Package Index page, and OpenCASCADE upstream.
 - [Search before building](policies/search-before-building.md)
 - [Code structure](policies/code-structure.md)
 - [Issue labels and project-board tracking](policies/issue-tracking.md)
+- [Code style](policies/code-style.md)
