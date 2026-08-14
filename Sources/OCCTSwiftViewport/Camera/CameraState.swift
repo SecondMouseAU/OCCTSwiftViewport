@@ -141,9 +141,10 @@ public struct CameraState: Hashable, Codable, Sendable {
     /// `orthographicScale` (orthographic) such that the bounding sphere of `bounds`
     /// fits inside the view frustum on its narrower axis. `padding` is a
     /// multiplicative margin: `1.0` = tight fit, `1.1` = 10 % breathing room.
-    public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState {
+    public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState
+    {
         let center = bounds.center
-        // Bounding sphere radius — tight enough for typical CAD scenes.
+        // Bounding sphere radius: tight enough for typical CAD scenes.
         let radius = max(bounds.diagonalLength * 0.5, 0.0001)
         let paddedRadius = radius * max(padding, 0.001)
 
@@ -155,7 +156,8 @@ public struct CameraState: Hashable, Codable, Sendable {
             // Vertical extent must cover 2·radius; horizontally that equals 2·radius·aspect.
             // If aspect < 1 (portrait), horizontal is the constraint.
             let verticalScale = paddedRadius * 2
-            let horizontalScale = aspectRatio < 1 ? verticalScale / max(aspectRatio, 0.001) : verticalScale
+            let horizontalScale =
+                aspectRatio < 1 ? verticalScale / max(aspectRatio, 0.001) : verticalScale
             copy.orthographicScale = horizontalScale
         } else {
             // d = r / sin(halfFovMin). FoV is vertical; horizontal halfFov derives from aspect.
@@ -168,8 +170,11 @@ public struct CameraState: Hashable, Codable, Sendable {
     }
 
     /// Convenience: fits to the union of all visible bodies' bounding boxes.
+    ///
     /// Returns `nil` if no body has geometry.
-    public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1) -> CameraState? {
+    public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1)
+        -> CameraState?
+    {
         var union: BoundingBox?
         for body in bodies where body.isVisible {
             guard let bb = body.boundingBox else { continue }
@@ -214,7 +219,8 @@ public struct CameraState: Hashable, Codable, Sendable {
             distance: distance + (target.distance - distance) * clampedT,
             pivot: pivot + (target.pivot - pivot) * clampedT,
             fieldOfView: fieldOfView + (target.fieldOfView - fieldOfView) * clampedT,
-            orthographicScale: orthographicScale + (target.orthographicScale - orthographicScale) * clampedT,
+            orthographicScale: orthographicScale + (target.orthographicScale - orthographicScale)
+                * clampedT,
             isOrthographic: clampedT >= 0.5 ? target.isOrthographic : isOrthographic,
             panOffset: panOffset + (target.panOffset - panOffset) * clampedT
         )
