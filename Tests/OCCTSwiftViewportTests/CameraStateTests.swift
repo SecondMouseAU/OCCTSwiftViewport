@@ -37,6 +37,44 @@ struct CameraStateTests {
         #expect(abs(position.z - 10.0) < 0.001)
     }
 
+    @Test("lookAt places the eye at the requested point, not its reflection")
+    func testLookAtPlacesEyeAtRequestedPosition() {
+        // Regression test for a bug where CameraState.lookAt(target:from:) placed the camera
+        // at the reflection of `from` through `target` (2*target - from) instead of at `from`
+        // itself. An origin target can't catch this: reflecting (0,0,0) and negating the
+        // point both land on -from, so the two failure modes are indistinguishable there.
+        // A non-origin target is required to tell them apart:
+        //   target (10,0,0), requested eye (20,0,0)
+        //   - correct:               eye stays at (20,0,0)
+        //   - reflect-through-target: eye lands at (0,0,0)   (2*target - from)
+        //   - negate-the-point:      eye lands at (-20,0,0)  (-from)
+        let target = SIMD3<Float>(10, 0, 0)
+        let requestedEye = SIMD3<Float>(20, 0, 0)
+
+        let state = CameraState.lookAt(target: target, from: requestedEye)
+
+        #expect(abs(state.position.x - requestedEye.x) < 0.001)
+        #expect(abs(state.position.y - requestedEye.y) < 0.001)
+        #expect(abs(state.position.z - requestedEye.z) < 0.001)
+    }
+
+    @Test("lookAt is correct for an off-axis, non-origin target")
+    func testLookAtOffAxisNonOriginTarget() {
+        // A general case (target and eye both off-axis, up not parallel to either) so a fix
+        // that only happens to satisfy the axis-aligned case above is still caught.
+        let target = SIMD3<Float>(1, 2, 3)
+        let requestedEye = SIMD3<Float>(5, 8, -4)
+
+        let state = CameraState.lookAt(target: target, from: requestedEye)
+
+        #expect(abs(state.position.x - requestedEye.x) < 0.01)
+        #expect(abs(state.position.y - requestedEye.y) < 0.01)
+        #expect(abs(state.position.z - requestedEye.z) < 0.01)
+
+        let expectedViewDirection = simd_normalize(target - requestedEye)
+        #expect(simd_length(state.viewDirection - expectedViewDirection) < 0.01)
+    }
+
     @Test("Fit perspective to symmetric box")
     func testFitPerspectiveSymmetric() {
         // Unit cube at origin, square viewport, default 45° FoV.

@@ -4,7 +4,6 @@
 # swift-format/swiftlint compliance; touching a listed file without removing it
 # fails scripts/check-style-manifest.py. See okf/policies/code-style.md.
 Sources/OCCTSwiftViewport/Camera/CameraController.swift
-Sources/OCCTSwiftViewport/Camera/CameraState.swift
 Sources/OCCTSwiftViewport/Camera/CameraState+ClipPlanes.swift
 Sources/OCCTSwiftViewport/Camera/PivotStrategy.swift
 Sources/OCCTSwiftViewport/Camera/RotationStyle.swift

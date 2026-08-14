@@ -141,9 +141,10 @@ public struct CameraState: Hashable, Codable, Sendable {
     /// `orthographicScale` (orthographic) such that the bounding sphere of `bounds`
     /// fits inside the view frustum on its narrower axis. `padding` is a
     /// multiplicative margin: `1.0` = tight fit, `1.1` = 10 % breathing room.
-    public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState {
+    public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState
+    {
         let center = bounds.center
-        // Bounding sphere radius — tight enough for typical CAD scenes.
+        // Bounding sphere radius: tight enough for typical CAD scenes.
         let radius = max(bounds.diagonalLength * 0.5, 0.0001)
         let paddedRadius = radius * max(padding, 0.001)
 
@@ -155,7 +156,8 @@ public struct CameraState: Hashable, Codable, Sendable {
             // Vertical extent must cover 2·radius; horizontally that equals 2·radius·aspect.
             // If aspect < 1 (portrait), horizontal is the constraint.
             let verticalScale = paddedRadius * 2
-            let horizontalScale = aspectRatio < 1 ? verticalScale / max(aspectRatio, 0.001) : verticalScale
+            let horizontalScale =
+                aspectRatio < 1 ? verticalScale / max(aspectRatio, 0.001) : verticalScale
             copy.orthographicScale = horizontalScale
         } else {
             // d = r / sin(halfFovMin). FoV is vertical; horizontal halfFov derives from aspect.
@@ -168,8 +170,11 @@ public struct CameraState: Hashable, Codable, Sendable {
     }
 
     /// Convenience: fits to the union of all visible bodies' bounding boxes.
+    ///
     /// Returns `nil` if no body has geometry.
-    public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1) -> CameraState? {
+    public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1)
+        -> CameraState?
+    {
         var union: BoundingBox?
         for body in bodies where body.isVisible {
             guard let bb = body.boundingBox else { continue }
@@ -214,7 +219,8 @@ public struct CameraState: Hashable, Codable, Sendable {
             distance: distance + (target.distance - distance) * clampedT,
             pivot: pivot + (target.pivot - pivot) * clampedT,
             fieldOfView: fieldOfView + (target.fieldOfView - fieldOfView) * clampedT,
-            orthographicScale: orthographicScale + (target.orthographicScale - orthographicScale) * clampedT,
+            orthographicScale: orthographicScale + (target.orthographicScale - orthographicScale)
+                * clampedT,
             isOrthographic: clampedT >= 0.5 ? target.isOrthographic : isOrthographic,
             panOffset: panOffset + (target.panOffset - panOffset) * clampedT
         )
@@ -298,11 +304,24 @@ extension CameraState {
 
 // MARK: - Helper Functions
 
-/// Creates a quaternion that rotates to look in a direction.
+/// Creates a quaternion that orients a camera so it looks along `direction`.
+///
+/// `direction` points from the eye toward the target (i.e. `normalize(target - eye)`).
+/// The returned quaternion is the camera's orientation (camera-to-world): applying it to
+/// the local `-Z` axis (see `CameraState.viewDirection`) reproduces `direction`, and applying
+/// it to local `+Z` (see `CameraState.position`) gives the world-space direction from the
+/// target back out to the eye, matching the standard "camera looks down local -Z" convention.
+///
+/// `right`/`correctedUp` follow the same cross-product order as a standard view-matrix basis
+/// (`right = forward × up`, `up' = right × forward`); the row layout fed to the quaternion
+/// extraction below is the transpose of that basis with the forward row negated, which is what
+/// yields a camera-to-world (not world-to-camera) quaternion. Getting either the cross-product
+/// order or the forward-row sign wrong reflects the resulting eye position through the target
+/// (see the regression test `lookAt places the eye at the requested point, not its reflection`).
 private func quaternionLookAt(direction: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
     let forward = simd_normalize(direction)
-    let right = simd_normalize(simd_cross(up, forward))
-    let correctedUp = simd_cross(forward, right)
+    let right = simd_normalize(simd_cross(forward, up))
+    let correctedUp = simd_cross(right, forward)
 
     // Build rotation matrix
     let m00 = right.x
@@ -311,9 +330,9 @@ private func quaternionLookAt(direction: SIMD3<Float>, up: SIMD3<Float>) -> simd
     let m10 = correctedUp.x
     let m11 = correctedUp.y
     let m12 = correctedUp.z
-    let m20 = forward.x
-    let m21 = forward.y
-    let m22 = forward.z
+    let m20 = -forward.x
+    let m21 = -forward.y
+    let m22 = -forward.z
 
     // Convert to quaternion
     let trace = m00 + m11 + m22
