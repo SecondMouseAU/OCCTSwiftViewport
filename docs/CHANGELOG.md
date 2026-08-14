@@ -2,7 +2,30 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
-## [1.1.26] — 2026-07-20
+## [1.1.27] - 2026-08-14
+
+### Fixed
+- **`CameraState.lookAt(target:from:)` placed the camera at the reflection of the requested eye
+  position through the target, not at the requested position itself** (issue #98). This is the
+  function behind an explicit `render-preview --camera-position` (OCCTSwiftScripts); named
+  `StandardView` presets (`.isometric`, `.top`, `.front`, `.right`) do not go through `lookAt` and
+  were unaffected. Reported downstream as: requesting camera position `(0, 0, 200)` against an
+  origin target rendered the -Z view instead of the +Z view, and was worked around by passing
+  `2*target - requestedPosition` in, reflecting the request back before it went in so the double
+  reflection cancelled out.
+  - Root cause: `CameraState.position`/`viewDirection`/`upVector` expect `rotation` to be a
+    camera-to-world orientation quaternion, but the private `quaternionLookAt` helper built its
+    rotation matrix in the world-to-camera (view-matrix) convention instead: `right` used
+    `cross(up, forward)` rather than `cross(forward, up)`, `correctedUp` used
+    `cross(forward, right)` rather than `cross(right, forward)`, and the forward row was stored
+    unnegated. Confirmed as reflect-through-target specifically (not negate-the-point) using a
+    non-origin target, since an origin target can't tell the two failure modes apart
+    (`2*origin - P == -P`).
+  - New regression tests: `lookAt places the eye at the requested point, not its reflection` (the
+    disambiguating non-origin-target case) and `lookAt is correct for an off-axis, non-origin
+    target`. 198 tests total.
+
+## [1.1.26] - 2026-07-20
 
 ### Added
 - **Batched/region GPU pick readback** (issue #90). `ViewportRenderer.performRegionPick(rect:completion:)` blits an arbitrary screen-space rectangle from the pick texture in one GPU round trip and returns the de-duplicated, occlusion-aware set of primitives it touches — instead of the only prior option, one `performPick(at:)` call per pixel. Filed from OCCTSwiftAIS#33's rectangle/lasso selection, which had shipped a CPU-side vertex-projection workaround (no occlusion handling, vertex-only approximation for curved edges/face interiors) because there was no batched entry point.

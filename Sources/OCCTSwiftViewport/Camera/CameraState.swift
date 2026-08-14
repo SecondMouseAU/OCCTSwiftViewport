@@ -298,11 +298,24 @@ extension CameraState {
 
 // MARK: - Helper Functions
 
-/// Creates a quaternion that rotates to look in a direction.
+/// Creates a quaternion that orients a camera so it looks along `direction`.
+///
+/// `direction` points from the eye toward the target (i.e. `normalize(target - eye)`).
+/// The returned quaternion is the camera's orientation (camera-to-world): applying it to
+/// the local `-Z` axis (see `CameraState.viewDirection`) reproduces `direction`, and applying
+/// it to local `+Z` (see `CameraState.position`) gives the world-space direction from the
+/// target back out to the eye, matching the standard "camera looks down local -Z" convention.
+///
+/// `right`/`correctedUp` follow the same cross-product order as a standard view-matrix basis
+/// (`right = forward × up`, `up' = right × forward`); the row layout fed to the quaternion
+/// extraction below is the transpose of that basis with the forward row negated, which is what
+/// yields a camera-to-world (not world-to-camera) quaternion. Getting either the cross-product
+/// order or the forward-row sign wrong reflects the resulting eye position through the target
+/// (see the regression test `lookAt places the eye at the requested point, not its reflection`).
 private func quaternionLookAt(direction: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
     let forward = simd_normalize(direction)
-    let right = simd_normalize(simd_cross(up, forward))
-    let correctedUp = simd_cross(forward, right)
+    let right = simd_normalize(simd_cross(forward, up))
+    let correctedUp = simd_cross(right, forward)
 
     // Build rotation matrix
     let m00 = right.x
@@ -311,9 +324,9 @@ private func quaternionLookAt(direction: SIMD3<Float>, up: SIMD3<Float>) -> simd
     let m10 = correctedUp.x
     let m11 = correctedUp.y
     let m12 = correctedUp.z
-    let m20 = forward.x
-    let m21 = forward.y
-    let m22 = forward.z
+    let m20 = -forward.x
+    let m21 = -forward.y
+    let m22 = -forward.z
 
     // Convert to quaternion
     let trace = m00 + m11 + m22
