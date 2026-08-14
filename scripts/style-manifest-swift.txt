@@ -27,7 +27,6 @@ Sources/OCCTSwiftViewport/Math/MatrixUtils.swift
 Sources/OCCTSwiftViewport/Math/ProjectionUtility.swift
 Sources/OCCTSwiftViewport/Math/Ray.swift
 Sources/OCCTSwiftViewport/Math/SceneRaycast.swift
-Sources/OCCTSwiftViewport/OCCTSwiftViewport.swift
 Sources/OCCTSwiftViewport/Picking/MeasurementPicking.swift
 Sources/OCCTSwiftViewport/Picking/PickingConfiguration.swift
 Sources/OCCTSwiftViewport/Picking/PickResult.swift

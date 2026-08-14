@@ -4,69 +4,11 @@
 // Copyright (c) 2026. All rights reserved.
 // SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
 
-/// OCCTSwiftViewport provides a complete 3D viewport solution for CAD applications.
-///
-/// ## Overview
-///
-/// OCCTSwiftViewport is built on Metal and provides:
-/// - Smooth camera controls (orbit, pan, zoom) with inertia
-/// - Arcball and turntable rotation styles
-/// - ViewCube for orientation and quick navigation
-/// - Configurable gestures for iOS and macOS
-/// - Standard view presets (Top, Front, Isometric, etc.)
-/// - Professional three-point lighting
-/// - Wireframe, shaded, and depth-edge display modes
-/// - CPU raycast and dynamic pivot
-///
-/// ## Quick Start
-///
-/// ```swift
-/// import SwiftUI
-/// import OCCTSwiftViewport
-///
-/// struct ContentView: View {
-///     @StateObject private var controller = ViewportController()
-///     @State private var bodies: [ViewportBody] = [
-///         .box(size: 1, color: .gray)
-///     ]
-///
-///     var body: some View {
-///         MetalViewportView(controller: controller, bodies: $bodies)
-///     }
-/// }
-/// ```
-///
-/// ## Camera Control
-///
-/// The viewport supports multiple camera control styles:
-///
-/// ```swift
-/// // Configure rotation style
-/// controller.cameraController.rotationStyle = .turntable  // Z-up locked
-/// controller.cameraController.rotationStyle = .arcball    // Free rotation
-///
-/// // Animate to standard views
-/// controller.goToStandardView(.top)
-/// controller.goToStandardView(.isometricFrontRight)
-///
-/// // Focus on a point
-/// controller.focusOn(point: SIMD3<Float>(0, 0, 0), distance: 10)
-/// ```
-///
-/// ## Gesture Configuration
-///
-/// Customize gesture behavior for your application:
-///
-/// ```swift
-/// let config = ViewportConfiguration(
-///     gestureConfiguration: GestureConfiguration(
-///         singleFingerDrag: .orbit,
-///         twoFingerDrag: .pan,
-///         pinchGesture: .zoom
-///     )
-/// )
-/// let controller = ViewportController(configuration: config)
-/// ```
+// This file aggregates the module's public API surface as underscore-prefixed re-exports (below).
+// For the Quick Start, camera control, and gesture configuration walkthroughs that used to live
+// here as a module-level doc comment, see README.md and docs/index.md — this file is not a doc
+// comment's declaration target, so per okf/policies/code-style.md's single-source-of-truth rule
+// that content lives in docs/ rather than duplicated (and drifting) in source. Closes #96.
 
 // MARK: - Public API
 
