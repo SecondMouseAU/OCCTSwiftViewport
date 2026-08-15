@@ -2,6 +2,39 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.29] - 2026-08-16
+
+### Added
+- **`ViewportRenderer` can now render off-screen, so the live renderer's own output is
+  regression-testable** (issue #103, follow-up to the verification gap in #101/#102). Its draw path
+  was previously reachable only through `MTKViewDelegate.draw(in:)` against a live
+  `CAMetalDrawable`, so the *actual* frame the viewport produces — SSAO, silhouettes, shadows, TAA
+  and the GPU pick pass all engaged — could only be checked by eye on a device. `draw(in:)` and the
+  new internal `renderHeadless(...)` are now both thin wrappers over one `encodeFrame(into:)`
+  parameterized over its render targets, so the off-screen path runs *every* pass the live path
+  runs rather than being a parallel, smaller reimplementation (which is exactly the duplication
+  #101 removed elsewhere). Off-screen targets are built to the same specification
+  `MetalViewRepresentable` configures on the live view: BGRA8 colour, `depth32Float_stencil8`
+  depth/stencil, matching MSAA sample count.
+  - **No public API added or changed.** The new surface is `internal`, reachable from the test
+    target via `@testable import`; the live `MTKView` path is byte-identical apart from reading its
+    targets from a struct instead of the view.
+  - Distinct from `OffscreenRenderer`, which remains a separate, deliberately smaller headless
+    pipeline (no SSAO, silhouettes, TAA or pick pass) for `CGImage`/PNG output.
+- **Permanent differential-render harness** (`ViewportRendererHeadlessTests`, 7 tests): a fixed
+  battery of 20 deterministic scenes — shaded, shaded with edges, wireframe, unlit, transparency,
+  direct-mesh, point cloud, shadows, axes, four grid distances, ortho + pan, flat lighting, plus
+  the SSAO-only, silhouettes-only, picking-on, selection-outline and TAA-on variants the transient
+  harness in #102 could not cover — hashed with SHA-256 over the raw BGRA readback. Setting
+  `VIEWPORT_HEADLESS_DUMP_DIR` writes `hashes.json` plus one raw buffer per scene, so any two
+  branches can be compared pixel-for-pixel. **216 tests total.**
+  - The pick texture is populated by an off-screen frame, so `performRegionPick(rect:)` is now
+    covered end to end rather than only through its pure clamp/decode helpers.
+  - A negative control pins that the live grid pass really does respond to
+    `ViewportConfiguration.gridSubdivisions` (it diverges at camera distances 0.5, 3 and 200, and
+    happens to agree at 20 — the same three-of-four split #101 measured for the headless copy), so
+    "grid unchanged" is a real result rather than a vacuous one.
+
 ## [1.1.28] - 2026-08-16
 
 ### Fixed

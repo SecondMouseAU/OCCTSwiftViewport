@@ -367,3 +367,39 @@ These are protocol requirements; you will not normally call them directly.
 nonisolated public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize)
 nonisolated public func draw(in view: MTKView)
 ```
+
+### Off-screen frame rendering (internal)
+
+`ViewportRenderer` can render a frame without a live `MTKView` drawable. This is **internal**, not public API: it exists so the live renderer's real per-frame output can be regression-tested, which was previously impossible (issue #103, follow-up to #101/#102).
+
+```swift
+// Internal to the module; reachable from tests via @testable import.
+struct FrameRenderTargets {
+    let mainPassDescriptor: MTLRenderPassDescriptor
+    let finalColorTexture: MTLTexture
+    let size: CGSize
+    let presentable: (any MTLDrawable)?
+}
+
+func encodeFrame(into targets: FrameRenderTargets)
+
+func renderHeadlessBGRA(
+    width: Int, height: Int, backgroundColor: SIMD4<Float>, frameCount: Int = 1
+) -> [UInt8]?
+
+func renderHeadless(
+    width: Int, height: Int, backgroundColor: SIMD4<Float>, frameCount: Int = 1
+) -> CGImage?
+```
+
+`draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the R32Uint pick pass, the TAA resolve, and the SSAO/silhouette/tone-map composite. `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
+
+This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate, deliberately smaller pipeline (no SSAO, silhouettes, TAA, or pick pass) whose output can drift from the live renderer's, whereas this path *is* the live renderer.
+
+Notes:
+
+- **TAA** accumulates across frames. Pass `frameCount > 1` to warm up the history texture before readback; a single frame has no history to blend.
+- **State.** The call updates `lastDrawableSize` and the renderer's own caches, exactly as a live frame would. Use a dedicated renderer instance rather than one currently driving an on-screen view.
+- **The pick texture is populated,** so `performPick(at:)` / `performRegionPick(rect:)` work headlessly.
+
+`Tests/OCCTSwiftViewportTests/ViewportRendererHeadlessTests.swift` is the permanent harness built on this: a fixed battery of deterministic scenes, hashed per scene, with a `VIEWPORT_HEADLESS_DUMP_DIR` environment variable that dumps hashes plus raw BGRA buffers so two branches can be compared pixel-for-pixel.

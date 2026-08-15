@@ -191,6 +191,27 @@ private struct BodyBuffers {
     let localBoundingBox: BoundingBox?
 }
 
+// MARK: - Frame Render Targets
+
+/// The attachment set one frame is encoded into.
+///
+/// `draw(in:)` fills this from the live `MTKView` drawable and `renderHeadless(...)` fills it from
+/// renderer-owned off-screen textures built to the same specification, so both drive the identical
+/// encode path. See `docs/reference/Rendering.md`.
+struct FrameRenderTargets {
+    /// Main colour pass descriptor, with attachments, load/store actions and clear values set.
+    let mainPassDescriptor: MTLRenderPassDescriptor
+
+    /// Texture the frame's final composite lands in — the drawable's texture on the live path.
+    let finalColorTexture: MTLTexture
+
+    /// Target size in pixels.
+    let size: CGSize
+
+    /// Drawable presented when the frame's command buffer commits; `nil` off-screen.
+    let presentable: (any MTLDrawable)?
+}
+
 // MARK: - ViewportRenderer
 
 @MainActor
@@ -295,6 +316,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let meshShaderDepthOnlyPipeline: MTLRenderPipelineState?
     private let meshShaderPickPipeline: MTLRenderPipelineState?
     private let meshShadersEnabled: Bool
+
+    /// Off-screen attachment set backing `renderHeadless(...)`; `nil` until the first such call.
+    ///
+    /// Kept out of every live-path code path, so headless mode cannot perturb on-screen rendering.
+    var headlessTargets: HeadlessRenderTargets?
 
     /// Depth texture for the 1x pick pass (separate from the MSAA depth).
     private var pickDepthTexture: MTLTexture?
@@ -941,6 +967,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The Metal device, exposed for MTKView configuration.
     public var metalDevice: MTLDevice { device }
 
+    /// The renderer's command queue, shared with the off-screen readback path.
+    var renderCommandQueue: MTLCommandQueue { commandQueue }
+
+    /// MSAA sample count every colour pipeline in this renderer was built for.
+    ///
+    /// Off-screen targets must match it, or the main pass fails validation.
+    var pipelineSampleCount: Int { msaaSampleCount }
+
     /// Loads an equirectangular HDR image as the environment map for IBL.
     ///
     /// Legacy path; expects raw bytes with `Int32 width | Int32 height | RGBA32Float pixels`.
@@ -1072,13 +1106,30 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     }
 
     private func drawOnMainActor(in view: MTKView) {
-        guard let controller = controller else { return }
+        guard controller != nil else { return }
         guard let drawable = view.currentDrawable,
             let renderPassDescriptor = view.currentRenderPassDescriptor
         else { return }
 
+        encodeFrame(
+            into: FrameRenderTargets(
+                mainPassDescriptor: renderPassDescriptor,
+                finalColorTexture: drawable.texture,
+                size: view.drawableSize,
+                presentable: drawable
+            ))
+    }
+
+    /// Encodes one complete frame — every pass `draw(in:)` runs — into `targets`.
+    ///
+    /// The live path and the off-screen path (`renderHeadless(...)`) both go through here, so the
+    /// two can never drift apart in the way a parallel headless implementation would.
+    func encodeFrame(into targets: FrameRenderTargets) {
+        guard let controller = controller else { return }
+        let renderPassDescriptor = targets.mainPassDescriptor
+
         let cameraState = controller.cameraState
-        let drawableSize = view.drawableSize
+        let drawableSize = targets.size
         lastDrawableSize = drawableSize
         let aspectRatio = Float(drawableSize.width / drawableSize.height)
 
@@ -2379,7 +2430,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             // SSAO composite pass: read resolved color + depth, output to drawable
             let ssaoPass = MTLRenderPassDescriptor()
-            ssaoPass.colorAttachments[0].texture = drawable.texture
+            ssaoPass.colorAttachments[0].texture = targets.finalColorTexture
             ssaoPass.colorAttachments[0].loadAction = .dontCare
             ssaoPass.colorAttachments[0].storeAction = .store
 
@@ -2439,7 +2490,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodyGeneration.removeValue(forKey: id)
         }
 
-        commandBuffer.present(drawable)
+        if let presentable = targets.presentable {
+            commandBuffer.present(presentable)
+        }
         commandBuffer.commit()
     }
 
