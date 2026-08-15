@@ -38,11 +38,9 @@ Sources/OCCTSwiftViewport/Renderer/MeasurementCompositor.swift
 Sources/OCCTSwiftViewport/Renderer/MeshletBuilder.swift
 Sources/OCCTSwiftViewport/Renderer/MetalViewRepresentable.swift
 Sources/OCCTSwiftViewport/Renderer/NormalSmoothing.swift
-Sources/OCCTSwiftViewport/Renderer/OffscreenRenderer.swift
 Sources/OCCTSwiftViewport/Renderer/Primitives.swift
 Sources/OCCTSwiftViewport/Renderer/ShadowMapManager.swift
 Sources/OCCTSwiftViewport/Renderer/TessellationManager.swift
-Sources/OCCTSwiftViewport/Renderer/ViewportRenderer.swift
 Sources/OCCTSwiftViewport/Types/Measurement.swift
 Sources/OCCTSwiftViewport/Types/ViewportArc.swift
 Sources/OCCTSwiftViewport/Types/ViewportBody.swift

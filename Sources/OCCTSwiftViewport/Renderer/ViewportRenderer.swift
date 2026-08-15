@@ -4,37 +4,39 @@
 // MTKViewDelegate that drives Metal rendering for the viewport.
 
 @preconcurrency import MetalKit
-import simd
 import SwiftUI
+import simd
 
 // MARK: - Uniform Types (Swift-side, must match Shaders.metal)
 
 struct LightDataSwift {
     var directionAndIntensity: SIMD4<Float>  // xyz = direction, w = intensity
-    var colorAndEnabled: SIMD4<Float>        // rgb = color, a = enabled flag
-    var typeAndParams: SIMD4<Float>          // x = type (0=directional, 1=point), y = radius, z/w = unused
-    var positionAndPad: SIMD4<Float>         // xyz = world position (point lights), w = unused
+    var colorAndEnabled: SIMD4<Float>  // rgb = color, a = enabled flag
+    var typeAndParams: SIMD4<Float>  // x = type (0=directional, 1=point), y = radius, z/w = unused
+    var positionAndPad: SIMD4<Float>  // xyz = world position (point lights), w = unused
 }
 
 struct Uniforms {
     var viewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
     var viewMatrix: simd_float4x4
-    var cameraPosition: SIMD4<Float>          // xyz + nearPlane in w
+    var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
     var light0: LightDataSwift
     var light1: LightDataSwift
     var light2: LightDataSwift
-    var ambientSkyColor: SIMD4<Float>         // rgb + specularPower in w
-    var ambientGroundColor: SIMD4<Float>      // rgb + specularIntensity in w
-    var materialParams: SIMD4<Float>          // fresnelPower, fresnelIntensity, matcapBlend, farPlane
+    var ambientSkyColor: SIMD4<Float>  // rgb + specularPower in w
+    var ambientGroundColor: SIMD4<Float>  // rgb + specularIntensity in w
+    var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
     var lightViewProjectionMatrix: simd_float4x4  // for shadow mapping
-    var shadowParams: SIMD4<Float>            // x = bias, y = intensity, z = enabled (1/0), w = edgeIntensity
-    var shadowParams2: SIMD4<Float> = .zero   // x = lightSize, y = searchRadius, z/w = unused (PCSS)
-    var iblParams: SIMD4<Float> = .zero       // x = intensity, y = rotationY (radians),
-                                              // z = backgroundExposure, w = hasEnvMap
-    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
+    var shadowParams: SIMD4<Float>  // x = bias, y = intensity, z = enabled (1/0), w = edgeIntensity
+    var shadowParams2: SIMD4<Float> = .zero  // x = lightSize, y = searchRadius, z/w = unused (PCSS)
+    var iblParams: SIMD4<Float> = .zero  // x = intensity, y = rotationY (radians),
+    // z = backgroundExposure, w = hasEnvMap
+    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
+        .zero, .zero, .zero, .zero
+    )
     var clipPlaneCount: UInt32 = 0
-    var unlit: UInt32 = 0                      // 1 = unlit/flat-colour (skip lighting + tone map)
+    var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map)
     var _clipPad: SIMD2<Float> = .zero
 }
 
@@ -45,20 +47,21 @@ struct Uniforms {
 // Field order, types, and 16-byte alignment must stay identical.
 // Total stride is 64 bytes (4 × float4-equivalent slots).
 struct BodyUniforms {
-    var color: SIMD4<Float>             // offset  0  (16) — base colour rgb, opacity in a
-    var objectIndex: UInt32 = 0          // offset 16
-    var roughness: Float = 0.5           // offset 20
-    var metallic: Float = 0.0            // offset 24
-    var isSelected: UInt32 = 0           // offset 28  (1 = selected, 2 = hovered)
-    var clearcoat: Float = 0             // offset 32
-    var clearcoatRoughness: Float = 0.03 // offset 36
-    var ior: Float = 1.5                 // offset 40
-    var _pad0: Float = 0                 // offset 44
-    var emissiveAndStrength: SIMD4<Float> = .zero  // offset 48 — xyz = emissive linear RGB, w = strength
+    var color: SIMD4<Float>  // offset  0  (16) — base colour rgb, opacity in a
+    var objectIndex: UInt32 = 0  // offset 16
+    var roughness: Float = 0.5  // offset 20
+    var metallic: Float = 0.0  // offset 24
+    var isSelected: UInt32 = 0  // offset 28  (1 = selected, 2 = hovered)
+    var clearcoat: Float = 0  // offset 32
+    var clearcoatRoughness: Float = 0.03  // offset 36
+    var ior: Float = 1.5  // offset 40
+    var _pad0: Float = 0  // offset 44
+    // offset 48 — xyz = emissive linear RGB, w = strength
+    var emissiveAndStrength: SIMD4<Float> = .zero
 }
 
 extension BodyUniforms {
-    /// Build per-body uniforms from a `ViewportBody`'s effective material.
+    /// Builds per-body uniforms from the body's effective material.
     init(body: ViewportBody, objectIndex: UInt32 = 0, isSelected: UInt32 = 0) {
         let m = body.effectiveMaterial
         self.color = SIMD4<Float>(m.baseColor.x, m.baseColor.y, m.baseColor.z, m.opacity)
@@ -69,18 +72,19 @@ extension BodyUniforms {
         self.clearcoat = m.clearcoat
         self.clearcoatRoughness = m.clearcoatRoughness
         self.ior = m.ior
-        self.emissiveAndStrength = SIMD4<Float>(m.emissive.x, m.emissive.y, m.emissive.z, m.emissiveStrength)
+        self.emissiveAndStrength = SIMD4<Float>(
+            m.emissive.x, m.emissive.y, m.emissive.z, m.emissiveStrength)
     }
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct PointParams`).
 // Field order, types, and 16-byte alignment must stay identical. Total stride = 32 bytes.
 struct PointParamsSwift {
-    var baseColor: SIMD4<Float>     // offset  0 — fallback colour when vertexColors empty
-    var worldRadius: Float           // offset 16
-    var pxPerWorldFactor: Float      // offset 20 — viewportHeight * projection[1][1] / 2
-    var useVertexColors: UInt32      // offset 24
-    var _pad: UInt32 = 0             // offset 28
+    var baseColor: SIMD4<Float>  // offset  0 — fallback colour when vertexColors empty
+    var worldRadius: Float  // offset 16
+    var pxPerWorldFactor: Float  // offset 20 — viewportHeight * projection[1][1] / 2
+    var useVertexColors: UInt32  // offset 24
+    var _pad: UInt32 = 0  // offset 28
 }
 
 struct GridUniforms {
@@ -127,7 +131,7 @@ struct SSAOParamsSwift {
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct TAAParams`).
 struct TAAParamsSwift {
     var blendFactor: Float
-    var disableClamp: Float = 0       // 1.0 = skip neighborhood AABB clamp (use for static scenes)
+    var disableClamp: Float = 0  // 1.0 = skip neighborhood AABB clamp (use for static scenes)
     var jitterOffset: SIMD2<Float>
     var texelSize: SIMD2<Float>
 }
@@ -142,41 +146,48 @@ struct SkyboxUniformsSwift {
 
 private struct BodyBuffers {
     let vertexBuffer: MTLBuffer?
-    /// De-interleaved normal buffer (stride 12) for the direct-mesh path (Option A). When non-nil,
-    /// `vertexBuffer` holds positions only (stride 12) and the body draws via `directMeshPipeline`
-    /// in the opaque shaded pass; the shadow / pick / depth passes skip it.
+    /// De-interleaved normal buffer (stride 12) for the direct-mesh path (Option A).
+    ///
+    /// When non-nil, `vertexBuffer` holds positions only (stride 12) and the body draws via
+    /// `directMeshPipeline` in the opaque shaded pass; the shadow / pick / depth passes skip it.
     var normalBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
     let edgeVertexCount: Int
-    /// Number of line segments (edge primitives). Equals `edgeVertexCount / 2`.
+    /// Number of line segments (edge primitives), equal to `edgeVertexCount / 2`.
+    ///
     /// Used to gate edge picking, since the line primitive count must equal
     /// `body.edgeIndices.count` for the index map to be usable.
     let edgePrimitiveCount: Int
-    /// Vertex buffer for point-sprite picking (built from `body.vertices`).
+    /// Vertex buffer for point-sprite picking, built from `body.vertices`.
+    ///
     /// Same stride as the mesh vertex buffer (position + zeroed normal) so it
     /// can reuse the standard pick vertex descriptor.
     let pointVertexBuffer: MTLBuffer?
     let pointVertexCount: Int
-    /// Position-only buffer for the visible point-cloud pass (stride 12 =
-    /// SIMD3<Float>). The visible-point shader reads this with [[vertex_id]]
-    /// instead of going through a vertex descriptor.
+    /// Position-only buffer for the visible point-cloud pass (stride 12).
+    ///
+    /// The visible-point shader reads this with `[[vertex_id]]` instead of
+    /// going through a vertex descriptor.
     let pointPositionBuffer: MTLBuffer?
-    /// Per-point colour buffer (stride 16 = SIMD4<Float>). Nil when the body
-    /// has no `vertexColors` set — the pass falls back to the body colour.
+    /// Per-point colour buffer (stride 16).
+    ///
+    /// Nil when the body has no `vertexColors` set — the pass falls back to the body colour.
     let pointColorBuffer: MTLBuffer?
     let vertexCount: Int
     // Tessellation (nil when tessellation disabled or edge-only body)
     let tessellation: TessellationBuffers?
     // Mesh shader meshlets (nil when mesh shaders disabled or edge-only body)
     let meshlets: MeshletBuffers?
-    /// Per-triangle highlight style buffer. Nil when `body.triangleStyles` is
-    /// empty. SIMD4<Float> RGBA per triangle, indexed by `[[primitive_id]]`
-    /// in the highlight fragment shader.
+    /// Per-triangle highlight style buffer.
+    ///
+    /// Nil when `body.triangleStyles` is empty. RGBA per triangle, indexed by
+    /// `[[primitive_id]]` in the highlight fragment shader.
     let triangleStyleBuffer: MTLBuffer?
-    /// The body's local-space AABB, computed once when buffers are built. Cached
-    /// here so per-frame frustum culling (issue #42) doesn't rescan vertices.
+    /// The body's local-space AABB, computed once when buffers are built.
+    ///
+    /// Cached here so per-frame frustum culling (issue #42) doesn't rescan vertices.
     let localBoundingBox: BoundingBox?
 }
 
@@ -191,47 +202,56 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let commandQueue: MTLCommandQueue
     // MSAA pipelines (sampleCount matches view — 4 or 1)
     private let shadedPipeline: MTLRenderPipelineState
-    /// Direct-mesh shaded pipeline (Option A): same shaders as `shadedPipeline`, but its vertex
-    /// descriptor reads position from buffer 0 and normal from buffer 2 (de-interleaved), so bodies
-    /// built via `ViewportBody.directMesh(...)` render without a CPU interleave. Opaque main pass
-    /// only in this prototype — direct bodies are skipped by the shadow / pick / depth passes.
+    /// Direct-mesh shaded pipeline (Option A).
+    ///
+    /// Same shaders as `shadedPipeline`, but its vertex descriptor reads position from buffer 0
+    /// and normal from buffer 2 (de-interleaved), so bodies built via
+    /// `ViewportBody.directMesh(...)` render without a CPU interleave.
     private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
     private let pickShadedPipeline: MTLRenderPipelineState
-    /// Direct-mesh face-pick pipeline (Option A): `pick_vertex` with the two-buffer descriptor
-    /// (position@0 / normal@2) so direct-mesh bodies are stamped into the R32Uint pick texture.
-    /// The pick vertex shader reads only position; the normal binding satisfies attribute 1.
+    /// Direct-mesh face-pick pipeline (Option A).
+    ///
+    /// `pick_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh bodies
+    /// are stamped into the R32Uint pick texture. The pick vertex shader reads only position; the
+    /// normal binding satisfies attribute 1.
     private let pickShadedDirectPipeline: MTLRenderPipelineState
-    /// Line-primitive pick pipeline for edge picking. Same vertex shader as
-    /// `pick_vertex`; fragment emits kind=1 in the pick encoding.
+    /// Line-primitive pick pipeline for edge picking.
+    ///
+    /// Same vertex shader as `pick_vertex`; the fragment emits kind=1 in the pick encoding.
     private let pickLinePipeline: MTLRenderPipelineState?
     private let pickArcPipeline: MTLRenderPipelineState?
-    /// Point-sprite pick pipeline for vertex picking. Vertex shader writes
-    /// `[[point_size]]` so individual points have a clickable footprint;
-    /// fragment emits kind=2.
+    /// Point-sprite pick pipeline for vertex picking.
+    ///
+    /// The vertex shader writes `[[point_size]]` so individual points have a clickable
+    /// footprint; the fragment emits kind=2.
     private let pickPointPipeline: MTLRenderPipelineState?
-    /// MSAA point-sprite pipeline for visible point-cloud bodies
-    /// (`primitiveKind == .point`). Renders `body.vertices` as disc-masked
-    /// point sprites with a world-space radius projected to screen pixels.
+    /// MSAA point-sprite pipeline for visible point-cloud bodies.
+    ///
+    /// Renders a `.point` body's `vertices` as disc-masked point sprites with a world-space
+    /// radius projected to screen pixels.
     private let visiblePointPipeline: MTLRenderPipelineState?
     /// `.lessEqual` depth state used by the edge + vertex pick sub-passes so
     /// edges/points coplanar with a face win the pick over the face.
     private let pickEdgeOrPointDepthState: MTLDepthStencilState
     // Depth-only pipeline for SSAO depth pass
     private let depthOnlyPipeline: MTLRenderPipelineState
-    /// Direct-mesh depth-only pipeline (Option A): `depth_only_vertex` with the two-buffer
-    /// descriptor (position@0 / normal@2) so direct-mesh bodies are written into the SSAO/
-    /// silhouette depth prepass too. The depth shader reads only position; the normal binding
-    /// just satisfies the descriptor's attribute 1.
+    /// Direct-mesh depth-only pipeline (Option A).
+    ///
+    /// `depth_only_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh
+    /// bodies are written into the SSAO / silhouette depth prepass too. The depth shader reads
+    /// only position; the normal binding just satisfies the descriptor's attribute 1.
     private let depthOnlyDirectPipeline: MTLRenderPipelineState
     // Shadow mapping
     private let shadowPipeline: MTLRenderPipelineState
-    /// Direct-mesh shadow pipeline (Option A): `shadow_vertex` with the two-buffer descriptor
-    /// (position@0 / normal@2) so direct-mesh bodies cast shadows too. The shadow shader reads only
-    /// position; the normal binding just satisfies the descriptor's attribute 1.
+    /// Direct-mesh shadow pipeline (Option A).
+    ///
+    /// `shadow_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh
+    /// bodies cast shadows too. The shadow shader reads only position; the normal binding just
+    /// satisfies the descriptor's attribute 1.
     private let shadowDirectPipeline: MTLRenderPipelineState
     private let shadowMapManager: ShadowMapManager
     // Selection outline
@@ -244,9 +264,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let stencilWriteState: MTLDepthStencilState
     private let stencilTestState: MTLDepthStencilState
     private let depthState: MTLDepthStencilState
-    /// Always-pass, no-write depth state for overlay-layer bodies (manipulator
-    /// widgets etc.). Drawn after the selection outline so they remain visible
-    /// even when occluded by user geometry.
+    /// Always-pass, no-write depth state for overlay-layer bodies such as manipulator widgets.
+    ///
+    /// Drawn after the selection outline so they remain visible even when occluded by user
+    /// geometry.
     private let overlayDepthState: MTLDepthStencilState
 
     // .lessEqual + write disabled — for the per-triangle highlight pass.
@@ -282,9 +303,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // SSAO post-process
     private let ssaoPipeline: MTLRenderPipelineState?
-    /// 1x resolved color texture for SSAO input (MSAA resolves into this)
+    /// 1x resolved color texture for SSAO input (MSAA resolves into this).
     private var resolvedColorTexture: MTLTexture?
-    /// 1x resolved depth texture for SSAO depth sampling
+    /// 1x resolved depth texture for SSAO depth sampling.
     private var resolvedDepthTexture: MTLTexture?
     private var resolvedWidth: Int = 0
     private var resolvedHeight: Int = 0
@@ -316,22 +337,26 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let pickTextureManager: PickTextureManager
     /// Shared-mode buffer for single-pixel readback of pick ID.
     private let pickReadbackBuffer: MTLBuffer
-    /// Shared-mode buffer for region readback of pick IDs (issue #90). Grown on demand to fit
-    /// the largest rectangle requested so far; reused below that.
+    /// Shared-mode buffer for region readback of pick IDs (issue #90).
+    ///
+    /// Grown on demand to fit the largest rectangle requested so far; reused below that.
     private var regionReadbackBuffer: MTLBuffer?
     private var regionReadbackCapacity: Int = 0
     /// Maps objectIndex → bodyID, rebuilt each frame.
     private var currentIndexMap: [Int: String] = [:]
-    /// Maps bodyID → PickLayer, rebuilt each frame. Used to route GPU pick results
-    /// to either `ViewportController.pickResult` or `widgetPickResult`.
+    /// Maps bodyID → PickLayer, rebuilt each frame.
+    ///
+    /// Routes GPU pick results to either `ViewportController.pickResult` or `widgetPickResult`.
     private var currentLayerMap: [String: PickLayer] = [:]
 
-    /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue
-    /// #48). Grown on demand; written CPU-side each frame.
+    /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue #48).
+    ///
+    /// Grown on demand; written CPU-side each frame.
     private var arcLineBuffer: MTLBuffer?
 
-    /// Most recent drawable size in pixels, updated each frame. Lets the view layer
-    /// derive the point→pixel scale without `UIScreen`/`NSScreen` (works on
+    /// Most recent drawable size in pixels, updated each frame.
+    ///
+    /// Lets the view layer derive the point→pixel scale without `UIScreen`/`NSScreen` (works on
     /// iOS / macOS / visionOS alike).
     public private(set) var lastDrawableSize: CGSize = .zero
 
@@ -339,7 +364,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     public init?(controller: ViewportController, bodies: Binding<[ViewportBody]>) {
         guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
+            let commandQueue = device.makeCommandQueue()
+        else {
             return nil
         }
 
@@ -358,8 +384,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         if let compiled = try? device.makeDefaultLibrary(bundle: Bundle.module) {
             library = compiled
         } else if let metalURL = Bundle.module.url(forResource: "Shaders", withExtension: "metal"),
-                  let src = try? String(contentsOf: metalURL, encoding: .utf8),
-                  let fromSource = try? device.makeLibrary(source: src, options: nil) {
+            let src = try? String(contentsOf: metalURL, encoding: .utf8),
+            let fromSource = try? device.makeLibrary(source: src, options: nil)
+        {
             library = fromSource
         } else {
             return nil
@@ -397,7 +424,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         shadedDesc.rasterSampleCount = sampleCount
         shadedDesc.vertexDescriptor = vertexDesc
 
-        guard let shadedPipeline = try? device.makeRenderPipelineState(descriptor: shadedDesc) else {
+        guard let shadedPipeline = try? device.makeRenderPipelineState(descriptor: shadedDesc)
+        else {
             return nil
         }
         self.shadedPipeline = shadedPipeline
@@ -406,10 +434,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Vertex-stage buffer 1 is the uniforms; the fragment table is separate, so buffer 2 is free
         // in the vertex stage. Reuses shaded_vertex/shaded_fragment unchanged (attributes via stage_in).
         let directVertexDesc = MTLVertexDescriptor()
-        directVertexDesc.attributes[0].format = .float3      // position
+        directVertexDesc.attributes[0].format = .float3  // position
         directVertexDesc.attributes[0].offset = 0
         directVertexDesc.attributes[0].bufferIndex = 0
-        directVertexDesc.attributes[1].format = .float3      // normal
+        directVertexDesc.attributes[1].format = .float3  // normal
         directVertexDesc.attributes[1].offset = 0
         directVertexDesc.attributes[1].bufferIndex = 2
         directVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 3
@@ -430,7 +458,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         directDesc.rasterSampleCount = sampleCount
         directDesc.vertexDescriptor = directVertexDesc
 
-        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc) else {
+        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc)
+        else {
             return nil
         }
         self.directMeshPipeline = directMeshPipeline
@@ -451,7 +480,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         wireDesc.rasterSampleCount = sampleCount
         wireDesc.vertexDescriptor = vertexDesc
 
-        guard let wireframePipeline = try? device.makeRenderPipelineState(descriptor: wireDesc) else {
+        guard let wireframePipeline = try? device.makeRenderPipelineState(descriptor: wireDesc)
+        else {
             return nil
         }
         self.wireframePipeline = wireframePipeline
@@ -528,7 +558,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         pickShadedDesc.rasterSampleCount = 1
         pickShadedDesc.vertexDescriptor = vertexDesc
 
-        guard let pickShadedPipeline = try? device.makeRenderPipelineState(descriptor: pickShadedDesc) else {
+        guard
+            let pickShadedPipeline = try? device.makeRenderPipelineState(descriptor: pickShadedDesc)
+        else {
             return nil
         }
         self.pickShadedPipeline = pickShadedPipeline
@@ -543,7 +575,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         pickShadedDirectDesc.rasterSampleCount = 1
         pickShadedDirectDesc.vertexDescriptor = directVertexDesc
 
-        guard let pickShadedDirectPipeline = try? device.makeRenderPipelineState(descriptor: pickShadedDirectDesc) else {
+        guard
+            let pickShadedDirectPipeline = try? device.makeRenderPipelineState(
+                descriptor: pickShadedDirectDesc)
+        else {
             return nil
         }
         self.pickShadedDirectPipeline = pickShadedDirectPipeline
@@ -602,7 +637,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         visiblePointDesc.depthAttachmentPixelFormat = depthFormat
         visiblePointDesc.stencilAttachmentPixelFormat = depthFormat
         visiblePointDesc.rasterSampleCount = sampleCount
-        self.visiblePointPipeline = try? device.makeRenderPipelineState(descriptor: visiblePointDesc)
+        self.visiblePointPipeline = try? device.makeRenderPipelineState(
+            descriptor: visiblePointDesc)
 
         // Depth-only pipeline (for SSAO depth pass — no color attachments)
         let depthOnlyDesc = MTLRenderPipelineDescriptor()
@@ -613,7 +649,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         depthOnlyDesc.rasterSampleCount = 1
         depthOnlyDesc.vertexDescriptor = vertexDesc
 
-        guard let depthOnlyPipeline = try? device.makeRenderPipelineState(descriptor: depthOnlyDesc) else {
+        guard let depthOnlyPipeline = try? device.makeRenderPipelineState(descriptor: depthOnlyDesc)
+        else {
             return nil
         }
         self.depthOnlyPipeline = depthOnlyPipeline
@@ -627,7 +664,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         depthOnlyDirectDesc.rasterSampleCount = 1
         depthOnlyDirectDesc.vertexDescriptor = directVertexDesc
 
-        guard let depthOnlyDirectPipeline = try? device.makeRenderPipelineState(descriptor: depthOnlyDirectDesc) else {
+        guard
+            let depthOnlyDirectPipeline = try? device.makeRenderPipelineState(
+                descriptor: depthOnlyDirectDesc)
+        else {
             return nil
         }
         self.depthOnlyDirectPipeline = depthOnlyDirectPipeline
@@ -641,7 +681,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         shadowDesc.rasterSampleCount = 1
         shadowDesc.vertexDescriptor = vertexDesc
 
-        guard let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc) else {
+        guard let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc)
+        else {
             return nil
         }
         self.shadowPipeline = shadowPipeline
@@ -654,7 +695,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         shadowDirectDesc.depthAttachmentPixelFormat = .depth32Float
         shadowDirectDesc.rasterSampleCount = 1
         shadowDirectDesc.vertexDescriptor = directVertexDesc
-        guard let shadowDirectPipeline = try? device.makeRenderPipelineState(descriptor: shadowDirectDesc) else {
+        guard
+            let shadowDirectPipeline = try? device.makeRenderPipelineState(
+                descriptor: shadowDirectDesc)
+        else {
             return nil
         }
         self.shadowDirectPipeline = shadowDirectPipeline
@@ -674,7 +718,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         outlineDesc.rasterSampleCount = sampleCount
         outlineDesc.vertexDescriptor = vertexDesc
 
-        guard let outlinePipeline = try? device.makeRenderPipelineState(descriptor: outlineDesc) else {
+        guard let outlinePipeline = try? device.makeRenderPipelineState(descriptor: outlineDesc)
+        else {
             return nil
         }
         self.outlinePipeline = outlinePipeline
@@ -696,7 +741,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         highlightDesc.rasterSampleCount = sampleCount
         highlightDesc.vertexDescriptor = vertexDesc
 
-        guard let highlightPipeline = try? device.makeRenderPipelineState(descriptor: highlightDesc) else {
+        guard let highlightPipeline = try? device.makeRenderPipelineState(descriptor: highlightDesc)
+        else {
             return nil
         }
         self.highlightPipeline = highlightPipeline
@@ -706,7 +752,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let wantsTessellation = quality == .enhanced || quality == .maximum
 
         if wantsTessellation,
-           let tessMgr = TessellationManager(device: device, library: library) {
+            let tessMgr = TessellationManager(device: device, library: library)
+        {
             self.tessellationManager = tessMgr
             let maxTessFactor = controller.configuration.tessellationMaxFactor
 
@@ -717,7 +764,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 desc.tessellationPartitionMode = .fractionalEven
                 desc.tessellationFactorFormat = .half
                 desc.tessellationOutputWindingOrder = .counterClockwise
-                desc.vertexDescriptor = nil // No vertex descriptor for tessellation
+                desc.vertexDescriptor = nil  // No vertex descriptor for tessellation
             }
 
             // Tessellated shaded pipeline
@@ -740,10 +787,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             var diagErrors: [String] = []
             // Check if shader functions were found
-            if tsDesc.vertexFunction == nil { diagErrors.append("tessellated_vertex function NOT FOUND") }
+            if tsDesc.vertexFunction == nil {
+                diagErrors.append("tessellated_vertex function NOT FOUND")
+            }
 
             do {
-                self.tessellatedShadedPipeline = try device.makeRenderPipelineState(descriptor: tsDesc)
+                self.tessellatedShadedPipeline = try device.makeRenderPipelineState(
+                    descriptor: tsDesc)
             } catch {
                 self.tessellatedShadedPipeline = nil
                 diagErrors.append("shaded: \(error.localizedDescription)")
@@ -758,7 +808,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tshDesc.rasterSampleCount = 1
             configureTessellation(tshDesc)
             do {
-                self.tessellatedShadowPipeline = try device.makeRenderPipelineState(descriptor: tshDesc)
+                self.tessellatedShadowPipeline = try device.makeRenderPipelineState(
+                    descriptor: tshDesc)
             } catch {
                 self.tessellatedShadowPipeline = nil
                 diagErrors.append("shadow: \(error.localizedDescription)")
@@ -773,7 +824,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tdDesc.rasterSampleCount = 1
             configureTessellation(tdDesc)
             do {
-                self.tessellatedDepthOnlyPipeline = try device.makeRenderPipelineState(descriptor: tdDesc)
+                self.tessellatedDepthOnlyPipeline = try device.makeRenderPipelineState(
+                    descriptor: tdDesc)
             } catch {
                 self.tessellatedDepthOnlyPipeline = nil
                 diagErrors.append("depth: \(error.localizedDescription)")
@@ -789,7 +841,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tpDesc.rasterSampleCount = 1
             configureTessellation(tpDesc)
             do {
-                self.tessellatedPickPipeline = try device.makeRenderPipelineState(descriptor: tpDesc)
+                self.tessellatedPickPipeline = try device.makeRenderPipelineState(
+                    descriptor: tpDesc)
             } catch {
                 self.tessellatedPickPipeline = nil
                 diagErrors.append("pick: \(error.localizedDescription)")
@@ -800,13 +853,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // Write diagnostic to Documents for retrieval via devicectl
             let diagMsg: String
             if diagErrors.isEmpty {
-                diagMsg = "OK: shaded=\(tessellatedShadedPipeline != nil) shadow=\(tessellatedShadowPipeline != nil) depth=\(tessellatedDepthOnlyPipeline != nil) pick=\(tessellatedPickPipeline != nil)"
+                diagMsg =
+                    "OK: shaded=\(tessellatedShadedPipeline != nil) shadow=\(tessellatedShadowPipeline != nil) depth=\(tessellatedDepthOnlyPipeline != nil) pick=\(tessellatedPickPipeline != nil)"
             } else {
                 diagMsg = "ERRORS:\n" + diagErrors.joined(separator: "\n")
             }
             NSLog("[ViewportRenderer] Tessellation: %@", diagMsg)
-            if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                try? diagMsg.write(to: docs.appendingPathComponent("renderer_diag.txt"), atomically: true, encoding: .utf8)
+            if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+                .first
+            {
+                try? diagMsg.write(
+                    to: docs.appendingPathComponent("renderer_diag.txt"), atomically: true,
+                    encoding: .utf8)
             }
         } else {
             self.tessellationManager = nil
@@ -823,11 +881,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let wantsMeshShaders = quality == .maximum && supportsMeshShaders
 
         if wantsMeshShaders,
-           let objectFunc = library.makeFunction(name: "meshlet_object"),
-           let meshFunc = library.makeFunction(name: "meshlet_mesh"),
-           let shadowMeshFunc = library.makeFunction(name: "meshlet_shadow_mesh"),
-           let depthMeshFunc = library.makeFunction(name: "meshlet_depth_mesh"),
-           let pickMeshFunc = library.makeFunction(name: "meshlet_pick_mesh") {
+            let objectFunc = library.makeFunction(name: "meshlet_object"),
+            let meshFunc = library.makeFunction(name: "meshlet_mesh"),
+            let shadowMeshFunc = library.makeFunction(name: "meshlet_shadow_mesh"),
+            let depthMeshFunc = library.makeFunction(name: "meshlet_depth_mesh"),
+            let pickMeshFunc = library.makeFunction(name: "meshlet_pick_mesh")
+        {
 
             // Helper to create mesh render pipeline
             func makeMeshPipeline(
@@ -891,7 +950,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 label: "mesh_pick"
             )
             self.meshShadersEnabled = meshShaderShadedPipeline != nil
-            NSLog("[ViewportRenderer] Mesh shaders: %@", meshShaderShadedPipeline != nil ? "enabled" : "FAILED")
+            NSLog(
+                "[ViewportRenderer] Mesh shaders: %@",
+                meshShaderShadedPipeline != nil ? "enabled" : "FAILED")
         } else {
             self.meshShaderShadedPipeline = nil
             self.meshShaderShadowPipeline = nil
@@ -941,7 +1002,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         stencilWriteDesc.frontFaceStencil = writeStencil
         stencilWriteDesc.backFaceStencil = writeStencil
 
-        guard let stencilWriteState = device.makeDepthStencilState(descriptor: stencilWriteDesc) else {
+        guard let stencilWriteState = device.makeDepthStencilState(descriptor: stencilWriteDesc)
+        else {
             return nil
         }
         self.stencilWriteState = stencilWriteState
@@ -958,7 +1020,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         stencilTestDesc.frontFaceStencil = testStencil
         stencilTestDesc.backFaceStencil = testStencil
 
-        guard let stencilTestState = device.makeDepthStencilState(descriptor: stencilTestDesc) else {
+        guard let stencilTestState = device.makeDepthStencilState(descriptor: stencilTestDesc)
+        else {
             return nil
         }
         self.stencilTestState = stencilTestState
@@ -978,7 +1041,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let pickEdgeDesc = MTLDepthStencilDescriptor()
         pickEdgeDesc.depthCompareFunction = .lessEqual
         pickEdgeDesc.isDepthWriteEnabled = true
-        guard let pickEdgeOrPointDepthState = device.makeDepthStencilState(descriptor: pickEdgeDesc) else {
+        guard let pickEdgeOrPointDepthState = device.makeDepthStencilState(descriptor: pickEdgeDesc)
+        else {
             return nil
         }
         self.pickEdgeOrPointDepthState = pickEdgeOrPointDepthState
@@ -989,7 +1053,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let highlightDepthDesc = MTLDepthStencilDescriptor()
         highlightDepthDesc.depthCompareFunction = .lessEqual
         highlightDepthDesc.isDepthWriteEnabled = false
-        guard let highlightDepthState = device.makeDepthStencilState(descriptor: highlightDepthDesc) else {
+        guard let highlightDepthState = device.makeDepthStencilState(descriptor: highlightDepthDesc)
+        else {
             return nil
         }
         self.highlightDepthState = highlightDepthState
@@ -1001,7 +1066,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let transparentDepthDesc = MTLDepthStencilDescriptor()
         transparentDepthDesc.depthCompareFunction = .less
         transparentDepthDesc.isDepthWriteEnabled = false
-        guard let transparentSurfaceDepthState = device.makeDepthStencilState(descriptor: transparentDepthDesc) else {
+        guard
+            let transparentSurfaceDepthState = device.makeDepthStencilState(
+                descriptor: transparentDepthDesc)
+        else {
             return nil
         }
         self.transparentSurfaceDepthState = transparentSurfaceDepthState
@@ -1010,20 +1078,22 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let axisLength: Float = 1000.0
         let axisData: [Float] = [
             // X axis: red
-            0, 0, 0,   1, 0, 0, 1,
-            axisLength, 0, 0,   1, 0, 0, 1,
+            0, 0, 0, 1, 0, 0, 1,
+            axisLength, 0, 0, 1, 0, 0, 1,
             // Y axis: green
-            0, 0, 0,   0, 1, 0, 1,
-            0, axisLength, 0,   0, 1, 0, 1,
+            0, 0, 0, 0, 1, 0, 1,
+            0, axisLength, 0, 0, 1, 0, 1,
             // Z axis: blue
-            0, 0, 0,   0, 0, 1, 1,
-            0, 0, axisLength,   0, 0, 1, 1,
+            0, 0, 0, 0, 0, 1, 1,
+            0, 0, axisLength, 0, 0, 1, 1,
         ]
-        guard let axisVB = device.makeBuffer(
-            bytes: axisData,
-            length: axisData.count * MemoryLayout<Float>.size,
-            options: .storageModeShared
-        ) else {
+        guard
+            let axisVB = device.makeBuffer(
+                bytes: axisData,
+                length: axisData.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+        else {
             return nil
         }
         self.axisVertexBuffer = axisVB
@@ -1098,7 +1168,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Picking: texture manager + 4-byte shared readback buffer
         self.pickTextureManager = PickTextureManager(device: device)
-        guard let readback = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared) else {
+        guard
+            let readback = device.makeBuffer(
+                length: MemoryLayout<UInt32>.size, options: .storageModeShared)
+        else {
             return nil
         }
         self.pickReadbackBuffer = readback
@@ -1120,12 +1193,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     public var metalDevice: MTLDevice { device }
 
     /// Loads an equirectangular HDR image as the environment map for IBL.
+    ///
     /// Legacy path; expects raw bytes with `Int32 width | Int32 height | RGBA32Float pixels`.
     public func loadEnvironmentMap(data: Data) {
         environmentMapManager?.loadEquirectangular(data: data, commandQueue: commandQueue)
     }
 
     /// Loads an HDR environment map from a file URL (Radiance `.hdr`).
+    ///
     /// Throws on parse failure; on success, generates the prefiltered/irradiance/cube maps.
     public func loadEnvironmentMap(url: URL) throws {
         try environmentMapManager?.loadHDR(url: url, commandQueue: commandQueue)
@@ -1133,7 +1208,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// Loads pre-decoded equirectangular RGBA32Float pixels into the IBL pipeline.
     public func loadEnvironmentMap(width: Int, height: Int, pixels: [Float]) {
-        environmentMapManager?.loadEquirectangular(width: width, height: height, pixels: pixels, commandQueue: commandQueue)
+        environmentMapManager?.loadEquirectangular(
+            width: width, height: height, pixels: pixels, commandQueue: commandQueue)
     }
 
     /// Clears the current environment map.
@@ -1195,7 +1271,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Ensures TAA history + output textures exist at the given size.
     private func ensureTAATextures(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
-        if let existing = taaHistoryTexture, existing.width == width, existing.height == height { return }
+        if let existing = taaHistoryTexture, existing.width == width, existing.height == height {
+            return
+        }
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
@@ -1247,7 +1325,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private func drawOnMainActor(in view: MTKView) {
         guard let controller = controller else { return }
         guard let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor else { return }
+            let renderPassDescriptor = view.currentRenderPassDescriptor
+        else { return }
 
         let cameraState = controller.cameraState
         let drawableSize = view.drawableSize
@@ -1261,14 +1340,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // 0.01/10000 range. Uses the cached per-body AABBs (from the previous
         // frame on the first frame — bounds change slowly, so that's fine).
         var sceneBounds: BoundingBox? = nil
-        for body in bodiesBinding.wrappedValue where body.isVisible && body.renderLayer == .geometry {
+        for body in bodiesBinding.wrappedValue where body.isVisible && body.renderLayer == .geometry
+        {
             guard let localBox = bodyBufferCache[body.id]?.localBoundingBox else { continue }
             let worldBox = localBox.transformed(by: body.transform)
             sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
         }
         let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
 
-        var projMatrix = cameraState.projectionMatrix(aspectRatio: aspectRatio, near: clip.near, far: clip.far)
+        var projMatrix = cameraState.projectionMatrix(
+            aspectRatio: aspectRatio, near: clip.near, far: clip.far)
 
         // TAA / progressive accumulation: apply Halton(2,3) sub-pixel jitter to the
         // projection matrix so each frame rasterizes at a different sub-pixel offset.
@@ -1313,8 +1394,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 radiusVal = radius
             }
             return LightDataSwift(
-                directionAndIntensity: SIMD4<Float>(ls.direction.x, ls.direction.y, ls.direction.z, ls.intensity),
-                colorAndEnabled: SIMD4<Float>(ls.color.x, ls.color.y, ls.color.z, ls.isEnabled ? 1.0 : 0.0),
+                directionAndIntensity: SIMD4<Float>(
+                    ls.direction.x, ls.direction.y, ls.direction.z, ls.intensity),
+                colorAndEnabled: SIMD4<Float>(
+                    ls.color.x, ls.color.y, ls.color.z, ls.isEnabled ? 1.0 : 0.0),
                 typeAndParams: SIMD4<Float>(typeVal, radiusVal, 0, 0),
                 positionAndPad: SIMD4<Float>(ls.position.x, ls.position.y, ls.position.z, 0)
             )
@@ -1328,7 +1411,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let shadowEnabled = lighting.shadowsEnabled
         let lightVP: simd_float4x4
         if shadowEnabled {
-            lightVP = computeLightViewProjection(lightDir: lighting.keyLight.direction, bodies: bodiesBinding.wrappedValue)
+            lightVP = computeLightViewProjection(
+                lightDir: lighting.keyLight.direction, bodies: bodiesBinding.wrappedValue)
         } else {
             lightVP = matrix_identity_float4x4
         }
@@ -1369,13 +1453,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 viewProjectionMatrix: viewProjection,
                 modelMatrix: matrix_identity_float4x4,
                 viewMatrix: viewMatrix,
-                cameraPosition: SIMD4<Float>(cameraState.position.x, cameraState.position.y, cameraState.position.z, nearPlane),
+                cameraPosition: SIMD4<Float>(
+                    cameraState.position.x, cameraState.position.y, cameraState.position.z,
+                    nearPlane),
                 light0: packLight(lightSources[0]),
                 light1: packLight(lightSources[1]),
                 light2: packLight(lightSources[2]),
-                ambientSkyColor: SIMD4<Float>(lighting.ambientSkyColor.x, lighting.ambientSkyColor.y, lighting.ambientSkyColor.z, lighting.specularPower),
-                ambientGroundColor: SIMD4<Float>(lighting.ambientGroundColor.x, lighting.ambientGroundColor.y, lighting.ambientGroundColor.z, lighting.specularIntensity),
-                materialParams: SIMD4<Float>(lighting.fresnelPower, lighting.fresnelIntensity, lighting.matcapBlend, farPlane),
+                ambientSkyColor: SIMD4<Float>(
+                    lighting.ambientSkyColor.x, lighting.ambientSkyColor.y,
+                    lighting.ambientSkyColor.z, lighting.specularPower),
+                ambientGroundColor: SIMD4<Float>(
+                    lighting.ambientGroundColor.x, lighting.ambientGroundColor.y,
+                    lighting.ambientGroundColor.z, lighting.specularIntensity),
+                materialParams: SIMD4<Float>(
+                    lighting.fresnelPower, lighting.fresnelIntensity, lighting.matcapBlend, farPlane
+                ),
                 lightViewProjectionMatrix: lightVP,
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
@@ -1398,7 +1490,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // stable pick index ONCE per frame (issue #42 part 3). The main draw pass
         // iterates this list instead of re-filtering `bodies` and re-hashing the
         // String-keyed `bodyBufferCache[body.id]` every pass.
-        var frameVisibleBodies: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
+        var frameVisibleBodies: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] =
+            []
         frameVisibleBodies.reserveCapacity(bodies.count)
         for body in bodies where body.isVisible {
             ensureBuffers(for: body)
@@ -1417,14 +1510,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Set / extra String hashing. The shadow pass is intentionally not
         // camera-culled (off-screen casters can shadow visible geometry); bodies
         // with no bounds are never culled.
-        let cullFrustum: Frustum? = controller.configuration.enableFrustumCulling
+        let cullFrustum: Frustum? =
+            controller.configuration.enableFrustumCulling
             ? Frustum(viewProjection: viewProjection)
             : nil
 
         let silhouettesEnabled = controller.configuration.enableSilhouettes
         // Unlit mode bypasses the SSAO/tone-map composite pass entirely so diagnostic
         // colours are never desaturated by ACES tone mapping (issue #77).
-        let ssaoEnabled = (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil && displayMode.showsSurfaces && displayMode != .unlit
+        let ssaoEnabled =
+            (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil
+            && displayMode.showsSurfaces && displayMode != .unlit
         let taaEnabled = controller.enableTAA && taaPipeline != nil
         let w = Int(drawableSize.width)
         let h = Int(drawableSize.height)
@@ -1457,10 +1553,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
             // One-time diagnostic log
             if tessBufferList.isEmpty && nonTessBodyCount > 0 {
-                NSLog("[ViewportRenderer] WARNING: %d bodies have no tessellation data", nonTessBodyCount)
+                NSLog(
+                    "[ViewportRenderer] WARNING: %d bodies have no tessellation data",
+                    nonTessBodyCount)
             }
             if !tessBufferList.isEmpty,
-               let computeEncoder = commandBuffer.makeComputeCommandEncoder() {
+                let computeEncoder = commandBuffer.makeComputeCommandEncoder()
+            {
                 let config = controller.configuration
                 tessMgr.updateTessFactors(
                     tessBuffers: tessBufferList,
@@ -1488,9 +1587,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 shadowPass.depthAttachment.storeAction = .store
                 shadowPass.depthAttachment.clearDepth = 1.0
 
-                if let shadowEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: shadowPass) {
+                if let shadowEncoder = commandBuffer.makeRenderCommandEncoder(
+                    descriptor: shadowPass)
+                {
                     shadowEncoder.setDepthStencilState(depthState)
-                    shadowEncoder.setCullMode(.front) // Reduce shadow acne with front-face culling
+                    shadowEncoder.setCullMode(.front)  // Reduce shadow acne with front-face culling
                     shadowEncoder.setDepthBias(0.01, slopeScale: 1.5, clamp: 0.02)
 
                     for body in bodies where body.isVisible {
@@ -1499,7 +1600,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         if body.renderLayer == .overlay { continue }
                         // Direct-mesh bodies cast shadows via shadowDirectPipeline (handled in the
                         // standard draw branch below), so they are NOT excluded here.
-                        let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+                        let hasMesh =
+                            buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                            && buffers.indexCount > 0
 
                         if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                             var shadowUniforms = ShadowUniformsSwift(
@@ -1507,25 +1610,43 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 modelMatrix: body.transform
                             )
 
-                            if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadowPipeline {
+                            if useMeshShaders, let ml = buffers.meshlets,
+                                let msPipeline = meshShaderShadowPipeline
+                            {
                                 shadowEncoder.setRenderPipelineState(msPipeline)
-                                shadowEncoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                                shadowEncoder.setObjectBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
-                                shadowEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
+                                shadowEncoder.setObjectBuffer(
+                                    ml.descriptorBuffer, offset: 0, index: 0)
+                                shadowEncoder.setObjectBytes(
+                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                    index: 1)
+                                shadowEncoder.setMeshBuffer(
+                                    ml.descriptorBuffer, offset: 0, index: 0)
                                 shadowEncoder.setMeshBuffer(vb, offset: 0, index: 1)
-                                shadowEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-                                shadowEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-                                shadowEncoder.setMeshBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 4)
+                                shadowEncoder.setMeshBuffer(
+                                    ml.vertexIndexBuffer, offset: 0, index: 2)
+                                shadowEncoder.setMeshBuffer(
+                                    ml.triangleIndexBuffer, offset: 0, index: 3)
+                                shadowEncoder.setMeshBytes(
+                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                    index: 4)
                                 shadowEncoder.drawMeshThreadgroups(
                                     MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                                    threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-                                    threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
+                                    threadsPerObjectThreadgroup: MTLSize(
+                                        width: 1, height: 1, depth: 1),
+                                    threadsPerMeshThreadgroup: MTLSize(
+                                        width: 64, height: 1, depth: 1)
                                 )
-                            } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedShadowPipeline {
+                            } else if useTessellation, let tess = buffers.tessellation,
+                                let tessPipeline = tessellatedShadowPipeline
+                            {
                                 shadowEncoder.setRenderPipelineState(tessPipeline)
-                                shadowEncoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                                shadowEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-                                shadowEncoder.setVertexBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
+                                shadowEncoder.setTessellationFactorBuffer(
+                                    tess.tessFactorBuffer, offset: 0, instanceStride: 0)
+                                shadowEncoder.setVertexBuffer(
+                                    tess.patchDataBuffer, offset: 0, index: 0)
+                                shadowEncoder.setVertexBytes(
+                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                    index: 1)
                                 shadowEncoder.drawPatches(
                                     numberOfPatchControlPoints: 3,
                                     patchStart: 0,
@@ -1545,7 +1666,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                     shadowEncoder.setRenderPipelineState(shadowPipeline)
                                     shadowEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                                 }
-                                shadowEncoder.setVertexBytes(&shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
+                                shadowEncoder.setVertexBytes(
+                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                    index: 1)
                                 shadowEncoder.drawIndexedPrimitives(
                                     type: .triangle,
                                     indexCount: buffers.indexCount,
@@ -1567,7 +1690,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         renderPassDescriptor.colorAttachments[1].texture = nil
 
         // When SSAO or TAA is enabled, redirect MSAA resolve to our intermediate texture
-        if (ssaoEnabled || taaEnabled), let resolvedColor = resolvedColorTexture {
+        if ssaoEnabled || taaEnabled, let resolvedColor = resolvedColorTexture {
             if msaaSampleCount > 1 {
                 renderPassDescriptor.colorAttachments[0].resolveTexture = resolvedColor
             } else {
@@ -1576,15 +1699,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
-        guard let mainEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
+        guard
+            let mainEncoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: renderPassDescriptor)
+        else { return }
         mainEncoder.setDepthStencilState(depthState)
 
         // 0. Draw skybox background (HDR cubemap), if enabled.
         if lighting.drawBackground,
-           let envMgr = environmentMapManager,
-           let cubeMap = envMgr.cubeMap,
-           let skyPipeline = skyboxPipeline,
-           let skyDepth = skyboxDepthState {
+            let envMgr = environmentMapManager,
+            let cubeMap = envMgr.cubeMap,
+            let skyPipeline = skyboxPipeline,
+            let skyDepth = skyboxDepthState
+        {
             mainEncoder.setRenderPipelineState(skyPipeline)
             mainEncoder.setDepthStencilState(skyDepth)
             var skyUniforms = SkyboxUniformsSwift(
@@ -1592,12 +1719,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 params: SIMD4<Float>(
                     lighting.environmentRotationY,
                     lighting.backgroundExposure,
-                    0, // mip level — sharp background
+                    0,  // mip level — sharp background
                     0
                 )
             )
-            mainEncoder.setVertexBytes(&skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
-            mainEncoder.setFragmentBytes(&skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
+            mainEncoder.setVertexBytes(
+                &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
+            mainEncoder.setFragmentBytes(
+                &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
             mainEncoder.setFragmentTexture(cubeMap, index: 0)
             mainEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             mainEncoder.setDepthStencilState(depthState)
@@ -1605,7 +1734,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // 1. Draw grid
         if controller.showGrid {
-            drawGrid(encoder: mainEncoder, viewProjection: viewProjection, cameraState: cameraState, config: controller.configuration)
+            drawGrid(
+                encoder: mainEncoder, viewProjection: viewProjection, cameraState: cameraState,
+                config: controller.configuration)
         }
 
         // 2. Draw axes
@@ -1626,8 +1757,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // Pick IDs stay stable: bodyObjectIndex was assigned over all visible
             // bodies, independent of culling.
             if let cullFrustum, body.renderLayer == .geometry,
-               let localBox = buffers.localBoundingBox,
-               !cullFrustum.intersects(localBox.transformed(by: body.transform)) {
+                let localBox = buffers.localBoundingBox,
+                !cullFrustum.intersects(localBox.transformed(by: body.transform))
+            {
                 continue
             }
             // Overlay bodies are drawn after the selection outline, in their own pass.
@@ -1639,8 +1771,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // Translucent geometry bodies are deferred to the sorted transparent
             // pass below (a body with edges only — no mesh — is unaffected).
             if body.renderLayer == .geometry,
-               body.effectiveMaterial.opacity < 1.0,
-               buffers.vertexBuffer != nil, buffers.indexCount > 0 {
+                body.effectiveMaterial.opacity < 1.0,
+                buffers.vertexBuffer != nil, buffers.indexCount > 0
+            {
                 transparentDraws.append((body, buffers, bodyObjectIndex))
                 continue
             }
@@ -1648,14 +1781,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
 
-            let selState: UInt32 = selectedIDs.contains(body.id) ? 1 : (hoveredID == body.id ? 2 : 0)
-            var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex, isSelected: selState)
+            let selState: UInt32 =
+                selectedIDs.contains(body.id) ? 1 : (hoveredID == body.id ? 2 : 0)
+            var bodyUniforms = BodyUniforms(
+                body: body, objectIndex: bodyObjectIndex, isSelected: selState)
 
             // Main opaque pass — direct-mesh bodies ARE rendered here (encodeShadedSurface picks
             // the directMeshPipeline when normalBuffer is set). The shadow / pick / depth / overlay
             // passes above & below now route direct bodies through their own *Direct pipelines
             // (two-buffer descriptor: position@0 / normal@2) rather than skipping them.
-            let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+            let hasMesh =
+                buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
             // Shaded pass (mesh bodies only)
@@ -1669,20 +1805,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 // Set shared fragment state (same for tessellated and non-tessellated)
-                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                 mainEncoder.setFragmentTexture(matcapTexture, index: 0)
                 if shadowEnabled, let shadowTex = shadowMapManager.texture {
                     mainEncoder.setFragmentTexture(shadowTex, index: 1)
                 }
                 if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
-                    if let spec = envMgr.prefilteredSpecularMap { mainEncoder.setFragmentTexture(spec, index: 2) }
-                    if let diff = envMgr.irradianceMap { mainEncoder.setFragmentTexture(diff, index: 3) }
+                    if let spec = envMgr.prefilteredSpecularMap {
+                        mainEncoder.setFragmentTexture(spec, index: 2)
+                    }
+                    if let diff = envMgr.irradianceMap {
+                        mainEncoder.setFragmentTexture(diff, index: 3)
+                    }
                     if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
                 }
 
-                encodeShadedSurface(mainEncoder, buffers: buffers, uniforms: &uniforms,
-                                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
+                encodeShadedSurface(
+                    mainEncoder, buffers: buffers, uniforms: &uniforms,
+                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
 
             // Wireframe/edge pass
@@ -1697,9 +1840,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setRenderPipelineState(wireframePipeline)
                 mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.drawPrimitives(
+                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
             }
         }
 
@@ -1708,7 +1854,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // over the opaque set (and over each other in sorted order).
         if displayMode.showsSurfaces, !transparentDraws.isEmpty {
             let camPos = cameraState.position
-            func centerDistanceSq(_ d: (body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)) -> Float {
+            func centerDistanceSq(
+                _ d: (body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)
+            ) -> Float {
                 let localCenter = d.buffers.localBoundingBox?.center ?? SIMD3<Float>(0, 0, 0)
                 let c = d.body.transform * SIMD4<Float>(localCenter, 1)
                 return simd_length_squared(SIMD3<Float>(c.x, c.y, c.z) - camPos)
@@ -1721,18 +1869,26 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setFragmentTexture(shadowTex, index: 1)
             }
             if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
-                if let spec = envMgr.prefilteredSpecularMap { mainEncoder.setFragmentTexture(spec, index: 2) }
-                if let diff = envMgr.irradianceMap { mainEncoder.setFragmentTexture(diff, index: 3) }
+                if let spec = envMgr.prefilteredSpecularMap {
+                    mainEncoder.setFragmentTexture(spec, index: 2)
+                }
+                if let diff = envMgr.irradianceMap {
+                    mainEncoder.setFragmentTexture(diff, index: 3)
+                }
                 if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
             }
             for d in sorted {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = d.body.transform
-                var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex, isSelected: 0)
-                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                encodeShadedSurface(mainEncoder, buffers: d.buffers, uniforms: &uniforms,
-                                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
+                var bodyUniforms = BodyUniforms(
+                    body: d.body, objectIndex: d.objectIndex, isSelected: 0)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                encodeShadedSurface(
+                    mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
         }
 
@@ -1742,7 +1898,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // independent of mesh density. Per-arc segment ranges are recorded in
         // `frameArcDraws` and the data lives in `arcLineBuffer`, so the pick pass
         // below re-draws the same segments to the pick texture without re-sampling.
-        var frameArcDraws: [(body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int)] = []
+        var frameArcDraws:
+            [(body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int)] = []
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
         if !arcBodies.isEmpty {
             let vpSize = SIMD2<Float>(Float(w), Float(h))
@@ -1760,19 +1917,23 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var prev = arc.point(at: 0)
                     for s in 1...segs {
                         let cur = arc.point(at: Float(s) / Float(segs))
-                        arcVerts.append(contentsOf: [prev.x, prev.y, prev.z, 0, 0, 0,
-                                                     cur.x, cur.y, cur.z, 0, 0, 0])
+                        arcVerts.append(contentsOf: [
+                            prev.x, prev.y, prev.z, 0, 0, 0,
+                            cur.x, cur.y, cur.z, 0, 0, 0,
+                        ])
                         prev = cur
                     }
                     let count = arcVerts.count / 6 - startVert
                     if count > 0 {
-                        frameArcDraws.append((entry.body, entry.objectIndex, arcIndex, startVert, count))
+                        frameArcDraws.append(
+                            (entry.body, entry.objectIndex, arcIndex, startVert, count))
                     }
                 }
             }
 
             if !arcVerts.isEmpty,
-               let arcBuf = ensureArcBuffer(byteCount: arcVerts.count * MemoryLayout<Float>.size) {
+                let arcBuf = ensureArcBuffer(byteCount: arcVerts.count * MemoryLayout<Float>.size)
+            {
                 arcVerts.withUnsafeBytes { raw in
                     arcBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
                 }
@@ -1782,12 +1943,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     let bodyHasMesh = (bodyBufferCache[d.body.id]?.indexCount ?? 0) > 0
                     var uniforms = makeUniforms()
                     uniforms.modelMatrix = d.body.transform
-                    var arcBodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex, isSelected: 0)
+                    var arcBodyUniforms = BodyUniforms(
+                        body: d.body, objectIndex: d.objectIndex, isSelected: 0)
                     if !bodyHasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(type: .line, vertexStart: d.start, vertexCount: d.count)
+                    mainEncoder.setVertexBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: d.start, vertexCount: d.count)
                 }
             }
         }
@@ -1809,10 +1975,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let pxPerWorldFactor = Float(drawableSize.height) * projMatrix.columns.1.y * 0.5
             mainEncoder.setRenderPipelineState(pointPipeline)
             mainEncoder.setDepthStencilState(depthState)
-            for body in bodies where body.isVisible && body.renderLayer == .geometry && body.primitiveKind == .point {
+            for body in bodies
+            where body.isVisible && body.renderLayer == .geometry && body.primitiveKind == .point {
                 guard let buffers = bodyBufferCache[body.id],
-                      let positionBuf = buffers.pointPositionBuffer,
-                      buffers.pointVertexCount > 0 else { continue }
+                    let positionBuf = buffers.pointPositionBuffer,
+                    buffers.pointVertexCount > 0
+                else { continue }
 
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
@@ -1834,9 +2002,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
-                mainEncoder.setVertexBytes(&params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
+                mainEncoder.setVertexBytes(
+                    &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
 
-                mainEncoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
+                mainEncoder.drawPrimitives(
+                    type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
             }
         }
 
@@ -1855,17 +2025,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             mainEncoder.setDepthStencilState(highlightDepthState)
             for body in bodies where body.isVisible && body.renderLayer == .geometry {
                 guard let buffers = bodyBufferCache[body.id],
-                      let vb = buffers.vertexBuffer,
-                      let ib = buffers.indexBuffer,
-                      let styleBuf = buffers.triangleStyleBuffer,
-                      buffers.indexCount > 0 else { continue }
+                    let vb = buffers.vertexBuffer,
+                    let ib = buffers.indexBuffer,
+                    let styleBuf = buffers.triangleStyleBuffer,
+                    buffers.indexCount > 0
+                else { continue }
 
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
 
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBuffer(styleBuf, offset: 0, index: 2)
                 mainEncoder.drawIndexedPrimitives(
                     type: .triangle,
@@ -1888,14 +2060,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             for body in bodies where body.isVisible && allSelectedIDs.contains(body.id) {
                 guard let buffers = bodyBufferCache[body.id],
-                      let vb = buffers.vertexBuffer,
-                      let ib = buffers.indexBuffer,
-                      buffers.indexCount > 0 else { continue }
+                    let vb = buffers.vertexBuffer,
+                    let ib = buffers.indexBuffer,
+                    buffers.indexCount > 0
+                else { continue }
 
                 let isHover = (hoveredID == body.id && !selectedIDs.contains(body.id))
-                let outlineColor: SIMD3<Float> = isHover
+                let outlineColor: SIMD3<Float> =
+                    isHover
                     ? SIMD3<Float>(0.4, 0.7, 1.0)  // light blue for hover
-                    : SIMD3<Float>(0.1, 0.5, 1.0)   // bright blue for selection
+                    : SIMD3<Float>(0.1, 0.5, 1.0)  // bright blue for selection
 
                 var outlineParams = SelectionOutlineParamsSwift(
                     viewProjectionMatrix: viewProjection,
@@ -1905,8 +2079,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 )
 
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1)
-                mainEncoder.setFragmentBytes(&outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1)
+                mainEncoder.setVertexBytes(
+                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
+                )
+                mainEncoder.setFragmentBytes(
+                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
+                )
                 mainEncoder.drawIndexedPrimitives(
                     type: .triangle,
                     indexCount: buffers.indexCount,
@@ -1929,19 +2107,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let bodyObjectIndex = objectIndex
                 objectIndex += 1
                 guard body.renderLayer == .overlay,
-                      let buffers = bodyBufferCache[body.id] else { continue }
+                    let buffers = bodyBufferCache[body.id]
+                else { continue }
 
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
-                var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex, isSelected: 0)
+                var bodyUniforms = BodyUniforms(
+                    body: body, objectIndex: bodyObjectIndex, isSelected: 0)
 
                 // Direct-mesh overlay bodies draw via directMeshPipeline (handled below), so
                 // they are NOT excluded here.
-                let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+                let hasMesh =
+                    buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                    && buffers.indexCount > 0
                 let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
                 if displayMode.showsSurfaces, hasMesh,
-                   let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
+                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer
+                {
                     if let nb = buffers.normalBuffer {
                         // Direct-mesh body (Option A): position@0 + normal@2, shared shaded shaders.
                         mainEncoder.setRenderPipelineState(directMeshPipeline)
@@ -1951,9 +2134,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder.setRenderPipelineState(shadedPipeline)
                         mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                     }
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.setVertexBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     mainEncoder.setFragmentTexture(matcapTexture, index: 0)
                     mainEncoder.drawIndexedPrimitives(
                         type: .triangle,
@@ -1972,10 +2158,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     }
                     mainEncoder.setRenderPipelineState(wireframePipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    mainEncoder.setVertexBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
                 }
             }
         }
@@ -2024,34 +2214,54 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                         // Direct-mesh bodies are stamped via pickShadedDirectPipeline (the standard
                         // branch below), so they are NOT excluded here.
-                        let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+                        let hasMesh =
+                            buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                            && buffers.indexCount > 0
 
                         if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = body.transform
-                            var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex)
+                            var bodyUniforms = BodyUniforms(
+                                body: body, objectIndex: bodyObjectIndex)
 
-                            if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderPickPipeline {
+                            if useMeshShaders, let ml = buffers.meshlets,
+                                let msPipeline = meshShaderPickPipeline
+                            {
                                 pickEncoder.setRenderPipelineState(msPipeline)
-                                pickEncoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                                pickEncoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setObjectBuffer(
+                                    ml.descriptorBuffer, offset: 0, index: 0)
+                                pickEncoder.setObjectBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
                                 pickEncoder.setMeshBuffer(vb, offset: 0, index: 1)
                                 pickEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-                                pickEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-                                pickEncoder.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setMeshBuffer(
+                                    ml.triangleIndexBuffer, offset: 0, index: 3)
+                                pickEncoder.setMeshBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawMeshThreadgroups(
                                     MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                                    threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-                                    threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
+                                    threadsPerObjectThreadgroup: MTLSize(
+                                        width: 1, height: 1, depth: 1),
+                                    threadsPerMeshThreadgroup: MTLSize(
+                                        width: 64, height: 1, depth: 1)
                                 )
-                            } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedPickPipeline {
+                            } else if useTessellation, let tess = buffers.tessellation,
+                                let tessPipeline = tessellatedPickPipeline
+                            {
                                 pickEncoder.setRenderPipelineState(tessPipeline)
-                                pickEncoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                                pickEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setTessellationFactorBuffer(
+                                    tess.tessFactorBuffer, offset: 0, instanceStride: 0)
+                                pickEncoder.setVertexBuffer(
+                                    tess.patchDataBuffer, offset: 0, index: 0)
+                                pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawPatches(
                                     numberOfPatchControlPoints: 3,
                                     patchStart: 0,
@@ -2066,8 +2276,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
                                 pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                                 pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawIndexedPrimitives(
                                     type: .triangle,
                                     indexCount: buffers.indexCount,
@@ -2078,8 +2291,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             } else {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
                                 pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawIndexedPrimitives(
                                     type: .triangle,
                                     indexCount: buffers.indexCount,
@@ -2106,19 +2322,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
                                 objectIndex += 1
-                                if !body.isPickable { continue }   // issue #63
+                                if !body.isPickable { continue }  // issue #63
                                 guard !body.edgeIndices.isEmpty,
-                                      let buffers = bodyBufferCache[body.id],
-                                      let edgeVB = buffers.edgeVertexBuffer,
-                                      buffers.edgePrimitiveCount > 0 else { continue }
+                                    let buffers = bodyBufferCache[body.id],
+                                    let edgeVB = buffers.edgeVertexBuffer,
+                                    buffers.edgePrimitiveCount > 0
+                                else { continue }
 
                                 var uniforms = makeUniforms()
                                 uniforms.modelMatrix = body.transform
-                                var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex)
+                                var bodyUniforms = BodyUniforms(
+                                    body: body, objectIndex: bodyObjectIndex)
 
                                 pickEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawPrimitives(
                                     type: .line,
                                     vertexStart: 0,
@@ -2137,15 +2358,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         pickEncoder.setRenderPipelineState(pickArcPipeline)
                         pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
                         for d in frameArcDraws {
-                            if !d.body.isPickable { continue }   // issue #63
+                            if !d.body.isPickable { continue }  // issue #63
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = d.body.transform
-                            var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex)
+                            var bodyUniforms = BodyUniforms(
+                                body: d.body, objectIndex: d.objectIndex)
                             var arcPrimID = UInt32(truncatingIfNeeded: d.arcIndex)
-                            pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                            pickEncoder.setFragmentBytes(&arcPrimID, length: MemoryLayout<UInt32>.size, index: 3)
-                            pickEncoder.drawPrimitives(type: .line, vertexStart: d.start, vertexCount: d.count)
+                            pickEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                            pickEncoder.setFragmentBytes(
+                                &arcPrimID, length: MemoryLayout<UInt32>.size, index: 3)
+                            pickEncoder.drawPrimitives(
+                                type: .line, vertexStart: d.start, vertexCount: d.count)
                         }
                     }
 
@@ -2163,19 +2389,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
                                 objectIndex += 1
-                                if !body.isPickable { continue }   // issue #63
+                                if !body.isPickable { continue }  // issue #63
                                 guard !body.vertices.isEmpty,
-                                      let buffers = bodyBufferCache[body.id],
-                                      let pointVB = buffers.pointVertexBuffer,
-                                      buffers.pointVertexCount > 0 else { continue }
+                                    let buffers = bodyBufferCache[body.id],
+                                    let pointVB = buffers.pointVertexBuffer,
+                                    buffers.pointVertexCount > 0
+                                else { continue }
 
                                 var uniforms = makeUniforms()
                                 uniforms.modelMatrix = body.transform
-                                var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex)
+                                var bodyUniforms = BodyUniforms(
+                                    body: body, objectIndex: bodyObjectIndex)
 
                                 pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                                pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
+                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
+                                )
                                 pickEncoder.drawPrimitives(
                                     type: .point,
                                     vertexStart: 0,
@@ -2187,23 +2418,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                     // Overlay pick pass: draw RenderLayer.overlay bodies with
                     // always-pass depth so they win the pick over occluding geometry.
-                    let hasOverlayBodies = bodies.contains { $0.isVisible && $0.renderLayer == .overlay }
+                    let hasOverlayBodies = bodies.contains {
+                        $0.isVisible && $0.renderLayer == .overlay
+                    }
                     if hasOverlayBodies {
                         pickEncoder.setDepthStencilState(overlayDepthState)
                         objectIndex = 0
                         for body in bodies where body.isVisible {
                             let bodyObjectIndex = objectIndex
                             objectIndex += 1
-                            if !body.isPickable { continue }   // issue #63
+                            if !body.isPickable { continue }  // issue #63
                             guard body.renderLayer == .overlay,
-                                  let buffers = bodyBufferCache[body.id],
-                                  let vb = buffers.vertexBuffer,
-                                  let ib = buffers.indexBuffer,
-                                  buffers.indexCount > 0 else { continue }
+                                let buffers = bodyBufferCache[body.id],
+                                let vb = buffers.vertexBuffer,
+                                let ib = buffers.indexBuffer,
+                                buffers.indexCount > 0
+                            else { continue }
 
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = body.transform
-                            var bodyUniforms = BodyUniforms(body: body, objectIndex: bodyObjectIndex)
+                            var bodyUniforms = BodyUniforms(
+                                body: body, objectIndex: bodyObjectIndex)
 
                             if let nb = buffers.normalBuffer {
                                 // Direct-mesh overlay body (Option A): position@0 + normal@2.
@@ -2214,8 +2449,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
                                 pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             }
-                            pickEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                            pickEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                             pickEncoder.drawIndexedPrimitives(
                                 type: .triangle,
                                 indexCount: buffers.indexCount,
@@ -2235,9 +2472,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Pass 2.5: TAA resolve (if enabled)
         // =========================================================
         if taaEnabled, let taaPipeline = taaPipeline,
-           let resolvedColor = resolvedColorTexture,
-           let taaOutput = taaOutputTexture,
-           let taaHistory = taaHistoryTexture {
+            let resolvedColor = resolvedColorTexture,
+            let taaOutput = taaOutputTexture,
+            let taaHistory = taaHistoryTexture
+        {
 
             // Reset accumulation when the scene changes (camera move or animation).
             let cameraChanged = (lastCameraState == nil || lastCameraState! != cameraState)
@@ -2251,7 +2489,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // Standard TAA mode: history weight = taaBlendFactor (0.9), 16-frame jitter cycle.
             let blendFactor: Float
             if progressive {
-                blendFactor = taaFrameIndex == 0 ? 0 : Float(taaFrameIndex) / Float(taaFrameIndex + 1)
+                blendFactor =
+                    taaFrameIndex == 0 ? 0 : Float(taaFrameIndex) / Float(taaFrameIndex + 1)
             } else {
                 blendFactor = taaFrameIndex > 0 ? controller.taaBlendFactor : 0
             }
@@ -2277,7 +2516,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 )
                 taaEncoder.setFragmentTexture(resolvedColor, index: 0)
                 taaEncoder.setFragmentTexture(taaHistory, index: 1)
-                taaEncoder.setFragmentBytes(&taaParams, length: MemoryLayout<TAAParamsSwift>.size, index: 0)
+                taaEncoder.setFragmentBytes(
+                    &taaParams, length: MemoryLayout<TAAParamsSwift>.size, index: 0)
                 taaEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 taaEncoder.endEncoding()
             }
@@ -2306,8 +2546,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Pass 3: SSAO post-process (if enabled)
         // =========================================================
         if ssaoEnabled, let ssaoPipeline = ssaoPipeline,
-           let resolvedColor = ssaoInputColor,
-           let resolvedDepth = resolvedDepthTexture {
+            let resolvedColor = ssaoInputColor,
+            let resolvedDepth = resolvedDepthTexture
+        {
 
             // First: render a 1x depth-only pass for SSAO sampling
             let depthOnlyPass = MTLRenderPassDescriptor()
@@ -2316,7 +2557,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             depthOnlyPass.depthAttachment.storeAction = .store
             depthOnlyPass.depthAttachment.clearDepth = 1.0
 
-            if let depthEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthOnlyPass) {
+            if let depthEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthOnlyPass)
+            {
                 depthEncoder.setDepthStencilState(depthState)
 
                 objectIndex = 0
@@ -2327,29 +2569,39 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     }
                     // Direct-mesh bodies are written via depthOnlyDirectPipeline (handled in the
                     // standard branch below), so they are NOT excluded here.
-                    let hasMesh = buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+                    let hasMesh =
+                        buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                        && buffers.indexCount > 0
                     if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                         var uniforms = makeUniforms()
 
-                        if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderDepthOnlyPipeline {
+                        if useMeshShaders, let ml = buffers.meshlets,
+                            let msPipeline = meshShaderDepthOnlyPipeline
+                        {
                             depthEncoder.setRenderPipelineState(msPipeline)
                             depthEncoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                            depthEncoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setObjectBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
                             depthEncoder.setMeshBuffer(vb, offset: 0, index: 1)
                             depthEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
                             depthEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-                            depthEncoder.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
+                            depthEncoder.setMeshBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
                             depthEncoder.drawMeshThreadgroups(
                                 MTLSize(width: ml.meshletCount, height: 1, depth: 1),
                                 threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
                                 threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
                             )
-                        } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedDepthOnlyPipeline {
+                        } else if useTessellation, let tess = buffers.tessellation,
+                            let tessPipeline = tessellatedDepthOnlyPipeline
+                        {
                             depthEncoder.setRenderPipelineState(tessPipeline)
-                            depthEncoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
+                            depthEncoder.setTessellationFactorBuffer(
+                                tess.tessFactorBuffer, offset: 0, instanceStride: 0)
                             depthEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-                            depthEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawPatches(
                                 numberOfPatchControlPoints: 3,
                                 patchStart: 0,
@@ -2364,7 +2616,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             depthEncoder.setRenderPipelineState(depthOnlyDirectPipeline)
                             depthEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             depthEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                            depthEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawIndexedPrimitives(
                                 type: .triangle,
                                 indexCount: buffers.indexCount,
@@ -2375,7 +2628,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         } else {
                             depthEncoder.setRenderPipelineState(depthOnlyPipeline)
                             depthEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                            depthEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawIndexedPrimitives(
                                 type: .triangle,
                                 indexCount: buffers.indexCount,
@@ -2425,8 +2679,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     intensity: lighting.ssaoIntensity,
                     nearPlane: nearPlane,
                     farPlane: farPlane,
-                    silhouetteThickness: silhouetteConfig.enableSilhouettes ? silhouetteConfig.silhouetteThickness : 0.0,
-                    silhouetteIntensity: silhouetteConfig.enableSilhouettes ? silhouetteConfig.silhouetteIntensity : 0.0,
+                    silhouetteThickness: silhouetteConfig.enableSilhouettes
+                        ? silhouetteConfig.silhouetteThickness : 0.0,
+                    silhouetteIntensity: silhouetteConfig.enableSilhouettes
+                        ? silhouetteConfig.silhouetteIntensity : 0.0,
                     exposure: lighting.exposure,
                     whitePoint: lighting.whitePoint,
                     dofAperture: controller.dofAperture,
@@ -2436,7 +2692,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 )
                 ssaoEncoder.setFragmentTexture(resolvedDepth, index: 0)
                 ssaoEncoder.setFragmentTexture(resolvedColor, index: 1)
-                ssaoEncoder.setFragmentBytes(&ssaoParams, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
+                ssaoEncoder.setFragmentBytes(
+                    &ssaoParams, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
                 ssaoEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 ssaoEncoder.endEncoding()
             }
@@ -2482,10 +2739,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         encoder.setRenderPipelineState(gridPipeline)
         encoder.setVertexBytes(&gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
         encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: 1, instanceCount: instanceCount)
+        encoder.drawPrimitives(
+            type: .point, vertexStart: 0, vertexCount: 1, instanceCount: instanceCount)
     }
 
-    private func computeGridSpacing(cameraState: CameraState, config: ViewportConfiguration) -> Float {
+    private func computeGridSpacing(cameraState: CameraState, config: ViewportConfiguration)
+        -> Float
+    {
         let distance = cameraState.distance
         let fovRadians = cameraState.fieldOfView * .pi / 180.0
         let visibleWidth = 2.0 * distance * tan(fovRadians / 2.0)
@@ -2516,7 +2776,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     // MARK: - Shadow Map Helpers
 
     /// Computes an orthographic light view-projection matrix that encompasses the scene.
-    private func computeLightViewProjection(lightDir: SIMD3<Float>, bodies: [ViewportBody]) -> simd_float4x4 {
+    private func computeLightViewProjection(lightDir: SIMD3<Float>, bodies: [ViewportBody])
+        -> simd_float4x4
+    {
         // Compute scene bounding box
         var sceneMin = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
         var sceneMax = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
@@ -2567,9 +2829,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Shaded surface draw
 
-    /// Encodes a body's shaded surface via the mesh-shader, tessellated, or
-    /// standard path. The caller sets uniforms / fragment bytes / textures / depth
-    /// state first. Shared by the opaque main loop and the transparent pass (#53).
+    /// Encodes a body's shaded surface via the mesh-shader, tessellated, or standard path.
+    ///
+    /// The caller sets uniforms / fragment bytes / textures / depth state first. Shared by the
+    /// opaque main loop and the transparent pass (#53).
     private func encodeShadedSurface(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
@@ -2577,7 +2840,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         useMeshShaders: Bool,
         useTessellation: Bool
     ) {
-        guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0 else { return }
+        guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0
+        else { return }
 
         if let nb = buffers.normalBuffer {
             // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.
@@ -2592,7 +2856,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 indexBuffer: ib,
                 indexBufferOffset: 0
             )
-        } else if useMeshShaders, let ml = buffers.meshlets, let msPipeline = meshShaderShadedPipeline {
+        } else if useMeshShaders, let ml = buffers.meshlets,
+            let msPipeline = meshShaderShadedPipeline
+        {
             encoder.setRenderPipelineState(msPipeline)
             encoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
             encoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -2606,7 +2872,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
                 threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
             )
-        } else if useTessellation, let tess = buffers.tessellation, let tessPipeline = tessellatedShadedPipeline {
+        } else if useTessellation, let tess = buffers.tessellation,
+            let tessPipeline = tessellatedShadedPipeline
+        {
             encoder.setRenderPipelineState(tessPipeline)
             encoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
             encoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
@@ -2646,7 +2914,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen {
-            return // buffer still valid
+            return  // buffer still valid
         }
 
         // Build vertex + index buffers (nil for edge-only bodies)
@@ -2789,16 +3057,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Skip bodies with no renderable data at all. Arc-only bodies have none of
         // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
-        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty else { return }
+        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty
+        else { return }
 
         // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
         // the patch builder consumes an interleaved stride-6 buffer + faceIndices, neither of which
         // a direct body has (it brings its own normals; no PN refinement needed).
         var tessBuffers: TessellationBuffers?
         if tessellationEnabled, !body.usesDirectMesh,
-           let tessMgr = tessellationManager,
-           let vb = vertexBuffer, let ib = indexBuffer,
-           indexCount > 0 {
+            let tessMgr = tessellationManager,
+            let vb = vertexBuffer, let ib = indexBuffer,
+            indexCount > 0
+        {
             let triangleCount = indexCount / 3
             tessBuffers = tessMgr.buildPatches(
                 vertexBuffer: vb,
@@ -2810,11 +3080,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // One-shot diagnostic for first body
             if !tessMgr.didLogDiagnostic {
                 tessMgr.didLogDiagnostic = true
-                let msg = "ensureBuffers: body=\(body.id) tris=\(triangleCount) faceIdx=\(body.faceIndices.count) tessResult=\(tessBuffers != nil) tessEnabled=\(tessellationEnabled) vb=\(vb.length) ib=\(ib.length)"
+                let msg =
+                    "ensureBuffers: body=\(body.id) tris=\(triangleCount) faceIdx=\(body.faceIndices.count) tessResult=\(tessBuffers != nil) tessEnabled=\(tessellationEnabled) vb=\(vb.length) ib=\(ib.length)"
                 NSLog("[ViewportRenderer] %@", msg)
-                if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    let existing = (try? String(contentsOf: docs.appendingPathComponent("renderer_diag.txt"), encoding: .utf8)) ?? ""
-                    try? (existing + "\n" + msg).write(to: docs.appendingPathComponent("renderer_diag.txt"), atomically: true, encoding: .utf8)
+                if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+                    .first
+                {
+                    let existing =
+                        (try? String(
+                            contentsOf: docs.appendingPathComponent("renderer_diag.txt"),
+                            encoding: .utf8)) ?? ""
+                    try? (existing + "\n" + msg).write(
+                        to: docs.appendingPathComponent("renderer_diag.txt"), atomically: true,
+                        encoding: .utf8)
                 }
             }
         }
@@ -2836,7 +3114,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let triStyleBuf: MTLBuffer?
         let triangleCount = indexCount / 3
         if !body.triangleStyles.isEmpty, triangleCount > 0,
-           body.triangleStyles.count == triangleCount {
+            body.triangleStyles.count == triangleCount
+        {
             // Pack into a contiguous SIMD4<Float> array.
             var packed = body.triangleStyles.map { $0.color }
             triStyleBuf = device.makeBuffer(
@@ -2876,7 +3155,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// - Parameters:
     ///   - pixel: The pixel coordinate (in drawable pixels) to sample.
     ///   - completion: Called with the decoded `PickResult`, or `nil` for background/no hit.
-    public func performPick(at pixel: SIMD2<Int>, completion: @escaping @Sendable (PickResult?) -> Void) {
+    public func performPick(
+        at pixel: SIMD2<Int>, completion: @escaping @Sendable (PickResult?) -> Void
+    ) {
         guard let pickTexture = pickTextureManager.texture else {
             completion(nil)
             return
@@ -2887,7 +3168,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let y = max(0, min(pixel.y, pickTextureManager.height - 1))
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            let blitEncoder = commandBuffer.makeBlitCommandEncoder()
+        else {
             completion(nil)
             return
         }
@@ -2927,7 +3209,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         if let buffer = regionReadbackBuffer, regionReadbackCapacity >= minimumBytes {
             return buffer
         }
-        guard let buffer = device.makeBuffer(length: minimumBytes, options: .storageModeShared) else {
+        guard let buffer = device.makeBuffer(length: minimumBytes, options: .storageModeShared)
+        else {
             return nil
         }
         regionReadbackBuffer = buffer
@@ -2952,15 +3235,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///     order of first appearance. Background pixels are excluded, so a rect entirely over
     ///     empty space completes with `[]`. Apply a `SelectionFilter` to the result the same way
     ///     you would a single `performPick` result.
-    public func performRegionPick(rect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void) {
+    public func performRegionPick(
+        rect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void
+    ) {
         guard let pickTexture = pickTextureManager.texture else {
             completion([])
             return
         }
 
-        guard let region = Self.clampRegionPickRect(
-            rect, textureWidth: pickTextureManager.width, textureHeight: pickTextureManager.height
-        ) else {
+        guard
+            let region = Self.clampRegionPickRect(
+                rect, textureWidth: pickTextureManager.width,
+                textureHeight: pickTextureManager.height
+            )
+        else {
             completion([])
             return
         }
@@ -2973,8 +3261,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let byteCount = bytesPerRow * h
 
         guard let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: byteCount),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            let commandBuffer = commandQueue.makeCommandBuffer(),
+            let blitEncoder = commandBuffer.makeBlitCommandEncoder()
+        else {
             completion([])
             return
         }
@@ -3007,7 +3296,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
                 rawValues.append(contentsOf: UnsafeBufferPointer(start: rowValues, count: w))
             }
-            let results = Self.decodeRegionPickResults(rawValues, indexMap: indexMap, layerMap: layerMap)
+            let results = Self.decodeRegionPickResults(
+                rawValues, indexMap: indexMap, layerMap: layerMap)
             Task { @MainActor in
                 completion(results)
             }
@@ -3020,21 +3310,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// conservative choice for a texture→buffer blit's `destinationBytesPerRow` (Metal's true
     /// minimum per-format alignment can be smaller, but never larger, for a plain 4-byte
     /// uncompressed format like the R32Uint pick texture).
-    nonisolated static func alignedBytesPerRow(forWidth width: Int, bytesPerPixel: Int = MemoryLayout<UInt32>.size) -> Int {
+    nonisolated static func alignedBytesPerRow(
+        forWidth width: Int, bytesPerPixel: Int = MemoryLayout<UInt32>.size
+    ) -> Int {
         let alignment = 256
         let unaligned = width * bytesPerPixel
         let remainder = unaligned % alignment
         return remainder == 0 ? unaligned : unaligned + (alignment - remainder)
     }
 
-    /// Clamps `rect` (drawable pixel coordinates) to the pick texture's `[0,width) x [0,height)`
-    /// bounds, rounding outward so a fractional rect isn't under-sampled, and returns the
-    /// integer origin/size to blit. Returns `nil` if the rect doesn't intersect the texture at
-    /// all, or the texture has zero size (e.g. no frame has drawn yet).
+    /// Clamps `rect` to the pick texture's bounds and returns the origin/size to blit.
+    ///
+    /// `rect` is in drawable pixel coordinates and is rounded outward so a fractional rect isn't
+    /// under-sampled. Returns `nil` if the rect doesn't intersect the texture at all, or the
+    /// texture has zero size (e.g. no frame has drawn yet).
     nonisolated static func clampRegionPickRect(
         _ rect: CGRect, textureWidth: Int, textureHeight: Int
     ) -> (x: Int, y: Int, width: Int, height: Int)? {
-        let clipped = rect.intersection(CGRect(x: 0, y: 0, width: textureWidth, height: textureHeight))
+        let clipped = rect.intersection(
+            CGRect(x: 0, y: 0, width: textureWidth, height: textureHeight))
         guard !clipped.isNull else { return nil }
 
         let x = max(0, Int(clipped.origin.x.rounded(.down)))
@@ -3045,9 +3339,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return (x, y, w, h)
     }
 
-    /// Decodes a flat array of raw R32Uint pick values — as read back by `performRegionPick`,
-    /// in row-major scan order — into the de-duplicated set of primitives they represent, kept
-    /// in order of first appearance. Background (sentinel) pixels are dropped. Pulled out of
+    /// Decodes raw R32Uint pick values into the de-duplicated primitives they represent.
+    ///
+    /// Input is a flat, row-major array as read back by `performRegionPick`; output keeps each
+    /// primitive's first appearance, and background (sentinel) pixels are dropped. Pulled out of
     /// the GPU readback path as a pure function so the dedup/decode logic is unit-testable
     /// without a live draw (the pick texture itself is only populated by an actual frame).
     nonisolated static func decodeRegionPickResults(
