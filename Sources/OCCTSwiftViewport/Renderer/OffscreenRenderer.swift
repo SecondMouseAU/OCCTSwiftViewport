@@ -43,6 +43,13 @@ public struct OffscreenRenderOptions: Sendable {
     public var showAxes: Bool
     public var msaaSampleCount: Int
 
+    /// Fundamental grid unit in world units, matching `ViewportConfiguration.gridBaseSpacing`.
+    public var gridBaseSpacing: Float
+
+    /// Subdivision factor between grid spacing levels, matching
+    /// `ViewportConfiguration.gridSubdivisions`.
+    public var gridSubdivisions: Int
+
     /// Optional explicit orthographic projection bounds (world units).
     ///
     /// When set, overrides `cameraState.projectionMatrix(...)` and forces
@@ -77,6 +84,8 @@ public struct OffscreenRenderOptions: Sendable {
         showGrid: Bool = false,
         showAxes: Bool = false,
         msaaSampleCount: Int = 4,
+        gridBaseSpacing: Float = 1.0,
+        gridSubdivisions: Int = 10,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
         measurements: [ViewportMeasurement] = []
@@ -90,6 +99,8 @@ public struct OffscreenRenderOptions: Sendable {
         self.showGrid = showGrid
         self.showAxes = showAxes
         self.msaaSampleCount = msaaSampleCount
+        self.gridBaseSpacing = gridBaseSpacing
+        self.gridSubdivisions = gridSubdivisions
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
         self.measurements = measurements
@@ -112,6 +123,7 @@ public final class OffscreenRenderer: Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let shadedPipeline: MTLRenderPipelineState
+
     /// Direct-mesh shaded pipeline (Option A spike).
     ///
     /// Same shaders as `shadedPipeline`, but its vertex descriptor reads position from buffer 0 and
@@ -121,12 +133,14 @@ public final class OffscreenRenderer: Sendable {
     private let wireframePipeline: MTLRenderPipelineState
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
+
     /// Visible point-cloud pipeline (issue #28).
     ///
     /// Mirrors the live renderer's `visiblePointPipeline`. Optional only because pipeline
     /// construction could fail on a degenerate device.
     private let visiblePointPipeline: MTLRenderPipelineState?
     private let shadowPipeline: MTLRenderPipelineState
+
     /// Direct-mesh shadow pipeline (Option A).
     ///
     /// `shadow_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh bodies
@@ -178,251 +192,82 @@ public final class OffscreenRenderer: Sendable {
             return nil
         }
 
-        // Vertex descriptor (stride 6: position + normal)
-        let vertexDesc = MTLVertexDescriptor()
-        vertexDesc.attributes[0].format = .float3
-        vertexDesc.attributes[0].offset = 0
-        vertexDesc.attributes[0].bufferIndex = 0
-        vertexDesc.attributes[1].format = .float3
-        vertexDesc.attributes[1].offset = MemoryLayout<Float>.size * 3
-        vertexDesc.attributes[1].bufferIndex = 0
-        vertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 6
+        let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
+        let directVertexDesc = RendererSharedSetup.directMeshVertexDescriptor()
 
-        // Shaded pipeline
-        let shadedDesc = MTLRenderPipelineDescriptor()
-        shadedDesc.vertexFunction = library.makeFunction(name: "shaded_vertex")
-        shadedDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
-        shadedDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        shadedDesc.colorAttachments[1].pixelFormat = .invalid
-        // Per-body surface transparency (issue #53); opaque (alpha=1) unaffected.
-        shadedDesc.colorAttachments[0].isBlendingEnabled = true
-        shadedDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        shadedDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        shadedDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        shadedDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        shadedDesc.depthAttachmentPixelFormat = depthFormat
-        shadedDesc.stencilAttachmentPixelFormat = depthFormat
-        shadedDesc.rasterSampleCount = sampleCount
-        shadedDesc.vertexDescriptor = vertexDesc
-
-        guard let shadedPipeline = try? device.makeRenderPipelineState(descriptor: shadedDesc)
+        guard
+            let shadedPipeline = RendererSharedSetup.makeShadedPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc)
         else { return nil }
         self.shadedPipeline = shadedPipeline
 
-        // Direct-mesh pipeline (Option A spike): de-interleaved position (buffer 0) + normal
-        // (buffer 2). Vertex-stage buffer 1 is the uniforms; the fragment-stage table is separate,
-        // so buffer 2 is free in the vertex stage. Reuses shaded_vertex/shaded_fragment unchanged
-        // (the attributes still arrive via [[stage_in]]).
-        let directVertexDesc = MTLVertexDescriptor()
-        directVertexDesc.attributes[0].format = .float3  // position
-        directVertexDesc.attributes[0].offset = 0
-        directVertexDesc.attributes[0].bufferIndex = 0
-        directVertexDesc.attributes[1].format = .float3  // normal
-        directVertexDesc.attributes[1].offset = 0
-        directVertexDesc.attributes[1].bufferIndex = 2
-        directVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 3
-        directVertexDesc.layouts[2].stride = MemoryLayout<Float>.size * 3
-
-        let directDesc = MTLRenderPipelineDescriptor()
-        directDesc.vertexFunction = library.makeFunction(name: "shaded_vertex")
-        directDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
-        directDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        directDesc.colorAttachments[1].pixelFormat = .invalid
-        directDesc.colorAttachments[0].isBlendingEnabled = true
-        directDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        directDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        directDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        directDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        directDesc.depthAttachmentPixelFormat = depthFormat
-        directDesc.stencilAttachmentPixelFormat = depthFormat
-        directDesc.rasterSampleCount = sampleCount
-        directDesc.vertexDescriptor = directVertexDesc
-
-        guard let directMeshPipeline = try? device.makeRenderPipelineState(descriptor: directDesc)
+        guard
+            let directMeshPipeline = RendererSharedSetup.makeShadedPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
         else { return nil }
         self.directMeshPipeline = directMeshPipeline
 
-        // Wireframe pipeline
-        let wireDesc = MTLRenderPipelineDescriptor()
-        wireDesc.vertexFunction = library.makeFunction(name: "wireframe_vertex")
-        wireDesc.fragmentFunction = library.makeFunction(name: "wireframe_fragment")
-        wireDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        wireDesc.colorAttachments[1].pixelFormat = .invalid
-        wireDesc.colorAttachments[0].isBlendingEnabled = true
-        wireDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        wireDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        wireDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        wireDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        wireDesc.depthAttachmentPixelFormat = depthFormat
-        wireDesc.stencilAttachmentPixelFormat = depthFormat
-        wireDesc.rasterSampleCount = sampleCount
-        wireDesc.vertexDescriptor = vertexDesc
-
-        guard let wireframePipeline = try? device.makeRenderPipelineState(descriptor: wireDesc)
+        guard
+            let wireframePipeline = RendererSharedSetup.makeWireframePipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc)
         else { return nil }
         self.wireframePipeline = wireframePipeline
 
-        // Grid pipeline
-        let gridDesc = MTLRenderPipelineDescriptor()
-        gridDesc.vertexFunction = library.makeFunction(name: "grid_vertex")
-        gridDesc.fragmentFunction = library.makeFunction(name: "grid_fragment")
-        gridDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        gridDesc.colorAttachments[1].pixelFormat = .invalid
-        gridDesc.depthAttachmentPixelFormat = depthFormat
-        gridDesc.stencilAttachmentPixelFormat = depthFormat
-        gridDesc.rasterSampleCount = sampleCount
-
-        guard let gridPipeline = try? device.makeRenderPipelineState(descriptor: gridDesc) else {
-            return nil
-        }
+        guard
+            let gridPipeline = RendererSharedSetup.makeGridPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat)
+        else { return nil }
         self.gridPipeline = gridPipeline
 
-        // Axis pipeline
-        let axisDesc = MTLRenderPipelineDescriptor()
-        axisDesc.vertexFunction = library.makeFunction(name: "axis_vertex")
-        axisDesc.fragmentFunction = library.makeFunction(name: "axis_fragment")
-        axisDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        axisDesc.colorAttachments[1].pixelFormat = .invalid
-        axisDesc.depthAttachmentPixelFormat = depthFormat
-        axisDesc.stencilAttachmentPixelFormat = depthFormat
-        axisDesc.rasterSampleCount = sampleCount
-
-        let axisVertexDesc = MTLVertexDescriptor()
-        axisVertexDesc.attributes[0].format = .float3
-        axisVertexDesc.attributes[0].offset = 0
-        axisVertexDesc.attributes[0].bufferIndex = 0
-        axisVertexDesc.attributes[1].format = .float4
-        axisVertexDesc.attributes[1].offset = MemoryLayout<Float>.size * 3
-        axisVertexDesc.attributes[1].bufferIndex = 0
-        axisVertexDesc.layouts[0].stride = MemoryLayout<Float>.size * 7
-        axisDesc.vertexDescriptor = axisVertexDesc
-
-        guard let axisPipeline = try? device.makeRenderPipelineState(descriptor: axisDesc) else {
-            return nil
-        }
+        guard
+            let axisPipeline = RendererSharedSetup.makeAxisPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat)
+        else { return nil }
         self.axisPipeline = axisPipeline
 
-        // Visible point-cloud pipeline (issue #28). No vertex descriptor —
-        // shader reads positions and per-point colours via [[vertex_id]].
-        let visiblePointDesc = MTLRenderPipelineDescriptor()
-        visiblePointDesc.label = "offscreen_visible_point"
-        visiblePointDesc.vertexFunction = library.makeFunction(name: "visible_point_vertex")
-        visiblePointDesc.fragmentFunction = library.makeFunction(name: "visible_point_fragment")
-        visiblePointDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        visiblePointDesc.colorAttachments[1].pixelFormat = .invalid
-        visiblePointDesc.colorAttachments[0].isBlendingEnabled = true
-        visiblePointDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        visiblePointDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        visiblePointDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
-        visiblePointDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        visiblePointDesc.depthAttachmentPixelFormat = depthFormat
-        visiblePointDesc.stencilAttachmentPixelFormat = depthFormat
-        visiblePointDesc.rasterSampleCount = sampleCount
-        self.visiblePointPipeline = try? device.makeRenderPipelineState(
-            descriptor: visiblePointDesc)
+        self.visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, label: "offscreen_visible_point")
 
-        // Shadow pipeline
-        let shadowDesc = MTLRenderPipelineDescriptor()
-        shadowDesc.label = "offscreen_shadow"
-        shadowDesc.vertexFunction = library.makeFunction(name: "shadow_vertex")
-        shadowDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
-        shadowDesc.depthAttachmentPixelFormat = .depth32Float
-        shadowDesc.rasterSampleCount = 1
-        shadowDesc.vertexDescriptor = vertexDesc
-
-        guard let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc)
+        guard
+            let shadowPipeline = RendererSharedSetup.makeShadowPipelineState(
+                device: device, library: library, vertexDescriptor: vertexDesc,
+                label: "offscreen_shadow")
         else { return nil }
         self.shadowPipeline = shadowPipeline
 
-        // Direct-mesh shadow pipeline (Option A): same shadow shaders, two-buffer descriptor.
-        let shadowDirectDesc = MTLRenderPipelineDescriptor()
-        shadowDirectDesc.label = "offscreen_shadow_direct"
-        shadowDirectDesc.vertexFunction = library.makeFunction(name: "shadow_vertex")
-        shadowDirectDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
-        shadowDirectDesc.depthAttachmentPixelFormat = .depth32Float
-        shadowDirectDesc.rasterSampleCount = 1
-        shadowDirectDesc.vertexDescriptor = directVertexDesc
         guard
-            let shadowDirectPipeline = try? device.makeRenderPipelineState(
-                descriptor: shadowDirectDesc)
+            let shadowDirectPipeline = RendererSharedSetup.makeShadowPipelineState(
+                device: device, library: library, vertexDescriptor: directVertexDesc,
+                label: "offscreen_shadow_direct")
         else { return nil }
         self.shadowDirectPipeline = shadowDirectPipeline
         self.shadowMapManager = ShadowMapManager(device: device)
 
-        // Depth stencil state
-        let depthDesc = MTLDepthStencilDescriptor()
-        depthDesc.depthCompareFunction = .less
-        depthDesc.isDepthWriteEnabled = true
-        guard let depthState = device.makeDepthStencilState(descriptor: depthDesc) else {
-            return nil
-        }
+        guard
+            let depthState = RendererSharedSetup.makeDepthStencilState(
+                device: device, compareFunction: .less, isDepthWriteEnabled: true)
+        else { return nil }
         self.depthState = depthState
 
         // Transparent surface depth state (#53): test on, write off.
-        let transparentDepthDesc = MTLDepthStencilDescriptor()
-        transparentDepthDesc.depthCompareFunction = .less
-        transparentDepthDesc.isDepthWriteEnabled = false
         guard
-            let transparentDepthState = device.makeDepthStencilState(
-                descriptor: transparentDepthDesc)
+            let transparentDepthState = RendererSharedSetup.makeDepthStencilState(
+                device: device, compareFunction: .less, isDepthWriteEnabled: false)
         else { return nil }
         self.transparentDepthState = transparentDepthState
 
-        // Axis vertex buffer
-        let axisLength: Float = 1000.0
-        let axisData: [Float] = [
-            0, 0, 0, 1, 0, 0, 1, axisLength, 0, 0, 1, 0, 0, 1,
-            0, 0, 0, 0, 1, 0, 1, 0, axisLength, 0, 0, 1, 0, 1,
-            0, 0, 0, 0, 0, 1, 1, 0, 0, axisLength, 0, 0, 1, 1,
-        ]
-        guard
-            let axisVB = device.makeBuffer(
-                bytes: axisData, length: axisData.count * MemoryLayout<Float>.size,
-                options: .storageModeShared)
-        else { return nil }
+        guard let axisVB = RendererSharedSetup.makeAxisVertexBuffer(device: device) else {
+            return nil
+        }
         self.axisVertexBuffer = axisVB
 
-        // Matcap texture (procedural 256x256)
-        let matcapSize = 256
-        let matcapDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: matcapSize, height: matcapSize, mipmapped: false)
-        matcapDesc.usage = [.shaderRead]
-        guard let matcap = device.makeTexture(descriptor: matcapDesc) else { return nil }
-
-        var matcapPixels = [UInt8](repeating: 0, count: matcapSize * matcapSize * 4)
-        for y in 0..<matcapSize {
-            for x in 0..<matcapSize {
-                let u = (Float(x) + 0.5) / Float(matcapSize) * 2.0 - 1.0
-                let v = (Float(y) + 0.5) / Float(matcapSize) * 2.0 - 1.0
-                let r2 = u * u + v * v
-                var r: Float = 0.1
-                var g: Float = 0.1
-                var b: Float = 0.1
-                if r2 <= 1.0 {
-                    let nz = sqrt(1.0 - r2)
-                    let nx = u
-                    let ny = -v
-                    let keyDir = simd_normalize(SIMD3<Float>(-0.5, 0.7, 0.5))
-                    let fillDir = simd_normalize(SIMD3<Float>(0.6, 0.2, 0.7))
-                    let normal = SIMD3<Float>(nx, ny, nz)
-                    let keyDiff = max(simd_dot(normal, keyDir), 0.0) * 0.8
-                    let fillDiff = max(simd_dot(normal, fillDir), 0.0) * 0.3
-                    let rim = pow(1.0 - nz, 3.0) * 0.25
-                    let brightness = min(keyDiff + fillDiff + rim + 0.18, 1.0)
-                    r = brightness * 1.0
-                    g = brightness * 0.97
-                    b = brightness * 0.95
-                }
-                let idx = (y * matcapSize + x) * 4
-                matcapPixels[idx] = UInt8(min(max(r * 255, 0), 255))
-                matcapPixels[idx + 1] = UInt8(min(max(g * 255, 0), 255))
-                matcapPixels[idx + 2] = UInt8(min(max(b * 255, 0), 255))
-                matcapPixels[idx + 3] = 255
-            }
-        }
-        matcap.replace(
-            region: MTLRegionMake2D(0, 0, matcapSize, matcapSize), mipmapLevel: 0,
-            withBytes: matcapPixels, bytesPerRow: matcapSize * 4)
+        guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else { return nil }
         self.matcapTexture = matcap
     }
 
@@ -492,37 +337,15 @@ public final class OffscreenRenderer: Sendable {
         let viewProjection = projMatrix * viewMatrix
 
         let lighting = options.lightingConfiguration
-        let nearPlane = nearClip
-        let farPlane = farClip
-
-        let lightSources = [lighting.keyLight, lighting.fillLight, lighting.backLight]
-        func packLight(_ ls: LightSettings) -> LightDataSwift {
-            let typeVal: Float
-            let radiusVal: Float
-            switch ls.lightType {
-            case .directional:
-                typeVal = 0.0
-                radiusVal = 0.0
-            case .point(let radius):
-                typeVal = 1.0
-                radiusVal = radius
-            }
-            return LightDataSwift(
-                directionAndIntensity: SIMD4<Float>(
-                    ls.direction.x, ls.direction.y, ls.direction.z, ls.intensity),
-                colorAndEnabled: SIMD4<Float>(
-                    ls.color.x, ls.color.y, ls.color.z, ls.isEnabled ? 1.0 : 0.0),
-                typeAndParams: SIMD4<Float>(typeVal, radiusVal, 0, 0),
-                positionAndPad: SIMD4<Float>(ls.position.x, ls.position.y, ls.position.z, 0)
-            )
-        }
 
         // Shadow setup
         let shadowEnabled = lighting.shadowsEnabled
         let lightVP: simd_float4x4
         if shadowEnabled {
-            lightVP = computeLightViewProjection(
-                lightDir: lighting.keyLight.direction, bodies: bodies)
+            lightVP = RendererSharedSetup.lightViewProjection(
+                lightDirection: lighting.keyLight.direction,
+                sceneBounds: RendererSharedSetup.sceneBounds(of: bodies, applyingTransforms: true)
+            )
         } else {
             lightVP = matrix_identity_float4x4
         }
@@ -533,29 +356,16 @@ public final class OffscreenRenderer: Sendable {
 
         func makeUniforms() -> Uniforms {
             Uniforms(
-                viewProjectionMatrix: viewProjection,
-                modelMatrix: matrix_identity_float4x4,
+                viewProjection: viewProjection,
                 viewMatrix: viewMatrix,
-                cameraPosition: SIMD4<Float>(
-                    cameraState.position.x, cameraState.position.y, cameraState.position.z,
-                    nearPlane),
-                light0: packLight(lightSources[0]),
-                light1: packLight(lightSources[1]),
-                light2: packLight(lightSources[2]),
-                ambientSkyColor: SIMD4<Float>(
-                    lighting.ambientSkyColor.x, lighting.ambientSkyColor.y,
-                    lighting.ambientSkyColor.z, lighting.specularPower),
-                ambientGroundColor: SIMD4<Float>(
-                    lighting.ambientGroundColor.x, lighting.ambientGroundColor.y,
-                    lighting.ambientGroundColor.z, lighting.specularIntensity),
-                materialParams: SIMD4<Float>(
-                    lighting.fresnelPower, lighting.fresnelIntensity, lighting.matcapBlend, farPlane
-                ),
-                lightViewProjectionMatrix: lightVP,
+                cameraPosition: cameraState.position,
+                nearPlane: nearClip,
+                farPlane: farClip,
+                lighting: lighting,
+                lightViewProjection: lightVP,
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
-                iblParams: .zero,
-                unlit: options.displayMode == .unlit ? 1 : 0
+                unlit: options.displayMode == .unlit
             )
         }
 
@@ -628,36 +438,24 @@ public final class OffscreenRenderer: Sendable {
 
         // Grid
         if options.showGrid {
-            let spacing = computeGridSpacing(cameraState: cameraState)
-            let halfCount: Int32 = 15
-            let pivot = cameraState.pivot
-            let centerX = (pivot.x / spacing).rounded() * spacing
-            let centerZ = (pivot.z / spacing).rounded() * spacing
-            var gridUniforms = GridUniforms(
-                viewProjectionMatrix: viewProjection,
-                gridOrigin: SIMD3<Float>(centerX, -0.01, centerZ),
-                spacing: spacing, halfCount: halfCount,
-                dotSize: max(2.0, 4.0 / cameraState.distance),
-                dotColor: SIMD4<Float>(0.6, 0.6, 0.6, 1.0)
+            RendererSharedSetup.encodeGrid(
+                encoder: mainEncoder,
+                pipeline: gridPipeline,
+                viewProjection: viewProjection,
+                cameraState: cameraState,
+                baseSpacing: options.gridBaseSpacing,
+                subdivisions: options.gridSubdivisions
             )
-            let count = Int(halfCount) * 2 + 1
-            mainEncoder.setRenderPipelineState(gridPipeline)
-            mainEncoder.setVertexBytes(
-                &gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
-            mainEncoder.setFragmentBytes(
-                &gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
-            mainEncoder.drawPrimitives(
-                type: .point, vertexStart: 0, vertexCount: 1, instanceCount: count * count)
         }
 
         // Axes
         if options.showAxes {
-            var axisUniforms = AxisUniforms(viewProjectionMatrix: viewProjection)
-            mainEncoder.setRenderPipelineState(axisPipeline)
-            mainEncoder.setVertexBuffer(axisVertexBuffer, offset: 0, index: 0)
-            mainEncoder.setVertexBytes(
-                &axisUniforms, length: MemoryLayout<AxisUniforms>.size, index: 1)
-            mainEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 6)
+            RendererSharedSetup.encodeAxes(
+                encoder: mainEncoder,
+                pipeline: axisPipeline,
+                vertexBuffer: axisVertexBuffer,
+                viewProjection: viewProjection
+            )
         }
 
         // Bodies
@@ -931,157 +729,34 @@ public final class OffscreenRenderer: Sendable {
         let currentGen = body.generation
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen { return }
 
-        var vertexBuffer: MTLBuffer?
-        var normalBuffer: MTLBuffer?
-        var indexBuffer: MTLBuffer?
-        var indexCount = 0
-        var vertexCount = 0
+        let mesh = RendererSharedBuffers.makeMeshBuffers(device: device, body: body)
 
-        if body.usesDirectMesh, !body.indices.isEmpty {
-            // Direct-mesh path (Option A): upload de-interleaved positions + normals straight to
-            // separate buffers — no CPU interleave. This is the shape OCCT's Mesh already provides.
-            vertexBuffer = device.makeBuffer(
-                bytes: body.meshPositions,
-                length: body.meshPositions.count * MemoryLayout<Float>.size,
-                options: .storageModeShared)
-            normalBuffer = device.makeBuffer(
-                bytes: body.meshNormals, length: body.meshNormals.count * MemoryLayout<Float>.size,
-                options: .storageModeShared)
-            indexBuffer = device.makeBuffer(
-                bytes: body.indices, length: body.indices.count * MemoryLayout<UInt32>.size,
-                options: .storageModeShared)
-            indexCount = body.indices.count
-            vertexCount = body.meshPositions.count / 3
-        } else if !body.vertexData.isEmpty, !body.indices.isEmpty {
-            vertexBuffer = device.makeBuffer(
-                bytes: body.vertexData, length: body.vertexData.count * MemoryLayout<Float>.size,
-                options: .storageModeShared)
-            indexBuffer = device.makeBuffer(
-                bytes: body.indices, length: body.indices.count * MemoryLayout<UInt32>.size,
-                options: .storageModeShared)
-            indexCount = body.indices.count
-            vertexCount = body.vertexData.count / 6
-        }
-
-        var edgeVertices: [Float] = []
-        for polyline in body.edges {
-            guard polyline.count >= 2 else { continue }
-            for i in 0..<(polyline.count - 1) {
-                let a = polyline[i]
-                let b = polyline[i + 1]
-                edgeVertices.append(contentsOf: [a.x, a.y, a.z, 0, 0, 0])
-                edgeVertices.append(contentsOf: [b.x, b.y, b.z, 0, 0, 0])
-            }
-        }
-
-        let edgeVB: MTLBuffer? =
-            edgeVertices.isEmpty
-            ? nil
-            : device.makeBuffer(
-                bytes: edgeVertices, length: edgeVertices.count * MemoryLayout<Float>.size,
-                options: .storageModeShared)
+        let edgeVertices = RendererSharedBuffers.edgeLineVertices(from: body.edges)
+        let edgeVB = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: edgeVertices)
         let edgeVertexCount = edgeVertices.count / 6
 
-        // Point-cloud buffers (issue #28). Built only when `body.vertices`
-        // is non-empty. The colour buffer is only built when its length
-        // matches the vertex count — mismatched arrays silently fall back
-        // to the body colour rather than reading out of bounds.
-        let pointPositionVB: MTLBuffer?
-        let pointVertexCount: Int
-        if !body.vertices.isEmpty {
-            pointPositionVB = body.vertices.withUnsafeBufferPointer { buf in
-                device.makeBuffer(
-                    bytes: buf.baseAddress!,
-                    length: buf.count * MemoryLayout<SIMD3<Float>>.stride,
-                    options: .storageModeShared
-                )
-            }
-            pointVertexCount = body.vertices.count
-        } else {
-            pointPositionVB = nil
-            pointVertexCount = 0
-        }
+        // Point-cloud buffers (issue #28), built only when `body.vertices` is non-empty.
+        let pointPositionVB = RendererSharedBuffers.makePointPositionBuffer(
+            device: device, vertices: body.vertices)
+        let pointColorVB = RendererSharedBuffers.makePointColorBuffer(
+            device: device, vertexColors: body.vertexColors, vertexCount: body.vertices.count)
 
-        let pointColorVB: MTLBuffer?
-        if !body.vertexColors.isEmpty, body.vertexColors.count == body.vertices.count {
-            pointColorVB = body.vertexColors.withUnsafeBufferPointer { buf in
-                device.makeBuffer(
-                    bytes: buf.baseAddress!,
-                    length: buf.count * MemoryLayout<SIMD4<Float>>.stride,
-                    options: .storageModeShared
-                )
-            }
-        } else {
-            pointColorVB = nil
-        }
-
-        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
+        guard mesh.vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
 
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
-            vertexBuffer: vertexBuffer,
-            normalBuffer: normalBuffer,
-            indexBuffer: indexBuffer,
-            indexCount: indexCount,
+            vertexBuffer: mesh.vertexBuffer,
+            normalBuffer: mesh.normalBuffer,
+            indexBuffer: mesh.indexBuffer,
+            indexCount: mesh.indexCount,
             edgeVertexBuffer: edgeVB,
             edgeVertexCount: edgeVertexCount,
-            vertexCount: vertexCount,
+            vertexCount: mesh.vertexCount,
             pointPositionBuffer: pointPositionVB,
-            pointVertexCount: pointVertexCount,
+            pointVertexCount: pointPositionVB != nil ? body.vertices.count : 0,
             pointColorBuffer: pointColorVB
         )
         bodyGeneration[body.id] = currentGen
-    }
-
-    private func computeLightViewProjection(lightDir: SIMD3<Float>, bodies: [ViewportBody])
-        -> simd_float4x4
-    {
-        var sceneMin = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
-        var sceneMax = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
-        var hasGeometry = false
-
-        for body in bodies where body.isVisible {
-            if let bb = body.boundingBox?.transformed(by: body.transform) {
-                sceneMin = simd_min(sceneMin, bb.min)
-                sceneMax = simd_max(sceneMax, bb.max)
-                hasGeometry = true
-            }
-        }
-
-        if !hasGeometry {
-            sceneMin = SIMD3<Float>(-5, -5, -5)
-            sceneMax = SIMD3<Float>(5, 5, 5)
-        }
-
-        let center = (sceneMin + sceneMax) * 0.5
-        let extents = sceneMax - sceneMin
-        let radius = simd_length(extents) * 0.5
-
-        let dir = simd_normalize(lightDir)
-        let lightPos = center - dir * (radius * 2.0)
-
-        let tentativeUp = SIMD3<Float>(0, 1, 0)
-        let up: SIMD3<Float> =
-            abs(simd_dot(dir, tentativeUp)) > 0.99 ? SIMD3<Float>(0, 0, 1) : tentativeUp
-
-        let lightView = simd_float4x4.lookAt(eye: lightPos, target: center, up: up)
-        let orthoSize = radius * 1.5
-        let lightProj = simd_float4x4.orthographic(
-            left: -orthoSize, right: orthoSize, bottom: -orthoSize, top: orthoSize, near: 0.01,
-            far: radius * 4.0)
-
-        return lightProj * lightView
-    }
-
-    private func computeGridSpacing(cameraState: CameraState) -> Float {
-        let distance = cameraState.distance
-        let fovRadians = cameraState.fieldOfView * .pi / 180.0
-        let visibleWidth = 2.0 * distance * tan(fovRadians / 2.0)
-        let idealSpacing = visibleWidth / 15.0
-        let baseSpacing: Float = 1.0
-        let subdivisions: Float = 5.0
-        guard baseSpacing > 0, idealSpacing > 0 else { return 1.0 }
-        let level = (log(idealSpacing / baseSpacing) / log(subdivisions)).rounded()
-        return baseSpacing * pow(subdivisions, level)
     }
 }
 
@@ -1089,6 +764,7 @@ public final class OffscreenRenderer: Sendable {
 
 private struct BodyBuffersOffscreen {
     let vertexBuffer: MTLBuffer?
+
     /// De-interleaved normal buffer (stride 12) for the direct-mesh path.
     ///
     /// When non-nil, `vertexBuffer` holds positions only (stride 12) and the body draws via
@@ -1099,11 +775,13 @@ private struct BodyBuffersOffscreen {
     let edgeVertexBuffer: MTLBuffer?
     let edgeVertexCount: Int
     let vertexCount: Int
+
     /// Tight position buffer (stride 12) for the visible point-cloud pass.
     ///
     /// Built from `body.vertices` only when non-empty.
     let pointPositionBuffer: MTLBuffer?
     let pointVertexCount: Int
+
     /// Per-point colour buffer (stride 16).
     ///
     /// Nil when `body.vertexColors` is empty or its length doesn't match `body.vertices` — the pass

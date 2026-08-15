@@ -100,6 +100,8 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `showGrid` | `Bool` | `false` | Draw the adaptive dot grid. |
 | `showAxes` | `Bool` | `false` | Draw RGB world-space axis lines. |
 | `msaaSampleCount` | `Int` | `4` | MSAA sample count (1 = disabled). |
+| `gridBaseSpacing` | `Float` | `1.0` | Fundamental grid unit in world units, mirroring `ViewportConfiguration.gridBaseSpacing`. |
+| `gridSubdivisions` | `Int` | `10` | Subdivision factor between adaptive grid spacing levels, mirroring `ViewportConfiguration.gridSubdivisions`. |
 | `explicitOrthoBounds` | `OrthoBounds?` | `nil` | Override projection with exact world-unit bounds. See `OrthoBounds`. |
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge in pixels. `+x` = right, `+y` = down. Lightweight alternative to adjusting the camera for small registration corrections. |
 | `measurements` | `[ViewportMeasurement]` | `[]` | Measurement annotations composited over the Metal pass via Core Graphics. World-space anchors must already be resolved on the input values. |
@@ -117,6 +119,8 @@ public init(
     showGrid: Bool = false,
     showAxes: Bool = false,
     msaaSampleCount: Int = 4,
+    gridBaseSpacing: Float = 1.0,
+    gridSubdivisions: Int = 10,
     explicitOrthoBounds: OrthoBounds? = nil,
     pixelPan: SIMD2<Float>? = nil,
     measurements: [ViewportMeasurement] = []
