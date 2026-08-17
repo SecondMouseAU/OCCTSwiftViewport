@@ -65,6 +65,8 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `showGrid` | `Bool` | `false` | Adaptive dot grid |
 | `showAxes` | `Bool` | `false` | RGB world-space axes |
 | `msaaSampleCount` | `Int` | `4` | MSAA samples (1, 2, or 4) |
+| `gridBaseSpacing` | `Float` | `1.0` | Grid unit in world units (matches `ViewportConfiguration`) |
+| `gridSubdivisions` | `Int` | `10` | Adaptive grid spacing factor (matches `ViewportConfiguration`) |
 | `explicitOrthoBounds` | `OrthoBounds?` | `nil` | See [Pixel-registered ortho](#pixel-registered-ortho-renders) |
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge (+x right, +y down) |
 | `measurements` | `[ViewportMeasurement]` | `[]` | See [Measurement overlays](#measurement-overlays) |

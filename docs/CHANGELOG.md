@@ -2,6 +2,51 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.28] - 2026-08-16
+
+### Fixed
+- **Headless renders drew the ground grid at different spacing levels than the live viewport**
+  (issue #101). `OffscreenRenderer`'s copy of the adaptive grid-spacing math hardcoded a
+  subdivision factor of 5 while `ViewportRenderer` reads `ViewportConfiguration.gridSubdivisions`,
+  which has defaulted to 10 since the knob was added — so the two snapped to different spacing
+  levels at the same camera distance (visible at, for example, distances 0.5, 3 and 200; some
+  distances happened to agree). The hardcoded copy predates nothing: the config-driven version was
+  already in place when the headless renderer was written, so this was a transcription slip, not a
+  deliberate headless-specific choice. Both renderers now call one config-driven function, and
+  `OffscreenRenderOptions` gains `gridBaseSpacing` (default `1.0`) and `gridSubdivisions`
+  (default `10`) so headless output matches the live viewport's defaults and stays adjustable.
+  Only affects renders with `showGrid = true` (off by default).
+- **Removed unconditional debug scaffolding left over from an April-2026 tessellation debugging
+  session** (issue #101). `ViewportRenderer` wrote a `renderer_diag.txt` file into the *consuming
+  app's* Documents directory during pipeline setup and buffer building — an unrequested file write
+  into every consumer's sandbox, in release builds too. That write is gone entirely (not merely
+  `#if DEBUG`-gated). The renderer's diagnostic `NSLog` calls are now `#if DEBUG`-only, and the one
+  labelled "one-time" (`WARNING: %d bodies have no tessellation data`) finally has an actual
+  per-instance dedup guard instead of being able to fire on every frame.
+
+### Changed
+- **Deduplicated the Metal setup `ViewportRenderer` and `OffscreenRenderer` hand-maintained in
+  parallel** (issue #101, follow-up from the #92 duplication review). ~290 near-verbatim lines —
+  pipeline-descriptor construction for the shaded / direct-mesh / wireframe / grid / axis /
+  visible-point / shadow pipelines, the shadow-frustum light view-projection, the adaptive grid
+  spacing, the per-body vertex / edge / point buffer uploads, the procedural matcap texture, the
+  axis vertex buffer, and the `Uniforms`/`LightDataSwift` packing — now live in internal
+  `RendererSharedSetup`, `RendererSharedBuffers`, and `Uniforms+Scene` helpers that both renderers
+  call. The CHANGELOG shows the same fix being hand-applied to both files across #26, #28, #53,
+  #55, #57 and #83; the grid-spacing divergence above is what that tax eventually cost.
+  - **No public API removed or changed**; the only public-surface delta is the two additive,
+    defaulted `OffscreenRenderOptions` grid fields above.
+  - Verified pixel-identical: a headless differential harness hashed twelve scenes (shaded, shaded
+    with edges, wireframe, unlit, transparency, direct-mesh, point clouds with per-point colours,
+    shadows, axes, explicit ortho bounds + pixel pan, flat lighting) before and after the
+    extraction. Every hash matched except the grid scenes, which changed exactly as the
+    grid-spacing fix predicts.
+  - `RendererSharedSetupTests` (12) pin each extracted pure function against the implementation it
+    replaced, including both sides of the grid-spacing divergence. **208 tests total.**
+- `ViewportRenderer.swift` and `OffscreenRenderer.swift` are now fully `swift-format`/SwiftLint
+  compliant and have been removed from `scripts/style-manifest-swift.txt` (49 files remain), per
+  the code-style policy's "fix what you touch" rule.
+
 ## [1.1.27] - 2026-08-14
 
 ### Fixed
