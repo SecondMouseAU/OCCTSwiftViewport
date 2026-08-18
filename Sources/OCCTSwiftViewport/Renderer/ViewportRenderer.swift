@@ -2359,6 +2359,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         && buffers.indexCount > 0
                     if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                         var uniforms = makeUniforms()
+                        // Issue #107: every other draw site in this file sets this explicitly;
+                        // this one didn't, so every body depth-rendered at its local origin
+                        // instead of its real position, corrupting the SSAO/silhouette pass's
+                        // depth buffer for any transformed body.
+                        uniforms.modelMatrix = body.transform
 
                         if useMeshShaders, let ml = buffers.meshlets,
                             let msPipeline = meshShaderDepthOnlyPipeline

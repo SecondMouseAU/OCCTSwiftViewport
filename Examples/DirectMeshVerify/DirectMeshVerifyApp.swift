@@ -108,6 +108,13 @@ struct ContentView: View {
                     .background(.ultraThinMaterial, in: Capsule())
                     .padding(.top, 8)
 
+                Text(BuildStamp.value)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 4)
+
                 Spacer()
 
                 HStack(spacing: 12) {
