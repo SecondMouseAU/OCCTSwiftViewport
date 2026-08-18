@@ -1188,12 +1188,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let shadowEnabled = lighting.shadowsEnabled
         let lightVP: simd_float4x4
         if shadowEnabled {
-            // Local (untransformed) bounds, which is what this pass has always fitted the light
-            // frustum to — see `RendererSharedSetup.sceneBounds(of:applyingTransforms:)`.
+            // World-space bounds (issue #105): a body's local box has to be transformed before it
+            // can bound the shadow frustum, or a translated body's shadow lands on the wrong
+            // volume — see `RendererSharedSetup.sceneBounds(of:applyingTransforms:)`.
             lightVP = RendererSharedSetup.lightViewProjection(
                 lightDirection: lighting.keyLight.direction,
                 sceneBounds: RendererSharedSetup.sceneBounds(
-                    of: bodiesBinding.wrappedValue, applyingTransforms: false)
+                    of: bodiesBinding.wrappedValue, applyingTransforms: true)
             )
         } else {
             lightVP = matrix_identity_float4x4
