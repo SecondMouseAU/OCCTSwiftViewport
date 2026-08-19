@@ -2789,7 +2789,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let layerMap = currentLayerMap
         let readbackBuffer = pickReadbackBuffer
 
-        commandBuffer.addCompletedHandler { _ in
+        // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
+        // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
+        // that does not annotate `MTLCommandBufferHandler` as Sendable, an unannotated closure
+        // literal instead inherits this type's `@MainActor` isolation, and Swift 6 then asserts
+        // that isolation when the handler is entered. The assertion fails on Metal's queue and
+        // traps with SIGTRAP. Writing the closure `@Sendable` keeps it nonisolated on every SDK,
+        // and makes the compiler check that the captures really are safe to hand to Metal.
+        // See issue #110.
+        commandBuffer.addCompletedHandler { @Sendable _ in
             let rawValue = readbackBuffer.contents().load(as: UInt32.self)
             let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
             Task { @MainActor in
@@ -2883,7 +2891,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
 
-        commandBuffer.addCompletedHandler { _ in
+        // `@Sendable` for the same reason as in `performPick(at:)` above: this handler runs on
+        // Metal's completion queue, so it must not inherit `@MainActor` isolation. See issue #110.
+        commandBuffer.addCompletedHandler { @Sendable _ in
             // De-stride: read exactly the w*4 live bytes from each padded row, skipping the
             // alignment padding, into one flat row-major array for decodeRegionPickResults.
             let base = readbackBuffer.contents()
