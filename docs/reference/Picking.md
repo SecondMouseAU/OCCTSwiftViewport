@@ -7,11 +7,11 @@ parent: API Reference
 
 OCCTSwiftViewport provides two complementary picking paths. The **GPU pick path** resolves a single primitive per pixel from a dedicated R32Uint pick-ID texture rendered each frame; it is fast and automatic, delivering a `PickResult` to `ViewportController.pickResult`. The **CPU raycast path** (`SceneRaycast`) performs broadphase AABB culling followed by Möller–Trumbore triangle intersection; it is distance-aware and useful when you need the world-space hit point independently of the GPU readback.
 
-`SelectionFilter` sits on top of the GPU path as a composable predicate that accepts or rejects a decoded `PickResult` before it reaches your code. `Ray` and `ProjectionUtility` are shared utilities used by both paths and by measurement code.
+`PickResultFilter` sits on top of the GPU path as a composable predicate that accepts or rejects a decoded `PickResult` before it reaches your code. `Ray` and `ProjectionUtility` are shared utilities used by both paths and by measurement code.
 
 ## Topics
 
-- [PrimitiveKind](#primitivekind) · [PickLayer](#picklayer) · [PickResult](#pickresult) · [SelectionFilter](#selectionfilter) · [RaycastHit](#raycasthit) · [SceneRaycast](#sceneraycast) · [Ray](#ray) · [ProjectionUtility](#projectionutility)
+- [PrimitiveKind](#primitivekind) · [PickLayer](#picklayer) · [PickResult](#pickresult) · [PickResultFilter](#pickresultfilter) · [RaycastHit](#raycasthit) · [SceneRaycast](#sceneraycast) · [Ray](#ray) · [ProjectionUtility](#projectionutility)
 
 ---
 
@@ -46,7 +46,7 @@ Defined in `Types/ViewportBody.swift`. Determines which published pick stream a 
 | `.userGeometry` | `ViewportController.pickResult` |
 | `.widget` | `ViewportController.widgetPickResult` |
 
-Set per body via `ViewportBody.pickLayer`. The widget layer is intended for manipulator widgets (e.g. OCCTSwiftAIS gizmos) whose picks should not enter the user selection stream. A `SelectionFilter` assigned to `ViewportController.selectionFilter` only gates the `.userGeometry` stream; widget-layer picks bypass it entirely.
+Set per body via `ViewportBody.pickLayer`. The widget layer is intended for manipulator widgets (e.g. OCCTSwiftAIS gizmos) whose picks should not enter the user selection stream. A `PickResultFilter` assigned to `ViewportController.selectionFilter` only gates the `.userGeometry` stream; widget-layer picks bypass it entirely.
 
 ---
 
@@ -63,9 +63,9 @@ The decoded result of a single GPU pick operation. Produced by `ViewportControll
 The raw R32Uint value from the pick texture encodes three fields:
 
 ```
-bits  0–15 : objectIndex  (16 bits — draw-order body index)
-bits 16–29 : primitiveID  (14 bits — triangle/segment/point index within body)
-bits 30–31 : kind         ( 2 bits — 0=face, 1=edge, 2=vertex)
+bits  0–15 : objectIndex  (16 bits: draw-order body index)
+bits 16–29 : primitiveID  (14 bits: triangle/segment/point index within body)
+bits 30–31 : kind         ( 2 bits: 0=face, 1=edge, 2=vertex)
 ```
 
 ### Properties
@@ -85,9 +85,9 @@ Zero-based index of the body in draw order. Corresponds to `objectIndex` in the 
 #### `let triangleIndex: Int`
 
 The primitive index within the body, interpreted by `kind`:
-- `.face` — triangle index into the body's index buffer (`indices[triangleIndex * 3]…`)
-- `.edge` — line-segment index into `edges` (or `arcs`)
-- `.vertex` — point index into `vertices`
+- `.face`: triangle index into the body's index buffer (`indices[triangleIndex * 3]…`)
+- `.edge`: line-segment index into `edges` (or `arcs`)
+- `.vertex`: point index into `vertices`
 
 The name is preserved for historical compatibility; it is semantically a *primitive* index.
 
@@ -115,7 +115,7 @@ public init?(
 
 Decodes a raw pick-buffer value. Returns `nil` when `rawValue` equals `sentinel`, when the `objectIndex` is absent from `indexMap`, or when the encoded kind bits do not match a valid `PrimitiveKind` case. Bodies absent from `layerMap` default to `.userGeometry`.
 
-**Example — subscribing to face picks:**
+**Example: subscribing to face picks**
 
 ```swift
 import Combine
@@ -134,15 +134,17 @@ func observeFacePicks(controller: ViewportController) {
 
 ---
 
-## SelectionFilter
+## PickResultFilter
 
 ```swift
-public struct SelectionFilter: Sendable
+public struct PickResultFilter: Sendable
 ```
 
 A composable predicate over `PickResult`. Assign to `ViewportController.selectionFilter` to constrain what the user-geometry pick stream surfaces. A rejected pick is treated as a miss.
 
 Widget-layer picks bypass this filter; they are handled separately via `widgetPickResult`.
+
+> **Renamed in #111.** This type was called `SelectionFilter` until v1.1.30. It filters a `PickResult`, not a resolved selection, and OCCTSwiftAIS has its own unrelated `SelectionFilter` protocol that runs *after* topology resolution and reasons about the actual face or edge; the two were never implementations of each other. `SelectionFilter` remains as a deprecated typealias, so existing code keeps compiling.
 
 ### Custom initializer
 
@@ -164,39 +166,39 @@ Allows calling a filter as a function: `filter(result)`.
 
 ### Built-in filters
 
-#### `static let all: SelectionFilter`
+#### `static let all: PickResultFilter`
 
 Accepts every result (the default when no filter is set).
 
-#### `static let nothing: SelectionFilter`
+#### `static let nothing: PickResultFilter`
 
 Rejects every result.
 
-#### `static let faces: SelectionFilter`
+#### `static let faces: PickResultFilter`
 
 Accepts `.face` picks only. Equivalent to `.kind(.face)`.
 
-#### `static let edges: SelectionFilter`
+#### `static let edges: PickResultFilter`
 
 Accepts `.edge` picks only. Equivalent to `.kind(.edge)`.
 
-#### `static let vertices: SelectionFilter`
+#### `static let vertices: PickResultFilter`
 
 Accepts `.vertex` picks only. Equivalent to `.kind(.vertex)`.
 
-#### `static func kind(_ kind: PrimitiveKind) -> SelectionFilter`
+#### `static func kind(_ kind: PrimitiveKind) -> PickResultFilter`
 
 Accepts results whose `kind` matches the given value.
 
-#### `static func kinds(_ kinds: Set<PrimitiveKind>) -> SelectionFilter`
+#### `static func kinds(_ kinds: Set<PrimitiveKind>) -> PickResultFilter`
 
 Accepts results whose `kind` is contained in the set.
 
-#### `static func layer(_ layer: PickLayer) -> SelectionFilter`
+#### `static func layer(_ layer: PickLayer) -> PickResultFilter`
 
 Accepts results belonging to the given pick layer.
 
-#### `static func bodyIDs(_ ids: Set<String>) -> SelectionFilter`
+#### `static func bodyIDs(_ ids: Set<String>) -> PickResultFilter`
 
 Accepts results whose `bodyID` is in the allow-list.
 
@@ -204,7 +206,7 @@ Accepts results whose `bodyID` is in the allow-list.
 controller.selectionFilter = .bodyIDs(["part-A", "part-B"])
 ```
 
-#### `static func excludingBodyIDs(_ ids: Set<String>) -> SelectionFilter`
+#### `static func excludingBodyIDs(_ ids: Set<String>) -> PickResultFilter`
 
 Rejects results whose `bodyID` is in the deny-list.
 
@@ -213,33 +215,33 @@ Rejects results whose `bodyID` is in the deny-list.
 controller.selectionFilter = .excludingBodyIDs(["construction-grid"])
 ```
 
-#### `static func bodyIndices(_ indices: Set<Int>) -> SelectionFilter`
+#### `static func bodyIndices(_ indices: Set<Int>) -> PickResultFilter`
 
 Accepts results whose draw-order `bodyIndex` is in the given set.
 
 ### Composition
 
-#### `func and(_ other: SelectionFilter) -> SelectionFilter`
+#### `func and(_ other: PickResultFilter) -> PickResultFilter`
 
-Logical AND — both filters must accept.
+Logical AND, so both filters must accept.
 
-#### `func or(_ other: SelectionFilter) -> SelectionFilter`
+#### `func or(_ other: PickResultFilter) -> PickResultFilter`
 
-Logical OR — either filter must accept.
+Logical OR, so either filter must accept.
 
-#### `var negated: SelectionFilter`
+#### `var negated: PickResultFilter`
 
-Logical NOT — inverts acceptance.
+Logical NOT, so acceptance is inverted.
 
-#### `static func all(of filters: [SelectionFilter]) -> SelectionFilter`
+#### `static func all(of filters: [PickResultFilter]) -> PickResultFilter`
 
 AND-combines a collection of filters. An empty collection accepts everything.
 
-#### `static func any(of filters: [SelectionFilter]) -> SelectionFilter`
+#### `static func any(of filters: [PickResultFilter]) -> PickResultFilter`
 
 OR-combines a collection of filters. An empty collection rejects everything.
 
-**Example — compound filter:**
+**Example: compound filter**
 
 ```swift
 // Accept edges and vertices, but never on the "datum-plane" body
@@ -248,11 +250,11 @@ controller.selectionFilter = .edges
     .and(.excludingBodyIDs(["datum-plane"]))
 ```
 
-**Example — custom predicate:**
+**Example: custom predicate**
 
 ```swift
 // Accept only faces whose primitive index is even
-controller.selectionFilter = SelectionFilter { result in
+controller.selectionFilter = PickResultFilter { result in
     result.kind == .face && result.triangleIndex.isMultiple(of: 2)
 }
 ```
@@ -291,8 +293,8 @@ public enum SceneRaycast
 
 CPU-side raycasting against an array of `ViewportBody` instances. Uses a two-phase strategy:
 
-1. **Broadphase** — ray–AABB intersection (slab method) for each visible body; bodies whose AABBs are missed or farther than the current best hit are skipped.
-2. **Narrowphase** — Möller–Trumbore triangle intersection on each surviving body, testing every triangle in the index buffer.
+1. **Broadphase**: ray-AABB intersection (slab method) for each visible body; bodies whose AABBs are missed or farther than the current best hit are skipped.
+2. **Narrowphase**: Möller-Trumbore triangle intersection on each surviving body, testing every triangle in the index buffer.
 
 The result is the nearest hit across all bodies.
 
@@ -316,7 +318,7 @@ Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `n
 | `bodies` | `[ViewportBody]` | Scene bodies to test |
 | `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed bounding boxes keyed by body ID; typically sourced from `ViewportController` |
 
-**Example — cast a ray through a screen tap:**
+**Example: cast a ray through a screen tap**
 
 ```swift
 @MainActor
@@ -389,8 +391,8 @@ public static func fromCamera(
 Constructs a world-space ray passing through a point expressed in normalized device coordinates. NDC convention: `(-1, -1)` = bottom-left, `(1, 1)` = top-right, `(0, 0)` = center.
 
 Handles both perspective and orthographic projections:
-- **Perspective** — origin at `cameraState.position`; direction computed from field-of-view, aspect ratio, and NDC offset.
-- **Orthographic** — origin offset from `cameraState.position` by the NDC-scaled half-extents; direction parallel to `viewDirection`.
+- **Perspective**: origin at `cameraState.position`; direction computed from field-of-view, aspect ratio, and NDC offset.
+- **Orthographic**: origin offset from `cameraState.position` by the NDC-scaled half-extents; direction parallel to `viewDirection`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -407,7 +409,7 @@ public static func throughViewCenter(
 ) -> Ray
 ```
 
-Convenience — equivalent to `fromCamera(ndc: .zero, ...)`. Returns a ray through the exact view-space centre.
+Convenience, equivalent to `fromCamera(ndc: .zero, ...)`. Returns a ray through the exact view-space centre.
 
 ### Intersection tests
 
@@ -431,7 +433,7 @@ public func intersectsTriangle(
 
 Ray–triangle intersection using the Möller–Trumbore algorithm. Returns the distance `t` along the ray to the intersection point, or `nil` on a miss (parallel, behind the ray, or outside the triangle). An `epsilon` of `1e-6` guards against degenerate triangles and back-face grazing.
 
-**Example — manual triangle test:**
+**Example: manual triangle test**
 
 ```swift
 let ray = Ray(

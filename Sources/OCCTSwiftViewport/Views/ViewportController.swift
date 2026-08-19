@@ -3,8 +3,8 @@
 //
 // Observable controller for viewport state management.
 
-import Foundation
 import Combine
+import Foundation
 import simd
 
 /// Observable controller managing viewport state and interactions.
@@ -61,15 +61,21 @@ public final class ViewportController: ObservableObject {
     @Published public var lightingConfiguration: LightingConfiguration
 
     /// The most recent pick result on the user-geometry layer, or nil if nothing
-    /// is selected. Pick events on bodies with `pickLayer == .widget` are routed
-    /// to `widgetPickResult` instead.
+    /// is selected.
+    ///
+    /// Pick events on bodies with `pickLayer == .widget` are routed to
+    /// `widgetPickResult` instead.
     @Published public private(set) var pickResult: PickResult?
 
     /// The most recent pick result on the widget layer (e.g., manipulator handles
-    /// from OCCTSwiftAIS), or nil. Populated for bodies with `pickLayer == .widget`.
+    /// from OCCTSwiftAIS), or nil.
+    ///
+    /// Populated for bodies with `pickLayer == .widget`.
     @Published public private(set) var widgetPickResult: PickResult?
 
-    /// Set of currently selected body IDs. Bodies in this set render with a highlight outline.
+    /// Set of currently selected body IDs.
+    ///
+    /// Bodies in this set render with a highlight outline.
     @Published public var selectedBodyIDs: Set<String> = []
 
     /// ID of the currently hovered body (mouse hover), or nil.
@@ -81,7 +87,9 @@ public final class ViewportController: ObservableObject {
     /// Edge/wireframe intensity multiplier (0 = invisible, 1 = default, 2+ = bold).
     @Published public var edgeIntensity: Float = 1.0
 
-    /// Active clipping planes (up to 4). Only enabled planes are applied.
+    /// Active clipping planes (up to 4).
+    ///
+    /// Only enabled planes are applied.
     @Published public var clipPlanes: [ClipPlane] = []
 
     /// Active measurement annotations displayed on the viewport.
@@ -102,9 +110,11 @@ public final class ViewportController: ObservableObject {
     }
 
     /// World-space points picked so far for the in-progress measurement, in the
-    /// order they were tapped. Cleared when a measurement completes, the mode
-    /// changes, or `cancelPendingMeasurement()` is called. Drives in-progress
-    /// feedback (e.g. a rubber-band line) in the overlay.
+    /// order they were tapped.
+    ///
+    /// Cleared when a measurement completes, the mode changes, or
+    /// `cancelPendingMeasurement()` is called. Drives in-progress feedback
+    /// (e.g. a rubber-band line) in the overlay.
     @Published public private(set) var pendingMeasurementPoints: [SIMD3<Float>] = []
 
     // MARK: - Post-Process Toggles (runtime-tunable)
@@ -133,9 +143,11 @@ public final class ViewportController: ObservableObject {
     /// TAA blend factor (0 = no history, 1 = full history).
     @Published public var taaBlendFactor: Float = 0.9
 
-    /// Whether progressive idle accumulation is enabled. Requires `enableTAA`.
-    /// When the camera is still, history weight grows as `N/(N+1)` rather than
-    /// the fixed `taaBlendFactor`, giving unbounded supersampling. Disabled by default.
+    /// Whether progressive idle accumulation is enabled.
+    ///
+    /// Requires `enableTAA`. When the camera is still, history weight grows as
+    /// `N/(N+1)` rather than the fixed `taaBlendFactor`, giving unbounded
+    /// supersampling. Disabled by default.
     @Published public var enableProgressiveAccumulation: Bool = false
 
     // MARK: - Configuration
@@ -196,7 +208,7 @@ public final class ViewportController: ObservableObject {
         cameraController.dampingFactor = gc.dampingFactor
 
         // Subscribe to camera controller updates.
-        // Both objects are @MainActor so @Published already fires on main —
+        // Both objects are @MainActor so @Published already fires on main:
         // do NOT use .receive(on:) which re-dispatches asynchronously and
         // causes the renderer to read a stale cameraState for one frame.
         cameraController.$cameraState
@@ -229,7 +241,7 @@ public final class ViewportController: ObservableObject {
     }
 
     /// Animates to a ViewCube region (face / edge / corner), preserving the current
-    /// pivot, distance and projection — only the orientation changes (issue #60).
+    /// pivot, distance and projection, so only the orientation changes (issue #60).
     public func goToRegion(_ region: ViewCubeRegion, duration: Float = 0.3) {
         var target = cameraState
         target.rotation = region.cameraState().rotation
@@ -258,10 +270,11 @@ public final class ViewportController: ObservableObject {
             }
         }
 
-        cameraController.setAngularVelocity(SIMD2<Float>(
-            Float(velocity.width) * 0.001,
-            Float(velocity.height) * 0.001
-        ))
+        cameraController.setAngularVelocity(
+            SIMD2<Float>(
+                Float(velocity.width) * 0.001,
+                Float(velocity.height) * 0.001
+            ))
     }
 
     /// Handles pan gesture input.
@@ -274,10 +287,11 @@ public final class ViewportController: ObservableObject {
 
     /// Ends pan with velocity for inertia.
     public func endPan(velocity: CGSize) {
-        cameraController.setPanVelocity(SIMD2<Float>(
-            Float(velocity.width) * 0.001,
-            Float(velocity.height) * 0.001
-        ))
+        cameraController.setPanVelocity(
+            SIMD2<Float>(
+                Float(velocity.width) * 0.001,
+                Float(velocity.height) * 0.001
+            ))
     }
 
     /// Handles zoom gesture input.
@@ -285,10 +299,13 @@ public final class ViewportController: ObservableObject {
         cameraController.zoom(factor: Float(magnification))
     }
 
-    /// Pinch zoom toward the gesture centre (NDC) — fingers stay over the same world point.
-    public func handleZoom(magnification: CGFloat, centerNormalized: SIMD2<Float>, aspectRatio: Float) {
-        cameraController.zoomToward(factor: Float(magnification), cursorNormalized: centerNormalized,
-                                    aspectRatio: aspectRatio)
+    /// Pinch zoom toward the gesture centre (NDC), so fingers stay over the same world point.
+    public func handleZoom(
+        magnification: CGFloat, centerNormalized: SIMD2<Float>, aspectRatio: Float
+    ) {
+        cameraController.zoomToward(
+            factor: Float(magnification), cursorNormalized: centerNormalized,
+            aspectRatio: aspectRatio)
     }
 
     /// Handles scroll wheel zoom.
@@ -297,8 +314,10 @@ public final class ViewportController: ObservableObject {
     }
 
     /// Handles scroll wheel zoom toward cursor position.
-    public func handleScrollZoom(delta: CGFloat, cursorNormalized: SIMD2<Float>, aspectRatio: Float) {
-        cameraController.scrollZoom(delta: Float(delta), cursorNormalized: cursorNormalized, aspectRatio: aspectRatio)
+    public func handleScrollZoom(delta: CGFloat, cursorNormalized: SIMD2<Float>, aspectRatio: Float)
+    {
+        cameraController.scrollZoom(
+            delta: Float(delta), cursorNormalized: cursorNormalized, aspectRatio: aspectRatio)
     }
 
     /// Handles roll gesture input.
@@ -361,13 +380,16 @@ public final class ViewportController: ObservableObject {
     public var onWidgetPick: ((PickResult?) -> Void)?
 
     /// Optional observer of the portable input-event stream, fired for every event
-    /// passed to `dispatch(_:)`. Useful for debugging / HUD input inspectors; does
-    /// not affect interpretation. See `ViewportInputEvent`.
+    /// passed to `dispatch(_:)`.
+    ///
+    /// Useful for debugging / HUD input inspectors; does not affect interpretation.
+    /// See `ViewportInputEvent`.
     public var onInputEvent: ((ViewportInputEvent) -> Void)?
 
-    /// Drag mode the unified pointer drag is currently interpreted as. Tracked
-    /// across `dragChanged` so `dragEnded` applies the matching inertia. Internal —
-    /// used by the input router (`dispatch(_:)`).
+    /// Drag mode the unified pointer drag is currently interpreted as.
+    ///
+    /// Tracked across `dragChanged` so `dragEnded` applies the matching inertia.
+    /// Internal, used by the input router (`dispatch(_:)`).
     enum InputDragMode { case orbit, pan, zoom }
     var activeInputDragMode: InputDragMode = .orbit
 
@@ -376,14 +398,14 @@ public final class ViewportController: ObservableObject {
     /// When set, a user-geometry pick that fails the filter is treated as a miss
     /// (clearing `pickResult`), since GPU picking resolves a single primitive per
     /// pixel and has no alternate candidate to fall through to. Widget-layer picks
-    /// bypass the filter — that stream is owned by an external consumer.
-    public var selectionFilter: SelectionFilter?
+    /// bypass the filter, since that stream is owned by an external consumer.
+    public var selectionFilter: PickResultFilter?
 
     /// Called by the view layer after a GPU pick readback completes.
     ///
     /// Routes the result to either `pickResult` (default) or `widgetPickResult`
     /// based on the picked body's `pickLayer`. A nil result clears `pickResult`
-    /// only — `widgetPickResult` keeps its last value, since the widget-pick
+    /// only: `widgetPickResult` keeps its last value, since the widget-pick
     /// stream is owned by an external consumer (e.g., AIS) that decides when to
     /// reset it. The user-geometry stream additionally honours `selectionFilter`.
     public func handlePick(result: PickResult?) {
@@ -406,16 +428,18 @@ public final class ViewportController: ObservableObject {
 
     // MARK: - Region Picking
 
-    /// Weak back-reference to the renderer currently driving this controller's on-screen
-    /// viewport, set by `ViewportRenderer.init`. Lets the controller forward region-pick
-    /// requests to the live GPU pick texture without extending the renderer's lifetime — the
+    /// Weak back-reference to the renderer currently driving this controller's
+    /// on-screen viewport.
+    ///
+    /// Set by `ViewportRenderer.init`. Lets the controller forward region-pick requests
+    /// to the live GPU pick texture without extending the renderer's lifetime: the
     /// renderer itself is owned by `MetalViewportView`'s view state, not the controller.
     weak var attachedRenderer: ViewportRenderer?
 
     /// Drawable pixel size of the attached renderer's viewport, or `.zero` before the first
     /// frame has drawn (or if no renderer is attached yet). Use this to convert a
-    /// screen-space rectangle — in SwiftUI view points, e.g. from your own drag/lasso gesture
-    /// — into the pixel space `performRegionPick(pixelRect:completion:)` expects:
+    /// screen-space rectangle (in SwiftUI view points, e.g. from your own drag/lasso gesture)
+    /// into the pixel space `performRegionPick(pixelRect:completion:)` expects:
     /// ```swift
     /// let scale = controller.drawablePixelSize.width / viewSize.width
     /// let pixelRect = CGRect(x: dragRect.minX * scale, y: dragRect.minY * scale,
@@ -423,26 +447,29 @@ public final class ViewportController: ObservableObject {
     /// ```
     public var drawablePixelSize: CGSize { attachedRenderer?.lastDrawableSize ?? .zero }
 
-    /// Requests a batched/region GPU pick (issue #90) — the screen-space-rectangle analogue
-    /// of the tap-driven single-pixel pick that already populates `pickResult`. Blits the
-    /// whole rectangle from the pick texture in one GPU round trip, instead of one
-    /// `performPick` call per pixel.
+    /// Requests a batched/region GPU pick (issue #90), the screen-space-rectangle
+    /// analogue of the tap-driven single-pixel pick that already populates `pickResult`.
     ///
-    /// Pull-based: unlike a point pick, this does not update `pickResult` or fire `onPick` —
-    /// results go only to `completion`. `selectionFilter` is honoured with the same
+    /// Blits the whole rectangle from the pick texture in one GPU round trip, instead of
+    /// one `performPick` call per pixel.
+    ///
+    /// Pull-based: unlike a point pick, this does not update `pickResult` or fire `onPick`,
+    /// so results go only to `completion`. `selectionFilter` is honoured with the same
     /// widget-bypass semantics as `handlePick(result:)`: widget-layer picks pass through
     /// unfiltered (that stream is owned by an external consumer), and a user-geometry pick
     /// that fails the filter is dropped. Apply your own enclosure semantics (fully-inside vs.
-    /// any-intersecting) over the returned candidates — this only resolves which primitives
+    /// any-intersecting) over the returned candidates: this only resolves which primitives
     /// are under the rectangle, occlusion-aware and pixel-accurate.
     ///
     /// - Parameters:
-    ///   - pixelRect: The rectangle to sample, in drawable **pixel** coordinates — see
+    ///   - pixelRect: The rectangle to sample, in drawable **pixel** coordinates. See
     ///     `drawablePixelSize` to convert from SwiftUI view points.
     ///   - completion: Called with every distinct primitive under the rectangle, in scan
     ///     order of first appearance. `[]` if no renderer is attached yet, the rectangle
     ///     misses the pick texture, or every primitive was filtered out.
-    public func performRegionPick(pixelRect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void) {
+    public func performRegionPick(
+        pixelRect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void
+    ) {
         guard let attachedRenderer else {
             completion([])
             return
@@ -453,10 +480,15 @@ public final class ViewportController: ObservableObject {
         }
     }
 
-    /// Applies `selectionFilter`'s widget-bypass semantics — mirroring the per-primitive
-    /// routing in `handlePick(result:)` — to a batch of region-pick results. Pulled out as a
-    /// pure function so the routing logic is directly unit-testable.
-    nonisolated static func applySelectionFilter(_ results: [PickResult], filter: SelectionFilter?) -> [PickResult] {
+    /// Applies the widget-bypass semantics of `selectionFilter` to a batch of region-pick
+    /// results.
+    ///
+    /// Mirrors the per-primitive routing in `handlePick(result:)`. Pulled out as a pure
+    /// function so the routing logic is directly unit-testable.
+    nonisolated static func applySelectionFilter(
+        _ results: [PickResult],
+        filter: PickResultFilter?
+    ) -> [PickResult] {
         guard let filter else { return results }
         return results.filter { $0.pickLayer == .widget || filter.matches($0) }
     }
@@ -502,7 +534,8 @@ public final class ViewportController: ObservableObject {
         case .distance:
             measurements.append(.distance(DistanceMeasurement(start: pts[0], end: pts[1])))
         case .angle:
-            measurements.append(.angle(AngleMeasurement(pointA: pts[0], vertex: pts[1], pointB: pts[2])))
+            measurements.append(
+                .angle(AngleMeasurement(pointA: pts[0], vertex: pts[1], pointB: pts[2])))
         case .radius:
             measurements.append(.radius(RadiusMeasurement(center: pts[0], edgePoint: pts[1])))
         }
@@ -527,7 +560,8 @@ public final class ViewportController: ObservableObject {
 
         let body: ViewportBody?
         if result.bodyIndex >= 0, result.bodyIndex < bodies.count,
-           bodies[result.bodyIndex].id == result.bodyID {
+            bodies[result.bodyIndex].id == result.bodyID
+        {
             body = bodies[result.bodyIndex]
         } else {
             body = bodies.first { $0.id == result.bodyID }
@@ -535,12 +569,15 @@ public final class ViewportController: ObservableObject {
         guard let body else { return }
 
         let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio)
-        guard let point = body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex) else { return }
+        guard let point = body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex) else {
+            return
+        }
         addMeasurementPoint(point)
     }
 
-    /// Discards any in-progress measurement points without committing a
-    /// measurement. The mode is left unchanged.
+    /// Discards any in-progress measurement points without committing a measurement.
+    ///
+    /// The mode is left unchanged.
     public func cancelPendingMeasurement() {
         pendingMeasurementPoints.removeAll()
     }

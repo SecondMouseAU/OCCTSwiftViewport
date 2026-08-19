@@ -5,7 +5,7 @@ parent: API Reference
 
 # SwiftUI Views
 
-Two types form the public entry point to the viewport: `MetalViewportView` is the SwiftUI `View` that renders the 3D scene and handles gestures; `ViewportController` is the `@MainActor ObservableObject` hub that everything—camera, display mode, picking, measurements, clip planes, post-processing—routes through.
+Two types form the public entry point to the viewport: `MetalViewportView` is the SwiftUI `View` that renders the 3D scene and handles gestures; `ViewportController` is the `@MainActor ObservableObject` hub that everything (camera, display mode, picking, measurements, clip planes, post-processing) routes through.
 
 ## Topics
 
@@ -23,7 +23,7 @@ Two types form the public entry point to the viewport: `MetalViewportView` is th
 
 ## MetalViewportView
 
-A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS — single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap (reset); on macOS — mouse drag (`DragGesture`), scroll-wheel zoom, trackpad magnify/rotate. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
+A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap (reset); on macOS: mouse drag (`DragGesture`), scroll-wheel zoom, trackpad magnify/rotate. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
 
 Built-in overlays that the view manages automatically:
 
@@ -480,7 +480,7 @@ The most recent pick result for the user-geometry layer, or `nil` if nothing is 
 @Published public private(set) var widgetPickResult: PickResult?
 ```
 
-The most recent pick result for the widget layer (bodies with `pickLayer == .widget`). Kept at its last value across miss-taps—the external consumer (e.g. OCCTSwiftAIS) decides when to clear it via `clearWidgetPick()`.
+The most recent pick result for the widget layer (bodies with `pickLayer == .widget`). Kept at its last value across miss-taps; the external consumer (e.g. OCCTSwiftAIS) decides when to clear it via `clearWidgetPick()`.
 
 #### `selectedBodyIDs`
 
@@ -509,7 +509,7 @@ NDC coordinates (−1…+1) of the most recent pick tap, for sub-body operations
 #### `selectionFilter`
 
 ```swift
-public var selectionFilter: SelectionFilter?
+public var selectionFilter: PickResultFilter?
 ```
 
 Optional filter constraining the user-geometry pick stream. A pick that fails the filter is treated as a miss (clearing `pickResult`). Widget-layer picks bypass the filter.
@@ -600,7 +600,7 @@ Active measurement mode. When not `.none`, taps on geometry feed the measurement
 
 | Value | Points needed |
 |---|---|
-| `.none` | — |
+| `.none` | none |
 | `.distance` | 2 (start, end) |
 | `.angle` | 3 (armA, vertex, armB) |
 | `.radius` | 2 (center, edge point) |

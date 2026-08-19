@@ -8,12 +8,15 @@ has_children: true
 
 A **detailed, per-type function reference** for the OCCTSwiftViewport Swift API. One page per domain,
 every public type and member documented: signature, behaviour, parameters, return, and a runnable
-example. This complements the [Cookbook](../guides/cookbook/) (task-oriented walkthroughs) — this is
+example. This complements the [Cookbook](../guides/cookbook/) (task-oriented walkthroughs); this is
 the *exhaustive* surface.
 
-The library re-exports ~56 public types via underscore-prefixed typealiases (`_CameraState`,
-`_ViewportBody`, …) from the umbrella `OCCTSwiftViewport.swift`. Consumers `import OCCTSwiftViewport`
-and use the `_TypeName` form, or the bare type name. These pages document the underlying types.
+The library also aliases ~56 public types under underscore-prefixed typealiases (`_CameraState`,
+`_ViewportBody`, …) in the umbrella `OCCTSwiftViewport.swift`. Every aliased type is already
+`public` in that same module, so after `import OCCTSwiftViewport` the bare type name is what you
+normally write; the `_TypeName` form is an index of the public surface and an escape hatch for
+disambiguating against a same-named type in another imported module. These pages document the
+underlying types.
 
 ## Page layout
 
@@ -50,7 +53,7 @@ parent: API Reference
 | [Configuration](Configuration.md) | `ViewportConfiguration`, `RenderingQuality`, `RenderLayer`, `PickingConfiguration`, `ClipPlane` |
 | [Display & Lighting](Display-Lighting.md) | `DisplayMode`, `LightingConfiguration`, `LightSettings` |
 | [Materials](Materials.md) | `PBRMaterial`, `MaterialLibrary`, `NamedMaterial`, `HDRLoader` |
-| [Picking & Selection](Picking.md) | `PickResult`, `PrimitiveKind`, `PickLayer`, `SelectionFilter`, `SceneRaycast`, `RaycastHit`, `Ray`, `ProjectionUtility` |
+| [Picking & Selection](Picking.md) | `PickResult`, `PrimitiveKind`, `PickLayer`, `PickResultFilter`, `SceneRaycast`, `RaycastHit`, `Ray`, `ProjectionUtility` |
 | [Rendering](Rendering.md) | `ViewportRenderer`, `OffscreenRenderer`, `OffscreenRenderOptions`, `OffscreenRenderError`, `OrthoBounds` |
 | [ViewCube](ViewCube.md) | `NavigationCube`, `NavigationCubeView`, `ViewCubeView`, `ViewCubeRegion`, `ViewCubeFace`, `ViewCubePosition` |
 | [Measurements](Measurements.md) | `ViewportMeasurement`, `MeasurementMode`, `DistanceMeasurement`, `AngleMeasurement`, `RadiusMeasurement` |

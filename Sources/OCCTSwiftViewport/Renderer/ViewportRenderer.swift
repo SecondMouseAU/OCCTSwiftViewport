@@ -2830,7 +2830,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///     intersect it completes with an empty array.
     ///   - completion: Called once with every distinct primitive under the rectangle, in scan
     ///     order of first appearance. Background pixels are excluded, so a rect entirely over
-    ///     empty space completes with `[]`. Apply a `SelectionFilter` to the result the same way
+    ///     empty space completes with `[]`. Apply a `PickResultFilter` to the result the same way
     ///     you would a single `performPick` result.
     public func performRegionPick(
         rect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void

@@ -40,7 +40,7 @@ cd Examples/DocFigures && swift run DocFigures ../../docs/guides/cookbook/images
 - [Camera & Navigation](camera-and-navigation.md) — orbit / pan / zoom, the arcball / turntable / first-person rotation styles, standard views, fit-to-scene, and animated transitions.
 - [ViewCube](viewcube.md) — the interactive orientation cube and navigation cube: click-to-snap faces / edges / corners, drag-to-orbit, and placement.
 - [Lighting & Materials](lighting-and-materials.md) — `LightingConfiguration` presets, per-body `PBRMaterial` / `MaterialLibrary`, and HDR image-based lighting.
-- [Picking & Selection](picking-and-selection.md) — GPU pick buffer, body / face / edge / vertex picks, `SelectionFilter` chains, ray-casting, and `isPickable`.
+- [Picking & Selection](picking-and-selection.md) — GPU pick buffer, body / face / edge / vertex picks, `PickResultFilter` chains, ray-casting, and `isPickable`.
 - [Loading Geometry](loading-geometry.md) — the `ViewportBody` container, interleaved vertex data, the direct-mesh path (`directMesh(...)`, skipping the interleave repack), edges & analytic arcs, primitives, point clouds, per-body transform & colour, and bridging from OCCTSwift.
 - [Measurements](measurements.md) — `measurementMode`, tap-to-measure, the `MeasurementOverlay`, and distance / angle / radius dimensions.
 - [Clip Planes & Sections](clip-planes.md) — `ClipPlane` section views and capping.
