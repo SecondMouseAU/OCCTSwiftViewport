@@ -31,7 +31,6 @@ Sources/OCCTSwiftViewport/Picking/MeasurementPicking.swift
 Sources/OCCTSwiftViewport/Picking/PickingConfiguration.swift
 Sources/OCCTSwiftViewport/Picking/PickResult.swift
 Sources/OCCTSwiftViewport/Picking/PickTextureManager.swift
-Sources/OCCTSwiftViewport/Picking/SelectionFilter.swift
 Sources/OCCTSwiftViewport/Renderer/EnvironmentMapManager.swift
 Sources/OCCTSwiftViewport/Renderer/HDRLoader.swift
 Sources/OCCTSwiftViewport/Renderer/MeasurementCompositor.swift
@@ -50,4 +49,3 @@ Sources/OCCTSwiftViewport/ViewCube/ViewCubeRegion.swift
 Sources/OCCTSwiftViewport/ViewCube/ViewCubeView.swift
 Sources/OCCTSwiftViewport/Views/MeasurementOverlay.swift
 Sources/OCCTSwiftViewport/Views/MetalViewportView.swift
-Sources/OCCTSwiftViewport/Views/ViewportController.swift

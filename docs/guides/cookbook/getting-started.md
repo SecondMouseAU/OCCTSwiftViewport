@@ -275,6 +275,6 @@ or a Combine subscription works too.
 - **Camera** — `CameraState`, `CameraController`, `focusOn`, `animateTo`, fit-to-scene
 - **Custom geometry** — building a `ViewportBody` from your own vertex/index arrays
 - **Display & lighting** — `LightingConfiguration` presets, shadows, environment maps
-- **Picking & selection** — `PickResult`, `SelectionFilter`, face/edge/vertex IDs
+- **Picking & selection** — `PickResult`, `PickResultFilter`, face/edge/vertex IDs
 - **Measurements** — tap-to-measure distance, angle, and radius overlays
 - **Offscreen rendering** — `OffscreenRenderer` for headless snapshots and thumbnails

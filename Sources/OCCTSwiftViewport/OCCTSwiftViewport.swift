@@ -6,9 +6,13 @@
 
 // This file aggregates the module's public API surface as underscore-prefixed re-exports (below).
 // For the Quick Start, camera control, and gesture configuration walkthroughs that used to live
-// here as a module-level doc comment, see README.md and docs/index.md — this file is not a doc
+// here as a module-level doc comment, see README.md and docs/index.md. This file is not a doc
 // comment's declaration target, so per okf/policies/code-style.md's single-source-of-truth rule
 // that content lives in docs/ rather than duplicated (and drifting) in source. Closes #96.
+//
+// Every aliased type is already `public` in this same module, so the bare name is what consumers
+// normally write; the `_`-prefixed spelling is an index of the public surface and an escape hatch
+// for disambiguating against a same-named type in another imported module.
 
 // MARK: - Public API
 
@@ -73,7 +77,7 @@ public typealias _MeasurementMode = MeasurementMode
 public typealias _PickResult = PickResult
 public typealias _PrimitiveKind = PrimitiveKind
 public typealias _PickingConfiguration = PickingConfiguration
-public typealias _SelectionFilter = SelectionFilter
+public typealias _PickResultFilter = PickResultFilter
 
 // Dynamic Pivot
 public typealias _PivotStrategy = PivotStrategy
@@ -89,3 +93,9 @@ public typealias _NavigationCube = NavigationCube
 public typealias _OrientationGnomon = OrientationGnomon
 public typealias _ScaleBarView = ScaleBarView
 public typealias _ScaleBarMetrics = ScaleBarMetrics
+
+// MARK: - Deprecated re-exports
+
+/// The pre-#111 spelling of `_PickResultFilter`.
+@available(*, deprecated, renamed: "_PickResultFilter")
+public typealias _SelectionFilter = PickResultFilter

@@ -4,7 +4,7 @@
 // Batched/region GPU pick readback (issue #90). `performRegionPick` blits an arbitrary
 // screen-space rectangle from the private pick texture in one GPU round trip, then decodes
 // and de-duplicates every primitive it touches. The GPU blit itself needs a live drawable to
-// populate the pick texture (no headless pixel path — same caveat as the direct-mesh pick
+// populate the pick texture (no headless pixel path, same caveat as the direct-mesh pick
 // pass in DirectMeshRenderingTests), so these tests cover the two pieces that ARE pure
 // functions: rectangle clamping (`clampRegionPickRect`) and raw-value decode/dedup
 // (`decodeRegionPickResults`), plus the renderer-level early-out before any frame has drawn.
@@ -144,7 +144,7 @@ struct RegionPickDecodeTests {
         let faceB: UInt32 = (0 << 30) | (1 << 16) | 5    // body b, face 1
         let edgeA: UInt32 = (1 << 30) | (2 << 16) | 0    // body a, edge 2
         let faceC: UInt32 = (0 << 30) | (3 << 16) | 7    // body c, face 3
-        // faceB repeats later — must not shift its position or duplicate it.
+        // faceB repeats later, so it must not shift its position or duplicate it.
         let values = [faceB, edgeA, faceB, faceC, edgeA]
         let results = ViewportRenderer.decodeRegionPickResults(values, indexMap: Self.map, layerMap: [:])
         #expect(results.map(\.bodyID) == ["b", "a", "c"])
@@ -169,12 +169,12 @@ struct RegionPickDecodeTests {
         #expect(results.first?.pickLayer == .widget)
     }
 
-    @Test("Region results compose with SelectionFilter exactly like a single performPick result")
-    func composesWithSelectionFilter() {
+    @Test("Region results compose with PickResultFilter exactly like a single performPick result")
+    func composesWithPickResultFilter() {
         let face: UInt32 = (0 << 30) | (1 << 16) | 0
         let edge: UInt32 = (1 << 30) | (1 << 16) | 5
         let results = ViewportRenderer.decodeRegionPickResults([face, edge], indexMap: Self.map, layerMap: [:])
-        let facesOnly = results.filter(SelectionFilter.faces.matches)
+        let facesOnly = results.filter(PickResultFilter.faces.matches)
         #expect(facesOnly.count == 1)
         #expect(facesOnly.first?.kind == .face)
     }
@@ -236,7 +236,7 @@ struct RegionPickSelectionFilterTests {
         let widgetEdge: UInt32 = (1 << 30) | (1 << 16) | 5
         let layerMap: [String: PickLayer] = ["b": .widget]
         let results = ViewportRenderer.decodeRegionPickResults([widgetEdge], indexMap: Self.map, layerMap: layerMap)
-        // .faces filter would normally reject an edge — but it's on the widget layer.
+        // .faces filter would normally reject an edge, but it's on the widget layer.
         let routed = ViewportController.applySelectionFilter(results, filter: .faces)
         #expect(routed.count == 1)
         #expect(routed.first?.pickLayer == .widget)
@@ -247,7 +247,7 @@ struct RegionPickSelectionFilterTests {
 @Suite("ViewportController.performRegionPick")
 struct RegionPickControllerTests {
 
-    /// Reference box for capturing results out of a @Sendable completion — see the note in
+    /// Reference box for capturing results out of a @Sendable completion. See the note in
     /// `RegionPickRendererTests.emptyBeforeFirstDraw`.
     private final class ResultBox: @unchecked Sendable {
         var value: [PickResult]?

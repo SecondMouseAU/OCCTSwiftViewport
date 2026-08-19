@@ -2,6 +2,34 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.30] - 2026-08-19
+
+### Changed
+- **`SelectionFilter` is now `PickResultFilter`** (issue #111, phase 1 of the picking consolidation
+  in `ecosystem#43`). The name was defined twice in the stack: this `struct`, and OCCTSwiftAIS's
+  unrelated `SelectionFilter` `protocol`. They are not duplicates and have not been merged. This
+  one runs before any topology exists, on a decoded `PickResult` carrying only a body id, a kind
+  and a primitive index; the AIS one runs after resolution and reasons about the actual face or
+  edge. Only the shared name was the problem, since it read as though one implemented the other,
+  and it was a genuine ambiguity for any file importing both modules.
+  - **No API break.** `SelectionFilter` remains as
+    `@available(*, deprecated, renamed: "PickResultFilter") public typealias`, as does the
+    underscored re-export `_SelectionFilter` (now aliasing `PickResultFilter` directly, alongside
+    the new `_PickResultFilter`). Every static factory (`all`, `nothing`, `kind(_:)`, `kinds(_:)`,
+    `faces`, `edges`, `vertices`, `layer(_:)`, `bodyIDs(_:)`, `excludingBodyIDs(_:)`,
+    `bodyIndices(_:)`) and combinator (`and(_:)`, `or(_:)`, `negated`, `all(of:)`, `any(of:)`)
+    keeps its name and now vends a `PickResultFilter`.
+  - `ViewportController.selectionFilter` keeps its name and is now typed `PickResultFilter?`. The
+    property describes the role (it gates the user-geometry selection stream, and widget-layer
+    picks bypass it); the type describes the value. The internal
+    `ViewportController.applySelectionFilter(_:filter:)` keeps its name for the same reason, since
+    it applies that property's semantics.
+  - `SelectionFilterTests` is now `PickResultFilterTests`, plus one new test pinning that the
+    deprecated spelling still resolves. **217 tests total.**
+  - `Picking/SelectionFilter.swift` and `Views/ViewportController.swift` were brought to
+    `swift-format --strict` compliance and removed from `scripts/style-manifest-swift.txt` per
+    `okf/policies/code-style.md`.
+
 ## [1.1.29] - 2026-08-16
 
 ### Added

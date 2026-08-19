@@ -30,7 +30,7 @@ The renderer allocates a second R32Uint color attachment only when picking is en
 After a tap, the renderer reads the pick texture and populates `ViewportController.pickResult` (a `@Published` property). Subscribe with Combine or read it directly in SwiftUI:
 
 ```swift
-// SwiftUI — react inside .onChange
+// SwiftUI: react inside .onChange
 MetalViewportView(controller: controller, bodies: bodies)
     .onChange(of: controller.pickResult) { _, result in
         guard let result else {
@@ -95,9 +95,11 @@ controller.clearSelection()   // also clears pickResult
 
 ---
 
-## SelectionFilter chains
+## PickResultFilter chains
 
-A `SelectionFilter` is a composable predicate that runs on a decoded `PickResult` after the GPU pass. A result that fails the filter is treated as a miss — since the GPU resolves exactly one primitive per pixel, there is no fallback candidate.
+A `PickResultFilter` is a composable predicate that runs on a decoded `PickResult` after the GPU pass. A result that fails the filter is treated as a miss: since the GPU resolves exactly one primitive per pixel, there is no fallback candidate.
+
+(Called `SelectionFilter` until v1.1.30; that spelling survives as a deprecated typealias. See [Picking & Selection](../../reference/Picking.md#pickresultfilter) for why it was renamed.)
 
 Assign one to `ViewportController.selectionFilter`:
 
@@ -112,7 +114,7 @@ controller.selectionFilter = .edges.or(.vertices)
 controller.selectionFilter = .faces.and(.excludingBodyIDs(["ground_plane"]))
 
 // Custom predicate
-controller.selectionFilter = SelectionFilter { result in
+controller.selectionFilter = PickResultFilter { result in
     result.kind == .face && result.bodyID.hasPrefix("solid_")
 }
 
@@ -136,7 +138,7 @@ Built-in factory filters:
 | `.bodyIndices(_:)` | Allow-listed draw-order indices |
 | `.layer(_:)` | Specific `PickLayer` |
 
-Compose with `.and(_:)`, `.or(_:)`, `.negated`, `SelectionFilter.all(of:)`, and `SelectionFilter.any(of:)`.
+Compose with `.and(_:)`, `.or(_:)`, `.negated`, `PickResultFilter.all(of:)`, and `PickResultFilter.any(of:)`.
 
 ---
 
@@ -153,7 +155,7 @@ let groundPlane = ViewportBody(
 )
 ```
 
-The body's `objectIndex` still advances in the draw order so other indices remain stable. You do not need a `SelectionFilter` as well — `isPickable: false` is cheaper because it skips the pick sub-passes entirely.
+The body's `objectIndex` still advances in the draw order so other indices remain stable. You do not need a `PickResultFilter` as well: `isPickable: false` is cheaper because it skips the pick sub-passes entirely.
 
 ---
 
@@ -252,7 +254,7 @@ let ray = Ray(
 
 ## Projecting world points back to screen
 
-Use `ProjectionUtility` to go the other direction — world position to screen coordinates, for annotation placement or custom overlays:
+Use `ProjectionUtility` to go the other direction, world position to screen coordinates, for annotation placement or custom overlays:
 
 ```swift
 let vpMatrix = controller.cameraState.viewProjectionMatrix(aspectRatio: aspectRatio)
@@ -286,7 +288,7 @@ let handle = ViewportBody(
 
 ---
 
-## faceIndices — mapping triangles to BREP faces
+## faceIndices: mapping triangles to BREP faces
 
 When your geometry comes from a B-Rep tessellation, supply `faceIndices` to map each triangle back to its source face ID. This lets you identify which BREP face was tapped from a `.face` `PickResult`:
 
