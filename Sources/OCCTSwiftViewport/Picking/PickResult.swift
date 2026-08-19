@@ -22,8 +22,8 @@ public enum PrimitiveKind: UInt8, Sendable, Hashable {
 /// primitive index, and primitive kind. The encoding is:
 ///
 ///     bits  0-15 : objectIndex   (16 bits)
-///     bits 16-29 : primitiveID   (14 bits — triangle/segment/point index)
-///     bits 30-31 : kind          ( 2 bits — 0=face, 1=edge, 2=vertex)
+///     bits 16-29 : primitiveID   (14 bits, triangle/segment/point index)
+///     bits 30-31 : kind          ( 2 bits, 0=face, 1=edge, 2=vertex)
 ///
 /// `triangleIndex` is preserved as the historical name; semantically it is the
 /// **primitive index** for the matched kind (triangle for face picks, line
@@ -49,19 +49,22 @@ public struct PickResult: Sendable, Equatable {
     /// The raw encoded value read from the pick buffer.
     public let rawValue: UInt32
 
-    /// The pick layer the body belongs to. Used by `ViewportController` to
-    /// route the result to either `pickResult` or `widgetPickResult`.
+    /// Which pick stream this result belongs to.
+    ///
+    /// `ViewportController` reads it to route the result to either `pickResult` or
+    /// `widgetPickResult`, so widget hits never leak into the user selection stream.
     public let pickLayer: PickLayer
 
-    /// Decodes a raw pick value using the provided index map.
+    /// Decodes a raw pick-buffer value into a result, naming the body through `indexMap`.
+    ///
+    /// Fails with `nil` in three cases: `rawValue` is the no-hit sentinel, its packed kind bits
+    /// do not name a `PrimitiveKind`, or its object index is absent from `indexMap`.
     ///
     /// - Parameters:
     ///   - rawValue: The R32Uint value read back from the GPU.
     ///   - indexMap: Mapping from objectIndex (Int) to body ID (String).
     ///   - layerMap: Optional mapping from body ID to its `PickLayer`. Bodies
     ///     not present in the map are treated as `.userGeometry`.
-    /// - Returns: `nil` if the raw value is the sentinel (no hit) or the
-    ///   object index is not found in the map.
     public init?(rawValue: UInt32, indexMap: [Int: String], layerMap: [String: PickLayer] = [:]) {
         guard rawValue != Self.sentinel else { return nil }
 

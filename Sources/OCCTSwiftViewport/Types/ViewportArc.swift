@@ -12,11 +12,11 @@ import simd
 /// `yAxis`); a point at angle θ is
 /// `center + radius * (cos θ · xAxis + sin θ · yAxis)`. The renderer samples the
 /// arc to line segments adaptively to its projected size each frame, so a circle
-/// renders smooth regardless of zoom — no pre-faceting by the consumer.
+/// renders smooth regardless of zoom, with no pre-faceting by the consumer.
 ///
 /// **Picking:** arcs are pickable. A hit reports `PickResult.kind == .edge` with
 /// `triangleIndex` equal to the arc's index within `ViewportBody.arcs`. (A body
-/// mixing polyline `edges` and `arcs` can't tell them apart from `kind` alone —
+/// mixing polyline `edges` and `arcs` can't tell them apart from `kind` alone, so
 /// prefer one representation per body.)
 public struct ViewportArc: Sendable, Hashable {
 
@@ -39,12 +39,14 @@ public struct ViewportArc: Sendable, Hashable {
     /// the `xAxis`→`yAxis` plane).
     public var endAngle: Float
 
-    public init(center: SIMD3<Float>,
-                radius: Float,
-                xAxis: SIMD3<Float>,
-                yAxis: SIMD3<Float>,
-                startAngle: Float = 0,
-                endAngle: Float = 2 * .pi) {
+    public init(
+        center: SIMD3<Float>,
+        radius: Float,
+        xAxis: SIMD3<Float>,
+        yAxis: SIMD3<Float>,
+        startAngle: Float = 0,
+        endAngle: Float = 2 * .pi
+    ) {
         self.center = center
         self.radius = radius
         self.xAxis = xAxis
@@ -55,12 +57,15 @@ public struct ViewportArc: Sendable, Hashable {
 
     /// A full circle in the plane spanned by `xAxis`/`yAxis` (which should be unit
     /// and orthogonal; their cross product is the circle's normal).
-    public static func circle(center: SIMD3<Float>,
-                              radius: Float,
-                              xAxis: SIMD3<Float>,
-                              yAxis: SIMD3<Float>) -> ViewportArc {
-        ViewportArc(center: center, radius: radius, xAxis: xAxis, yAxis: yAxis,
-                    startAngle: 0, endAngle: 2 * .pi)
+    public static func circle(
+        center: SIMD3<Float>,
+        radius: Float,
+        xAxis: SIMD3<Float>,
+        yAxis: SIMD3<Float>
+    ) -> ViewportArc {
+        ViewportArc(
+            center: center, radius: radius, xAxis: xAxis, yAxis: yAxis,
+            startAngle: 0, endAngle: 2 * .pi)
     }
 
     /// The swept angle (always non-negative).
@@ -84,12 +89,14 @@ public enum ArcSampling {
     /// Clamped to `[minSegments, maxSegments]` and to an angular ceiling so even a
     /// tiny on-screen circle keeps a round-ish shape. Falls back to `maxSegments`
     /// if the arc crosses behind the camera (`w <= 0`).
-    public static func segmentCount(arc: ViewportArc,
-                                    mvp: simd_float4x4,
-                                    viewportSize: SIMD2<Float>,
-                                    targetPixels: Float = 6,
-                                    minSegments: Int = 6,
-                                    maxSegments: Int = 512) -> Int {
+    public static func segmentCount(
+        arc: ViewportArc,
+        mvp: simd_float4x4,
+        viewportSize: SIMD2<Float>,
+        targetPixels: Float = 6,
+        minSegments: Int = 6,
+        maxSegments: Int = 512
+    ) -> Int {
         let coarse = 8
         var pixelLength: Float = 0
         var prev: SIMD2<Float>? = nil
@@ -98,10 +105,14 @@ public enum ArcSampling {
             let t = Float(i) / Float(coarse)
             let local = arc.point(at: t)
             let clip = mvp * SIMD4<Float>(local, 1)
-            if clip.w <= 1e-5 { behind = true; break }
+            if clip.w <= 1e-5 {
+                behind = true
+                break
+            }
             let ndc = SIMD2<Float>(clip.x / clip.w, clip.y / clip.w)
-            let px = SIMD2<Float>((ndc.x * 0.5) * viewportSize.x,
-                                  (ndc.y * 0.5) * viewportSize.y)
+            let px = SIMD2<Float>(
+                (ndc.x * 0.5) * viewportSize.x,
+                (ndc.y * 0.5) * viewportSize.y)
             if let p = prev { pixelLength += simd_length(px - p) }
             prev = px
         }

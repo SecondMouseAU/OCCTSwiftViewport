@@ -14,8 +14,11 @@ public struct DynamicPivotConfiguration: Sendable {
     /// Duration of the pivot animation in seconds.
     public var animationDuration: Float
 
-    /// Zoom ratio threshold separating "zoomed out" (scene center) from "zoomed in" (raycast).
-    /// Defined as `cameraDistance / sceneDiagonalLength`.
+    /// Zoom ratio at which the pivot switches from the scene center to the raycast hit point.
+    ///
+    /// Measured as `cameraDistance / sceneDiagonalLength`, so it is scene-size independent:
+    /// above the threshold the camera is "zoomed out" and orbits the whole scene, below it the
+    /// camera orbits whatever is under the cursor.
     public var zoomThreshold: Float
 
     /// Fraction of `zoomThreshold` used for the smoothstep blend band.
@@ -77,7 +80,7 @@ public final class PivotStrategy {
         let zoomRatio = cameraState.distance / diagonal
         let halfBand = config.zoomThreshold * config.blendBand * 0.5
 
-        // Fully zoomed out — use scene center
+        // Fully zoomed out: use scene center
         if zoomRatio > config.zoomThreshold + halfBand {
             return sceneCenter
         }
@@ -96,12 +99,12 @@ public final class PivotStrategy {
             return nil
         }
 
-        // Fully zoomed in — use raycast hit
+        // Fully zoomed in: use raycast hit
         if zoomRatio < config.zoomThreshold - halfBand {
             return hitPoint
         }
 
-        // Blend zone — smoothstep between hit and scene center
+        // Blend zone: smoothstep between hit and scene center
         let t = smoothstep(
             edge0: config.zoomThreshold - halfBand,
             edge1: config.zoomThreshold + halfBand,

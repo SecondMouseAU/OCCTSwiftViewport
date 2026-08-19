@@ -23,7 +23,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     /// Flat shading without smooth interpolation.
     case flat
 
-    /// Unlit / flat-colour rendering — each body drawn in its constant base colour
+    /// Unlit / flat-colour rendering, with each body drawn in its constant base colour
     /// with no lighting, ambient, shadows, fresnel, or tone mapping. Intended for
     /// diagnostic / debug renders where faithful, distinguishable per-body colours
     /// matter more than realistic shading (issue #77).

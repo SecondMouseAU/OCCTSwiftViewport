@@ -9,9 +9,10 @@
 import SwiftUI
 import simd
 
-/// A Shapr3D / Fusion-style navigation cube. Renders the cube under the current
-/// camera rotation, routes taps on faces / edges / corners to the matching
-/// `ViewCubeRegion`, and orbits the camera when dragged.
+/// A Shapr3D and Fusion-style navigation cube for reorienting the camera.
+///
+/// Renders the cube under the current camera rotation, routes taps on faces, edges and corners
+/// to the matching `ViewCubeRegion`, and orbits the camera when dragged.
 public struct NavigationCubeView: View {
 
     @ObservedObject private var controller: ViewportController
@@ -46,8 +47,10 @@ public struct NavigationCubeView: View {
                     // 3×3 grid so the edge / corner hit zones are discoverable.
                     var grid = Path()
                     for k in [CGFloat(1.0 / 3.0), CGFloat(2.0 / 3.0)] {
-                        grid.move(to: bilerp(pts, k, 0)); grid.addLine(to: bilerp(pts, k, 1))
-                        grid.move(to: bilerp(pts, 0, k)); grid.addLine(to: bilerp(pts, 1, k))
+                        grid.move(to: bilerp(pts, k, 0))
+                        grid.addLine(to: bilerp(pts, k, 1))
+                        grid.move(to: bilerp(pts, 0, k))
+                        grid.addLine(to: bilerp(pts, 1, k))
                     }
                     ctx.stroke(grid, with: .color(.primary.opacity(0.18)), lineWidth: 0.75)
 
@@ -61,12 +64,12 @@ public struct NavigationCubeView: View {
             .frame(width: side, height: side)
             .contentShape(Rectangle())
             #if os(macOS)
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let p): hovered = cube.region(at: p)
-                case .ended: hovered = nil
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let p): hovered = cube.region(at: p)
+                    case .ended: hovered = nil
+                    }
                 }
-            }
             #endif
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -80,15 +83,17 @@ public struct NavigationCubeView: View {
                             // Grab-and-spin: always orbit (independent of the
                             // viewport's gesture-action mapping). The cube is a
                             // camera proxy, so dragging it orbits the camera *around*
-                            // the model — the opposite sign to the viewport's
+                            // the model, the opposite sign to the viewport's
                             // grab-the-model drag.
                             controller.handleOrbit(translation: CGSize(width: dx, height: -dy))
                         }
                     }
                     .onEnded { value in
                         if isOrbiting {
-                            controller.endOrbit(velocity: CGSize(width: value.velocity.width,
-                                                                 height: -value.velocity.height))
+                            controller.endOrbit(
+                                velocity: CGSize(
+                                    width: value.velocity.width,
+                                    height: -value.velocity.height))
                         } else if let region = cube.region(at: value.location) {
                             controller.goToRegion(region)
                         }
@@ -128,12 +133,12 @@ public struct NavigationCubeView: View {
 }
 
 #if DEBUG
-struct NavigationCubeView_Previews: PreviewProvider {
-    static var previews: some View {
-        NavigationCubeView(controller: ViewportController())
-            .frame(width: 110, height: 110)
-            .padding()
-            .previewLayout(.sizeThatFits)
+    struct NavigationCubeView_Previews: PreviewProvider {
+        static var previews: some View {
+            NavigationCubeView(controller: ViewportController())
+                .frame(width: 110, height: 110)
+                .padding()
+                .previewLayout(.sizeThatFits)
+        }
     }
-}
 #endif

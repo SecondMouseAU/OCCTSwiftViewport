@@ -32,10 +32,13 @@ struct MeasurementOverlay: View {
 
     // MARK: - Distance
 
-    private func drawDistance(_ m: DistanceMeasurement, in context: inout GraphicsContext, size: CGSize) {
+    private func drawDistance(
+        _ m: DistanceMeasurement, in context: inout GraphicsContext, size: CGSize
+    ) {
         guard let startPt = project(m.start),
-              let endPt = project(m.end),
-              let midPt = project(m.midpoint) else { return }
+            let endPt = project(m.end),
+            let midPt = project(m.midpoint)
+        else { return }
 
         // Leader line
         let path = Path { p in
@@ -58,8 +61,9 @@ struct MeasurementOverlay: View {
 
     private func drawAngle(_ m: AngleMeasurement, in context: inout GraphicsContext, size: CGSize) {
         guard let vertexPt = project(m.vertex),
-              let aPt = project(m.pointA),
-              let bPt = project(m.pointB) else { return }
+            let aPt = project(m.pointA),
+            let bPt = project(m.pointB)
+        else { return }
 
         // Draw the two arms
         let armPath = Path { p in
@@ -99,9 +103,11 @@ struct MeasurementOverlay: View {
 
     // MARK: - Radius
 
-    private func drawRadius(_ m: RadiusMeasurement, in context: inout GraphicsContext, size: CGSize) {
+    private func drawRadius(_ m: RadiusMeasurement, in context: inout GraphicsContext, size: CGSize)
+    {
         guard let centerPt = project(m.center),
-              let edgePt = project(m.edgePoint) else { return }
+            let edgePt = project(m.edgePoint)
+        else { return }
 
         // Leader line from center to edge
         let path = Path { p in
@@ -137,23 +143,26 @@ struct MeasurementOverlay: View {
     // MARK: - Helpers
 
     private func project(_ point: SIMD3<Float>) -> CGPoint? {
-        ProjectionUtility.worldToScreen(point: point, vpMatrix: vpMatrix, viewportSize: viewportSize)
+        ProjectionUtility.worldToScreen(
+            point: point, vpMatrix: vpMatrix, viewportSize: viewportSize)
     }
 
     private func drawEndpoint(at point: CGPoint, in context: inout GraphicsContext) {
         let radius: CGFloat = 3
-        let circle = Path(ellipseIn: CGRect(
-            x: point.x - radius, y: point.y - radius,
-            width: radius * 2, height: radius * 2
-        ))
+        let circle = Path(
+            ellipseIn: CGRect(
+                x: point.x - radius, y: point.y - radius,
+                width: radius * 2, height: radius * 2
+            ))
         context.fill(circle, with: .color(.white))
         context.stroke(circle, with: .color(.blue), lineWidth: 1.0)
     }
 
     private func drawLabel(_ text: String, at point: CGPoint, in context: inout GraphicsContext) {
-        let resolved = context.resolve(Text(text)
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundColor(.white))
+        let resolved = context.resolve(
+            Text(text)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(.white))
 
         let textSize = resolved.measure(in: CGSize(width: 200, height: 50))
 
@@ -169,10 +178,12 @@ struct MeasurementOverlay: View {
         context.fill(capsule, with: .color(.black.opacity(0.7)))
         context.stroke(capsule, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
 
-        context.draw(resolved, at: CGPoint(
-            x: point.x,
-            y: point.y - 10
-        ), anchor: .center)
+        context.draw(
+            resolved,
+            at: CGPoint(
+                x: point.x,
+                y: point.y - 10
+            ), anchor: .center)
     }
 
     private func formatDistance(_ value: Float) -> String {

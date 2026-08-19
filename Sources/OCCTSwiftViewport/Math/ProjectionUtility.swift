@@ -3,8 +3,8 @@
 //
 // Utility for projecting 3D world points to 2D screen coordinates.
 
-import simd
 import CoreGraphics
+import simd
 
 /// Utility for converting between world coordinates and screen coordinates.
 public enum ProjectionUtility {
@@ -57,7 +57,8 @@ public enum ProjectionUtility {
     }
 
     /// Computes the angle (in degrees) between three 3D points (vertex at `b`).
-    public static func angle(_ a: SIMD3<Float>, vertex b: SIMD3<Float>, _ c: SIMD3<Float>) -> Float {
+    public static func angle(_ a: SIMD3<Float>, vertex b: SIMD3<Float>, _ c: SIMD3<Float>) -> Float
+    {
         let ba = simd_normalize(a - b)
         let bc = simd_normalize(c - b)
         let cosAngle = simd_clamp(simd_dot(ba, bc), -1.0, 1.0)

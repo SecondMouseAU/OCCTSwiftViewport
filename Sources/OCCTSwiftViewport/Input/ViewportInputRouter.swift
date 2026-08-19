@@ -15,49 +15,56 @@ extension ViewportController {
     ///
     /// The platform layer is responsible only for translating native input into
     /// `ViewportInputEvent` (delta math, gesture arbitration) and for any lifecycle
-    /// glue it already owns (e.g. dynamic-pivot scheduling). All *interpretation* —
-    /// which `GestureAction` a drag maps to, the orbit X-axis inversion, the
-    /// drag-to-zoom curve — lives here, so the meaning is identical regardless of
+    /// glue it already owns (e.g. dynamic-pivot scheduling). All *interpretation*
+    /// (which `GestureAction` a drag maps to, the orbit X-axis inversion, the
+    /// drag-to-zoom curve) lives here, so the meaning is identical regardless of
     /// the input source.
     public func dispatch(_ event: ViewportInputEvent) {
         onInputEvent?(event)
 
         switch event {
-        case let .dragChanged(delta, modifiers):
+        case .dragChanged(let delta, let modifiers):
             apply(dragDelta: delta, modifiers: modifiers)
 
-        case let .dragEnded(velocity, _):
+        case .dragEnded(let velocity, _):
             endDrag(velocity: velocity)
 
-        case let .twoFingerPanChanged(translation):
-            handlePan(translation: CGSize(width: CGFloat(translation.x),
-                                          height: CGFloat(translation.y)))
+        case .twoFingerPanChanged(let translation):
+            handlePan(
+                translation: CGSize(
+                    width: CGFloat(translation.x),
+                    height: CGFloat(translation.y)))
 
-        case let .twoFingerPanEnded(velocity):
-            endPan(velocity: CGSize(width: CGFloat(velocity.x),
-                                    height: CGFloat(velocity.y)))
+        case .twoFingerPanEnded(let velocity):
+            endPan(
+                velocity: CGSize(
+                    width: CGFloat(velocity.x),
+                    height: CGFloat(velocity.y)))
 
-        case let .pinchChanged(scale):
+        case .pinchChanged(let scale):
             handleZoom(magnification: CGFloat(scale))
 
-        case let .pinchAtChanged(scale, centerNDC, aspectRatio):
-            handleZoom(magnification: CGFloat(scale), centerNormalized: centerNDC, aspectRatio: aspectRatio)
+        case .pinchAtChanged(let scale, let centerNDC, let aspectRatio):
+            handleZoom(
+                magnification: CGFloat(scale), centerNormalized: centerNDC, aspectRatio: aspectRatio
+            )
 
         case .pinchEnded:
             break
 
-        case let .rotateChanged(radians):
+        case .rotateChanged(let radians):
             handleRoll(angle: CGFloat(radians))
 
         case .rotateEnded:
             break
 
-        case let .scroll(delta, cursorNDC, aspectRatio):
-            handleScrollZoom(delta: CGFloat(delta),
-                             cursorNormalized: cursorNDC,
-                             aspectRatio: aspectRatio)
+        case .scroll(let delta, let cursorNDC, let aspectRatio):
+            handleScrollZoom(
+                delta: CGFloat(delta),
+                cursorNormalized: cursorNDC,
+                aspectRatio: aspectRatio)
 
-        case let .tap(_, count):
+        case .tap(_, let count):
             if count >= 2 { reset(animated: true) }
         }
     }
@@ -68,9 +75,9 @@ extension ViewportController {
     /// `dragAction(for:)`; iOS (no modifiers) uses `singleFingerDrag`.
     private func resolvedDragAction(_ modifiers: ViewportModifierKeys) -> GestureAction {
         #if os(macOS)
-        return configuration.gestureConfiguration.dragAction(for: modifiers)
+            return configuration.gestureConfiguration.dragAction(for: modifiers)
         #else
-        return configuration.gestureConfiguration.singleFingerDrag
+            return configuration.gestureConfiguration.singleFingerDrag
         #endif
     }
 
@@ -83,12 +90,16 @@ extension ViewportController {
             let cfg = configuration.gestureConfiguration
             let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
             let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
-            handleOrbit(translation: CGSize(width: sx * CGFloat(delta.x),
-                                            height: sy * CGFloat(delta.y)))
+            handleOrbit(
+                translation: CGSize(
+                    width: sx * CGFloat(delta.x),
+                    height: sy * CGFloat(delta.y)))
         case .pan:
             activeInputDragMode = .pan
-            handlePan(translation: CGSize(width: CGFloat(delta.x),
-                                          height: CGFloat(delta.y)))
+            handlePan(
+                translation: CGSize(
+                    width: CGFloat(delta.x),
+                    height: CGFloat(delta.y)))
         case .zoom:
             activeInputDragMode = .zoom
             handleZoom(magnification: CGFloat(1.0 + delta.y * 0.02))
@@ -105,11 +116,15 @@ extension ViewportController {
             let cfg = configuration.gestureConfiguration
             let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
             let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
-            endOrbit(velocity: CGSize(width: sx * CGFloat(velocity.x),
-                                      height: sy * CGFloat(velocity.y)))
+            endOrbit(
+                velocity: CGSize(
+                    width: sx * CGFloat(velocity.x),
+                    height: sy * CGFloat(velocity.y)))
         case .pan:
-            endPan(velocity: CGSize(width: CGFloat(velocity.x),
-                                    height: CGFloat(velocity.y)))
+            endPan(
+                velocity: CGSize(
+                    width: CGFloat(velocity.x),
+                    height: CGFloat(velocity.y)))
         case .zoom:
             break
         }

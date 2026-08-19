@@ -49,7 +49,14 @@ in one PR), this repo measured 1,503 pre-existing `swift-format` diagnostics acr
 `Sources/OCCTSwiftViewport` (52 files) on rollout day, so it uses the same gradual approach
 `OCCTSwift` established:
 
-- `scripts/style-manifest-swift.txt` lists every file that existed at rollout. A listed file is
+**The rollout is complete as of 2026-08-19: the manifest is empty** ([#112](https://github.com/SecondMouseAU/OCCTSwiftViewport/pull/112) took the last 2 entries and
+[#113](https://github.com/SecondMouseAU/OCCTSwiftViewport/issues/113) the remaining 46), so
+`swift-format`/SwiftLint now gate every file under `Sources/OCCTSwiftViewport` unconditionally. The
+mechanism below still governs, and the file stays checked in and empty: it is what stops a future
+change quietly re-granting itself an exemption, since `check-style-manifest.py` rejects any entry
+not already present at the base ref.
+
+- `scripts/style-manifest-swift.txt` listed every file that existed at rollout. A listed file was
   exempt from `swift-format` until touched.
 - **If you touch a listed file, you fix it and remove it from the manifest in the same PR.**
   `scripts/check-style-manifest.py` (copied verbatim from `OCCTSwift`, including its fix for a

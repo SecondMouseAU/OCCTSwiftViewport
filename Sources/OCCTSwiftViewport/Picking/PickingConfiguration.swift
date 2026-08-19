@@ -8,8 +8,11 @@ import Foundation
 /// Configuration for the GPU pick ID buffer system.
 public struct PickingConfiguration: Sendable {
 
-    /// Whether picking is enabled. When `false`, the pick texture is not
-    /// allocated and the second color attachment is not used.
+    /// Whether the pick pass runs at all.
+    ///
+    /// When `false` the pick texture is never allocated and the second colour attachment goes
+    /// unused, so turning picking off costs nothing in memory or bandwidth rather than merely
+    /// discarding the results.
     public var isEnabled: Bool
 
     /// Creates a picking configuration.

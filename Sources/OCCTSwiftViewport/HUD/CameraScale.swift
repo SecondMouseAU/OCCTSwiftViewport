@@ -2,11 +2,11 @@
 // ViewportKit
 //
 // Pure (SwiftUI-free) helpers for screen-space HUD overlays: world-units-per-point
-// from the camera, and "nice" scale-bar metrics. A Graphic3d_TransMode analogue —
+// from the camera, and "nice" scale-bar metrics. A Graphic3d_TransMode analogue:
 // these feed overlays that ignore the camera transform.
 
-import Foundation
 import CoreGraphics
+import Foundation
 
 extension CameraState {
 
@@ -14,7 +14,7 @@ extension CameraState {
     ///
     /// For orthographic cameras the value is depth-independent (`orthographicScale`
     /// is the on-screen vertical extent). For perspective cameras it is evaluated at
-    /// `distance` — the pivot depth — since perspective scale varies with depth and
+    /// `distance` (the pivot depth), since perspective scale varies with depth and
     /// the pivot is the meaningful reference for a scale bar.
     ///
     /// - Parameter viewportHeightPoints: The viewport height in points (not pixels).
@@ -58,7 +58,8 @@ public struct ScaleBarMetrics: Equatable, Sendable {
     ///   - unitLabel: Optional unit suffix (the library is unit-agnostic).
     public init?(worldUnitsPerPoint: Float, targetPoints: CGFloat, unitLabel: String = "") {
         guard worldUnitsPerPoint > 0, worldUnitsPerPoint.isFinite,
-              targetPoints > 0 else { return nil }
+            targetPoints > 0
+        else { return nil }
         let targetWorld = worldUnitsPerPoint * Float(targetPoints)
         let nice = Self.niceNumber(targetWorld)
         guard nice > 0 else { return nil }
@@ -73,12 +74,17 @@ public struct ScaleBarMetrics: Equatable, Sendable {
         guard x > 0, x.isFinite else { return 0 }
         let exp = floor(log10(x))
         let base = pow(10, exp)
-        let f = x / base                 // in [1, 10)
+        let f = x / base  // in [1, 10)
         let nice: Float
-        if f < 1.5 { nice = 1 }
-        else if f < 3.5 { nice = 2 }
-        else if f < 7.5 { nice = 5 }
-        else { nice = 10 }
+        if f < 1.5 {
+            nice = 1
+        } else if f < 3.5 {
+            nice = 2
+        } else if f < 7.5 {
+            nice = 5
+        } else {
+            nice = 10
+        }
         return nice * base
     }
 

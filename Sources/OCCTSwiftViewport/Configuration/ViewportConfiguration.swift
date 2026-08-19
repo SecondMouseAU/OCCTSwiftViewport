@@ -86,7 +86,10 @@ public struct ViewportConfiguration: Sendable {
     /// Whether to show the screen-space scale bar (HUD).
     public var showScaleBar: Bool
 
-    /// Optional unit suffix shown on the scale bar (e.g. `"mm"`). Empty = number only.
+    /// Unit suffix appended to the scale bar's number, e.g. `"mm"`.
+    ///
+    /// Empty (the default) shows the number on its own. Purely a label: it does not convert
+    /// or scale the value, which is always in the scene's own world units.
     public var scaleBarUnitLabel: String
 
     /// Whether to show coordinate axes.
@@ -121,7 +124,11 @@ public struct ViewportConfiguration: Sendable {
 
     // MARK: - Anti-Aliasing
 
-    /// MSAA sample count (1 = no MSAA, 4 = 4x MSAA). Must be 1 or 4.
+    /// MSAA sample count: 1 for no anti-aliasing, 4 for 4x.
+    ///
+    /// Must be 1 or 4. The value reaches the Metal pipeline and render-target descriptors
+    /// without validation here, so an unsupported count surfaces as a pipeline-creation
+    /// failure rather than a checked error.
     public var msaaSampleCount: Int
 
     // MARK: - Edge Silhouettes
@@ -135,23 +142,27 @@ public struct ViewportConfiguration: Sendable {
     /// Silhouette edge darkness (0 = invisible, 1 = fully dark).
     public var silhouetteIntensity: Float
 
-    /// Whether to frustum-cull bodies whose world-space bounds fall entirely
-    /// outside the camera view (issue #42). On by default — off-screen bodies are
-    /// not visible anyway, and skipping them is the main lever for large scenes.
-    /// Bodies with no `boundingBox` are never culled. The shadow pass is not
-    /// culled by the camera frustum (off-screen casters can shadow visible geometry).
+    /// Whether to skip bodies whose world-space bounds fall wholly outside the view (issue #42).
+    ///
+    /// On by default, since off-screen bodies are not visible anyway and skipping them is the
+    /// main lever on large scenes. Two carve-outs: bodies with no `boundingBox` are never
+    /// culled, and the shadow pass ignores the camera frustum entirely, because an off-screen
+    /// caster can still shadow visible geometry.
     public var enableFrustumCulling: Bool
 
-    /// Whether to apply crease-aware normal smoothing to each body's mesh when its
-    /// buffers are built (issue #48). Meshes that arrive with per-face (flat)
-    /// normals can't be rounded by Phong tessellation; smoothing averages normals
-    /// across shared vertices (preserving hard edges via the crease angle) so
-    /// `.enhanced` tessellation produces smooth silhouettes. Off by default —
-    /// enabled by `.cadHighQuality`. Computed once per body (cached), not per frame.
+    /// Whether each body's normals get crease-aware smoothing as its buffers are built (#48).
+    ///
+    /// Meshes that arrive with per-face (flat) normals cannot be rounded by Phong
+    /// tessellation. Smoothing averages normals across shared vertices, keeping hard edges via
+    /// `normalSmoothingCreaseAngle`, so `.enhanced` tessellation yields smooth silhouettes.
+    /// Off by default, on in `.cadHighQuality`. Computed once per body and cached, not per
+    /// frame.
     public var autoSmoothNormals: Bool
 
-    /// Crease angle (radians) for `autoSmoothNormals`: edges whose adjacent faces
-    /// differ by more than this stay sharp. Default ~30°.
+    /// Angle in radians above which `autoSmoothNormals` leaves an edge sharp.
+    ///
+    /// Edges whose adjacent faces differ by more than this keep their crease; anything flatter
+    /// gets its normals averaged. Defaults to roughly 30°.
     public var normalSmoothingCreaseAngle: Float
 
     // MARK: - Picking
@@ -341,8 +352,8 @@ public struct ViewportConfiguration: Sendable {
     /// CAD configuration tuned for smooth round geometry (issue #48).
     ///
     /// Enables the GPU's screen-space-adaptive PN-triangle (Phong) tessellation
-    /// (`renderingQuality = .enhanced`), so curved surfaces — cylinder / cone
-    /// silhouettes, filleted faces — stay smooth at any zoom without the consumer
+    /// (`renderingQuality = .enhanced`), so curved surfaces (cylinder and cone
+    /// silhouettes, filleted faces) stay smooth at any zoom without the consumer
     /// pre-tessellating finely. Tessellation refines by projected size and surface
     /// curvature each frame, so it doesn't waste triangles on small / distant parts.
     ///

@@ -22,15 +22,18 @@ public struct Frustum: Sendable {
         func row(_ i: Int) -> SIMD4<Float> {
             SIMD4<Float>(m[0][i], m[1][i], m[2][i], m[3][i])
         }
-        let r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3)
+        let r0 = row(0)
+        let r1 = row(1)
+        let r2 = row(2)
+        let r3 = row(3)
 
         var planes = [
-            r3 + r0,   // left
-            r3 - r0,   // right
-            r3 + r1,   // bottom
-            r3 - r1,   // top
-            r2,        // near  (Metal [0,1] depth: near = row2, not row3+row2)
-            r3 - r2    // far
+            r3 + r0,  // left
+            r3 - r0,  // right
+            r3 + r1,  // bottom
+            r3 - r1,  // top
+            r2,  // near  (Metal [0,1] depth: near = row2, not row3+row2)
+            r3 - r2,  // far
         ]
         for i in planes.indices {
             let len = simd_length(SIMD3<Float>(planes[i].x, planes[i].y, planes[i].z))
@@ -39,8 +42,12 @@ public struct Frustum: Sendable {
         self.planes = planes
     }
 
-    /// Returns `false` only when `box` lies entirely outside at least one plane
-    /// (i.e. it is safe to cull). Conservative: a straddling box returns `true`.
+    /// Whether `box` might be visible, answered conservatively in favour of drawing.
+    ///
+    /// Returns `false` only when the box lies entirely outside at least one plane, which is
+    /// the case where culling it is provably safe. A box straddling a plane returns `true`,
+    /// as does one outside the frustum but not outside any single plane, so the test can keep
+    /// a body that is not actually visible but never drops one that is.
     public func intersects(_ box: BoundingBox) -> Bool {
         for plane in planes {
             let n = SIMD3<Float>(plane.x, plane.y, plane.z)
@@ -51,7 +58,7 @@ public struct Frustum: Sendable {
                 n.z >= 0 ? box.max.z : box.min.z
             )
             if simd_dot(n, p) + plane.w < 0 {
-                return false   // fully outside this plane → cull
+                return false  // fully outside this plane → cull
             }
         }
         return true

@@ -4,8 +4,8 @@
 // Pure projection + hit-testing for the interactive navigation cube (issue #60).
 // SwiftUI-free so it can be unit-tested without a view.
 
-import simd
 import CoreGraphics
+import simd
 
 /// Projects a unit cube under a camera rotation and resolves taps to one of the
 /// 26 `ViewCubeRegion`s (6 faces / 12 edges / 8 corners).
@@ -28,9 +28,11 @@ public struct NavigationCube {
         self.padding = padding
     }
 
-    /// Pixels per cube unit. The rotated cube's silhouette reaches ~√3 units; we
-    /// scale so a face (±1) fits comfortably with the corners allowed to approach
-    /// the edges.
+    /// Pixels per cube unit, sized so the cube stays inside the widget at any rotation.
+    ///
+    /// A rotated cube's silhouette reaches about √3 units at the corners, so the 1.45 divisor
+    /// lets a face (±1) sit comfortably inside the padding while corners are allowed to come
+    /// close to the widget edge.
     public var scale: CGFloat { (size * 0.5 - padding) / 1.45 }
 
     private var center: CGPoint { CGPoint(x: size * 0.5, y: size * 0.5) }
@@ -38,33 +40,34 @@ public struct NavigationCube {
     /// Projects a cube-local point (`[-1,1]³`) to widget coordinates.
     public func project(_ p: SIMD3<Float>) -> CGPoint {
         let r = rotation.inverse.act(p)
-        return CGPoint(x: center.x + CGFloat(r.x) * scale,
-                       y: center.y - CGFloat(r.y) * scale)
+        return CGPoint(
+            x: center.x + CGFloat(r.x) * scale,
+            y: center.y - CGFloat(r.y) * scale)
     }
 
     // MARK: - Faces
 
     /// The 6 faces with their outward normals (cube convention above).
     static let faces: [(region: ViewCubeRegion, normal: SIMD3<Float>)] = [
-        (.right,  SIMD3( 1, 0, 0)),
-        (.left,   SIMD3(-1, 0, 0)),
-        (.back,   SIMD3( 0, 1, 0)),
-        (.front,  SIMD3( 0,-1, 0)),
-        (.top,    SIMD3( 0, 0, 1)),
-        (.bottom, SIMD3( 0, 0,-1)),
+        (.right, SIMD3(1, 0, 0)),
+        (.left, SIMD3(-1, 0, 0)),
+        (.back, SIMD3(0, 1, 0)),
+        (.front, SIMD3(0, -1, 0)),
+        (.top, SIMD3(0, 0, 1)),
+        (.bottom, SIMD3(0, 0, -1)),
     ]
 
     /// A face that currently faces the camera, with its projected geometry.
     public struct VisibleFace {
         public let region: ViewCubeRegion
-        public let corners: [CGPoint]   // 4, in projected order
+        public let corners: [CGPoint]  // 4, in projected order
         public let center: CGPoint
-        public let depth: Float         // toward-camera depth of the face centre (for sorting)
+        public let depth: Float  // toward-camera depth of the face centre (for sorting)
     }
 
     /// The faces pointing toward the camera, back-to-front (draw in order).
     public func visibleFaces() -> [VisibleFace] {
-        let viewDir = rotation.act(SIMD3<Float>(0, 0, -1))   // where the camera looks
+        let viewDir = rotation.act(SIMD3<Float>(0, 0, -1))  // where the camera looks
         var result: [VisibleFace] = []
         for face in Self.faces {
             // Visible when the outward normal opposes the look direction.
@@ -74,12 +77,14 @@ public struct NavigationCube {
             // Depth = component of the face centre along the toward-camera axis.
             let towardCam = rotation.act(SIMD3<Float>(0, 0, 1))
             let depth = simd_dot(face.normal, towardCam)
-            result.append(VisibleFace(region: face.region,
-                                      corners: projected,
-                                      center: project(face.normal),
-                                      depth: depth))
+            result.append(
+                VisibleFace(
+                    region: face.region,
+                    corners: projected,
+                    center: project(face.normal),
+                    depth: depth))
         }
-        return result.sorted { $0.depth < $1.depth }   // far first
+        return result.sorted { $0.depth < $1.depth }  // far first
     }
 
     /// The four corners of a face (cube-local), ordered around the face.
@@ -87,42 +92,56 @@ public struct NavigationCube {
         // Two in-plane axes.
         let u: SIMD3<Float>
         let v: SIMD3<Float>
-        if abs(n.x) > 0.5 { u = SIMD3(0, 1, 0); v = SIMD3(0, 0, 1) }
-        else if abs(n.y) > 0.5 { u = SIMD3(1, 0, 0); v = SIMD3(0, 0, 1) }
-        else { u = SIMD3(1, 0, 0); v = SIMD3(0, 1, 0) }
+        if abs(n.x) > 0.5 {
+            u = SIMD3(0, 1, 0)
+            v = SIMD3(0, 0, 1)
+        } else if abs(n.y) > 0.5 {
+            u = SIMD3(1, 0, 0)
+            v = SIMD3(0, 0, 1)
+        } else {
+            u = SIMD3(1, 0, 0)
+            v = SIMD3(0, 1, 0)
+        }
         return [n - u - v, n + u - v, n + u + v, n - u + v]
     }
 
     // MARK: - Hit testing
 
-    /// Resolves a tap (widget coordinates) to a region, or `nil` if it misses the
-    /// cube silhouette. Casts the tap as a ray through the cube and classifies the
-    /// frontmost surface point into the 3×3-per-face grid.
+    /// Resolves a tap in widget coordinates to the cube region under it.
+    ///
+    /// Casts the tap as a ray through the cube and classifies the frontmost surface point into
+    /// the 3×3-per-face grid. Returns `nil` when the tap misses the cube silhouette, and also
+    /// when `scale` is not positive, which is a widget too small for its own padding.
     public func region(at point: CGPoint) -> ViewCubeRegion? {
         guard scale > 0 else { return nil }
         // Tap in the rotated frame's screen plane (x right, y up).
         let tx = Float((point.x - center.x) / scale)
-        let ty = Float((center.y - point.y) / scale)   // screen y is down → flip
+        let ty = Float((center.y - point.y) / scale)  // screen y is down → flip
 
         // Ray in world space: base + s * dir, where +s goes toward the camera.
         let base = rotation.act(SIMD3<Float>(tx, ty, 0))
         let dir = rotation.act(SIMD3<Float>(0, 0, 1))
 
         guard let (sNear, sFar) = Self.intersectUnitCube(base: base, dir: dir),
-              sFar >= sNear else { return nil }
-        let surface = base + sFar * dir   // frontmost (toward camera)
+            sFar >= sNear
+        else { return nil }
+        let surface = base + sFar * dir  // frontmost (toward camera)
 
         return Self.classify(surface)
     }
 
-    /// Slab clip of `base + s·dir` against `[-1,1]³`. Returns the `s` interval, or nil.
+    /// Clips the ray `base + s·dir` against the unit cube `[-1,1]³` by the slab method.
+    ///
+    /// Returns the entry and exit `s` values. `nil` means the ray misses the cube, which
+    /// includes a ray running parallel to one slab and outside it.
     static func intersectUnitCube(base: SIMD3<Float>, dir: SIMD3<Float>) -> (Float, Float)? {
         var tMin = -Float.greatestFiniteMagnitude
         var tMax = Float.greatestFiniteMagnitude
         for axis in 0..<3 {
-            let b = base[axis], d = dir[axis]
+            let b = base[axis]
+            let d = dir[axis]
             if abs(d) < 1e-6 {
-                if b < -1 || b > 1 { return nil }   // parallel & outside this slab
+                if b < -1 || b > 1 { return nil }  // parallel & outside this slab
             } else {
                 var t0 = (-1 - b) / d
                 var t1 = (1 - b) / d
@@ -135,9 +154,11 @@ public struct NavigationCube {
         return (tMin, tMax)
     }
 
-    /// Classifies a cube-surface point into a region. Each tangent coordinate in
-    /// the outer third (|c| > 1/3) activates that face; the hit face's own
-    /// near-±1 coordinate is always active. 1–3 active faces → face/edge/corner.
+    /// Classifies a point on the cube surface into the face, edge or corner region it lies in.
+    ///
+    /// A tangent coordinate in the outer third (`|c| > 1/3`) activates that face, and the hit
+    /// face's own near-±1 coordinate is always active, so one, two or three active faces mean
+    /// a face, an edge or a corner respectively. Returns `nil` when no face is active.
     static func classify(_ p: SIMD3<Float>) -> ViewCubeRegion? {
         let t: Float = 1.0 / 3.0
         var active: Set<ViewCubeRegion> = []

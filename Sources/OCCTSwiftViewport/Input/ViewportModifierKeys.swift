@@ -1,12 +1,13 @@
 // ViewportModifierKeys.swift
 // ViewportKit
 //
-// Platform-neutral keyboard-modifier abstraction for input interpretation —
+// Platform-neutral keyboard-modifier abstraction for input interpretation:
 // an Aspect_VKey analogue.
 
 import Foundation
+
 #if canImport(AppKit)
-import AppKit
+    import AppKit
 #endif
 
 /// Platform-neutral keyboard-modifier state used to interpret viewport input.
@@ -14,7 +15,7 @@ import AppKit
 /// This is the OCCTSwiftViewport analogue of OCCT's `Aspect_VKeyFlags`: it
 /// decouples gesture interpretation from `NSEvent.ModifierFlags` (AppKit) and
 /// `UIKeyModifierFlags` (UIKit) so the same mapping logic can be driven by any
-/// input source — AppKit, UIKit, or (future) visionOS / synthetic input.
+/// input source: AppKit, UIKit, or (future) visionOS / synthetic input.
 ///
 /// Bridge from a platform type with the `init(_:)` overloads, then resolve an
 /// action via `GestureConfiguration.dragAction(for:)`.
@@ -40,33 +41,33 @@ public struct ViewportModifierKeys: OptionSet, Sendable, Hashable {
 }
 
 #if canImport(AppKit)
-extension ViewportModifierKeys {
+    extension ViewportModifierKeys {
 
-    /// Bridges AppKit modifier flags into the portable representation.
-    public init(_ flags: NSEvent.ModifierFlags) {
-        var keys: ViewportModifierKeys = []
-        if flags.contains(.shift) { keys.insert(.shift) }
-        if flags.contains(.control) { keys.insert(.control) }
-        if flags.contains(.option) { keys.insert(.option) }
-        if flags.contains(.command) { keys.insert(.command) }
-        self = keys
+        /// Bridges AppKit modifier flags into the portable representation.
+        public init(_ flags: NSEvent.ModifierFlags) {
+            var keys: ViewportModifierKeys = []
+            if flags.contains(.shift) { keys.insert(.shift) }
+            if flags.contains(.control) { keys.insert(.control) }
+            if flags.contains(.option) { keys.insert(.option) }
+            if flags.contains(.command) { keys.insert(.command) }
+            self = keys
+        }
     }
-}
 #endif
 
 #if canImport(UIKit)
-import UIKit
+    import UIKit
 
-extension ViewportModifierKeys {
+    extension ViewportModifierKeys {
 
-    /// Bridges UIKit key-modifier flags into the portable representation.
-    public init(_ flags: UIKeyModifierFlags) {
-        var keys: ViewportModifierKeys = []
-        if flags.contains(.shift) { keys.insert(.shift) }
-        if flags.contains(.control) { keys.insert(.control) }
-        if flags.contains(.alternate) { keys.insert(.option) }
-        if flags.contains(.command) { keys.insert(.command) }
-        self = keys
+        /// Bridges UIKit key-modifier flags into the portable representation.
+        public init(_ flags: UIKeyModifierFlags) {
+            var keys: ViewportModifierKeys = []
+            if flags.contains(.shift) { keys.insert(.shift) }
+            if flags.contains(.control) { keys.insert(.control) }
+            if flags.contains(.alternate) { keys.insert(.option) }
+            if flags.contains(.command) { keys.insert(.command) }
+            self = keys
+        }
     }
-}
 #endif

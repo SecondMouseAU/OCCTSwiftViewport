@@ -34,8 +34,9 @@ extension ViewportBody {
         }
 
         guard let v0 = worldVertex(i0),
-              let v1 = worldVertex(i1),
-              let v2 = worldVertex(i2) else { return nil }
+            let v1 = worldVertex(i1),
+            let v2 = worldVertex(i2)
+        else { return nil }
 
         guard let t = ray.intersectsTriangle(v0: v0, v1: v1, v2: v2) else { return nil }
         return ray.origin + ray.direction * t

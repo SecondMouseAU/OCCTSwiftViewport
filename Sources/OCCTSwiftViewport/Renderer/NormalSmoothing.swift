@@ -33,8 +33,8 @@ public enum NormalSmoothing {
         let cosCrease = cos(creaseAngle)
 
         // Snapshot the INPUT per-vertex normals before any in-place write. The fix for #81 is to
-        // average THESE within each crease group — preserving OCCT's accurate analytic B-rep
-        // normals — rather than recomputing from face normals. The face-normal average is
+        // average THESE within each crease group (preserving OCCT's accurate analytic B-rep
+        // normals) rather than recomputing from face normals. The face-normal average is
         // directionally biased on highly anisotropic meshes (long thin triangles along a sweep,
         // e.g. helical thread flanks) and shows up as fine "brushed" striations. Face normals are
         // still used below for crease *detection* (hard-edge preservation).
@@ -91,7 +91,7 @@ public enum NormalSmoothing {
             let adjacentTris = Array(triSet)
 
             if adjacentTris.count <= 1 {
-                // Only one triangle — nothing to average
+                // Only one triangle, so nothing to average
                 for vIdx in uniqueVertices { processed[vIdx] = true }
                 continue
             }
@@ -115,7 +115,8 @@ public enum NormalSmoothing {
                 for entry in entries where groupSet.contains(entry.triIdx) {
                     sum += faceAreas[entry.triIdx] * originalNormals[entry.vertexIdx]
                 }
-                let averaged = simd_length(sum) > 1e-12 ? simd_normalize(sum) : faceNormals[group[0]]
+                let averaged =
+                    simd_length(sum) > 1e-12 ? simd_normalize(sum) : faceNormals[group[0]]
 
                 // Assign to all vertices at this position that belong to triangles in this group
                 for entry in entries where groupSet.contains(entry.triIdx) {

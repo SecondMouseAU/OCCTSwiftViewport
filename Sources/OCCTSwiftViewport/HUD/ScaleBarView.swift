@@ -17,7 +17,7 @@ public struct ScaleBarView: View {
 
     @ObservedObject private var controller: ViewportController
 
-    /// Viewport height in points — needed to convert camera scale to points.
+    /// Viewport height in points, needed to convert camera scale to points.
     private let viewportHeightPoints: CGFloat
 
     /// Optional unit suffix shown after the number (library is unit-agnostic).
@@ -26,10 +26,12 @@ public struct ScaleBarView: View {
     /// Target on-screen bar length in points; actual length snaps to a nice value.
     private let targetPoints: CGFloat
 
-    public init(controller: ViewportController,
-                viewportHeightPoints: CGFloat,
-                unitLabel: String = "",
-                targetPoints: CGFloat = 100) {
+    public init(
+        controller: ViewportController,
+        viewportHeightPoints: CGFloat,
+        unitLabel: String = "",
+        targetPoints: CGFloat = 100
+    ) {
         self.controller = controller
         self.viewportHeightPoints = viewportHeightPoints
         self.unitLabel = unitLabel
@@ -40,9 +42,11 @@ public struct ScaleBarView: View {
         let wpp = controller.cameraState.worldUnitsPerPoint(
             viewportHeightPoints: Float(viewportHeightPoints)
         )
-        if let metrics = ScaleBarMetrics(worldUnitsPerPoint: wpp,
-                                         targetPoints: targetPoints,
-                                         unitLabel: unitLabel) {
+        if let metrics = ScaleBarMetrics(
+            worldUnitsPerPoint: wpp,
+            targetPoints: targetPoints,
+            unitLabel: unitLabel)
+        {
             VStack(alignment: .leading, spacing: 2) {
                 Text(metrics.label)
                     .font(.system(size: 10, weight: .medium))
@@ -69,13 +73,15 @@ public struct ScaleBarView: View {
 }
 
 #if DEBUG
-struct ScaleBarView_Previews: PreviewProvider {
-    static var previews: some View {
-        ScaleBarView(controller: ViewportController(),
-                     viewportHeightPoints: 600,
-                     unitLabel: "mm")
+    struct ScaleBarView_Previews: PreviewProvider {
+        static var previews: some View {
+            ScaleBarView(
+                controller: ViewportController(),
+                viewportHeightPoints: 600,
+                unitLabel: "mm"
+            )
             .padding()
             .previewLayout(.sizeThatFits)
+        }
     }
-}
 #endif

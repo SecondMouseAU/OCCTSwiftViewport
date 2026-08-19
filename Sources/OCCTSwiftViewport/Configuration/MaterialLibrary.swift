@@ -6,7 +6,7 @@
 
 import Foundation
 
-/// A named PBR material — a `PBRMaterial` plus a stable identifier and display name.
+/// A named PBR material: a `PBRMaterial` plus a stable identifier and display name.
 public struct NamedMaterial: Sendable, Codable, Identifiable, Hashable {
     public let id: UUID
     public var name: String
@@ -38,7 +38,9 @@ public final class MaterialLibrary: ObservableObject {
     public init(storageURL: URL? = MaterialLibrary.defaultStorageURL()) {
         self.storageURL = storageURL
         let presets = MaterialLibrary.bundledPresets()
-        if let url = storageURL, let userMaterials = try? MaterialLibrary.loadUserMaterials(from: url) {
+        if let url = storageURL,
+            let userMaterials = try? MaterialLibrary.loadUserMaterials(from: url)
+        {
             self.materials = presets + userMaterials
         } else {
             self.materials = presets
@@ -82,7 +84,10 @@ public final class MaterialLibrary: ObservableObject {
         try? persist()
     }
 
-    /// Removes a user material. Built-in presets are protected.
+    /// Removes a user-created material from the library.
+    ///
+    /// Silently does nothing for an unknown `id` or for a built-in preset, so the shipped
+    /// presets cannot be deleted through this call.
     public func remove(id: UUID) {
         guard let i = materials.firstIndex(where: { $0.id == id }) else { return }
         if materials[i].isBuiltin { return }
@@ -103,7 +108,11 @@ public final class MaterialLibrary: ObservableObject {
 
     public static func defaultStorageURL() -> URL? {
         let fm = FileManager.default
-        guard let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+        guard
+            let support = try? fm.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil,
+                create: true)
+        else {
             return nil
         }
         let dir = support.appendingPathComponent("OCCTSwiftViewport", isDirectory: true)

@@ -4,13 +4,13 @@
 // Manages GPU hardware tessellation: PN triangle patch preprocessing,
 // per-frame adaptive tessellation factor computation, and pipeline states.
 
-import simd
 @preconcurrency import Metal
+import simd
 
 /// Per-body tessellation buffers cached alongside BodyBuffers.
 struct TessellationBuffers {
-    let patchDataBuffer: MTLBuffer       // PNPatchData per patch
-    let tessFactorBuffer: MTLBuffer      // MTLTriangleTessellationFactorsHalf per patch
+    let patchDataBuffer: MTLBuffer  // PNPatchData per patch
+    let tessFactorBuffer: MTLBuffer  // MTLTriangleTessellationFactorsHalf per patch
     let patchCount: Int
 }
 
@@ -22,16 +22,18 @@ final class TessellationManager {
     private let pnPatchPipeline: MTLComputePipelineState
     private let tessFactorPipeline: MTLComputePipelineState
 
-    /// One-shot diagnostic flag
+    /// Latches once the first tessellation diagnostic has been logged, so it prints per run
+    /// rather than per frame.
     var didLogDiagnostic = false
 
     init?(device: MTLDevice, library: MTLLibrary) {
         self.device = device
 
         guard let pnFunc = library.makeFunction(name: "compute_pn_patches"),
-              let tfFunc = library.makeFunction(name: "compute_tess_factors"),
-              let pnPipeline = try? device.makeComputePipelineState(function: pnFunc),
-              let tfPipeline = try? device.makeComputePipelineState(function: tfFunc) else {
+            let tfFunc = library.makeFunction(name: "compute_tess_factors"),
+            let pnPipeline = try? device.makeComputePipelineState(function: pnFunc),
+            let tfPipeline = try? device.makeComputePipelineState(function: tfFunc)
+        else {
             return nil
         }
 
@@ -39,7 +41,12 @@ final class TessellationManager {
         self.tessFactorPipeline = tfPipeline
     }
 
-    /// Builds PN triangle patch data from a triangle mesh. One-time per geometry change.
+    /// Builds the PN-triangle control points a mesh needs before it can be tessellated.
+    ///
+    /// Runs once per geometry change, not per frame: the patch data depends only on the mesh,
+    /// while the per-frame work is `updateTessFactors`. Returns `nil` when there are no
+    /// triangles, when `faceIndices` is shorter than `triangleCount`, or when any buffer
+    /// allocation fails.
     ///
     /// - Parameters:
     ///   - vertexBuffer: Interleaved vertex buffer (stride 6 floats)
@@ -61,27 +68,36 @@ final class TessellationManager {
         let patchStride = 164
         let patchBufferSize = triangleCount * patchStride
 
-        guard let patchBuffer = device.makeBuffer(length: patchBufferSize, options: .storageModeShared) else {
+        guard
+            let patchBuffer = device.makeBuffer(
+                length: patchBufferSize, options: .storageModeShared)
+        else {
             return nil
         }
 
         // Face indices buffer
-        guard let faceIdxBuffer = device.makeBuffer(
-            bytes: faceIndices,
-            length: faceIndices.count * MemoryLayout<Int32>.size,
-            options: .storageModeShared
-        ) else { return nil }
+        guard
+            let faceIdxBuffer = device.makeBuffer(
+                bytes: faceIndices,
+                length: faceIndices.count * MemoryLayout<Int32>.size,
+                options: .storageModeShared
+            )
+        else { return nil }
 
         // Tessellation factor buffer (pre-allocated, updated per-frame)
-        let factorStride = 8 // MTLTriangleTessellationFactorsHalf: 3 half edges + 1 half inside = 8 bytes
-        guard let factorBuffer = device.makeBuffer(
-            length: triangleCount * factorStride,
-            options: .storageModeShared
-        ) else { return nil }
+        // MTLTriangleTessellationFactorsHalf: 3 half edges + 1 half inside = 8 bytes.
+        let factorStride = 8
+        guard
+            let factorBuffer = device.makeBuffer(
+                length: triangleCount * factorStride,
+                options: .storageModeShared
+            )
+        else { return nil }
 
         // Dispatch compute to build patches
         guard let cmdBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = cmdBuffer.makeComputeCommandEncoder() else { return nil }
+            let encoder = cmdBuffer.makeComputeCommandEncoder()
+        else { return nil }
 
         encoder.setComputePipelineState(pnPatchPipeline)
         encoder.setBuffer(vertexBuffer, offset: 0, index: 0)
@@ -109,7 +125,11 @@ final class TessellationManager {
         )
     }
 
-    /// Updates tessellation factors for all visible bodies. Called per-frame.
+    /// Recomputes how finely each visible body is subdivided for the current camera.
+    ///
+    /// Called once per frame, since the factors depend on projected edge length: `maxFactor`
+    /// caps the subdivision so a body filling the screen cannot run away with the triangle
+    /// budget. The caller owns the encoder's lifetime.
     ///
     /// - Parameters:
     ///   - tessBuffers: Array of (tessellation buffers, model matrix) for visible bodies

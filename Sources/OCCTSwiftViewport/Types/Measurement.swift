@@ -44,7 +44,9 @@ public struct DistanceMeasurement: Identifiable, Sendable {
         (start + end) * 0.5
     }
 
-    public init(id: String = UUID().uuidString, start: SIMD3<Float>, end: SIMD3<Float>, label: String? = nil) {
+    public init(
+        id: String = UUID().uuidString, start: SIMD3<Float>, end: SIMD3<Float>, label: String? = nil
+    ) {
         self.id = id
         self.start = start
         self.end = end
@@ -69,7 +71,10 @@ public struct AngleMeasurement: Identifiable, Sendable {
         ProjectionUtility.angle(pointA, vertex: vertex, pointB)
     }
 
-    public init(id: String = UUID().uuidString, pointA: SIMD3<Float>, vertex: SIMD3<Float>, pointB: SIMD3<Float>, label: String? = nil) {
+    public init(
+        id: String = UUID().uuidString, pointA: SIMD3<Float>, vertex: SIMD3<Float>,
+        pointB: SIMD3<Float>, label: String? = nil
+    ) {
         self.id = id
         self.pointA = pointA
         self.vertex = vertex
@@ -100,7 +105,10 @@ public struct RadiusMeasurement: Identifiable, Sendable {
         radius * 2.0
     }
 
-    public init(id: String = UUID().uuidString, center: SIMD3<Float>, edgePoint: SIMD3<Float>, showDiameter: Bool = false, label: String? = nil) {
+    public init(
+        id: String = UUID().uuidString, center: SIMD3<Float>, edgePoint: SIMD3<Float>,
+        showDiameter: Bool = false, label: String? = nil
+    ) {
         self.id = id
         self.center = center
         self.edgePoint = edgePoint
