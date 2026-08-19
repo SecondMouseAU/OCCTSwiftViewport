@@ -30,8 +30,11 @@ public struct GestureConfiguration: Sendable {
 
     // MARK: - Orbit direction
 
-    /// Invert horizontal orbit: a left/right drag rotates the model the opposite way. Some users expect
-    /// "grab the model and drag it" (object follows the finger) rather than the camera orbiting around it.
+    /// Inverts horizontal orbit, so a left or right drag turns the model the opposite way.
+    ///
+    /// Which direction feels correct is a user expectation, not a correctness question: some
+    /// people read the gesture as "grab the model and drag it", with the object following the
+    /// finger, rather than as the camera orbiting around a stationary model.
     public var invertOrbitHorizontal: Bool
 
     /// Invert vertical orbit (up/down drag).
@@ -168,7 +171,7 @@ public struct GestureConfiguration: Sendable {
 
     /// Resolves the action for a pointer drag given the active modifier keys.
     ///
-    /// Priority — matching the historical macOS handler — is
+    /// Priority, matching the historical macOS handler, is
     /// command → shift → option → unmodified. This is the portable interpretation
     /// seam: platform code bridges its native modifier flags into
     /// `ViewportModifierKeys` (see its `init(_:)` overloads) and calls this, so the

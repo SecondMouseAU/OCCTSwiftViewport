@@ -4,9 +4,9 @@
 // Camera controller implementing orbit, pan, and zoom with support for
 // arcball and turntable rotation styles.
 
+import Combine
 import Foundation
 import simd
-import Combine
 
 /// Controls camera movement in a 3D viewport.
 ///
@@ -157,7 +157,8 @@ public final class CameraController: ObservableObject {
     private func orbitArcball(deltaX: Float, deltaY: Float) {
         // Project points onto virtual sphere
         let p1 = projectOntoArcball(x: 0, y: 0)
-        let p2 = projectOntoArcball(x: -deltaX * orbitSensitivity * 100, y: deltaY * orbitSensitivity * 100)
+        let p2 = projectOntoArcball(
+            x: -deltaX * orbitSensitivity * 100, y: deltaY * orbitSensitivity * 100)
 
         // Calculate rotation quaternion from p1 to p2
         let axis = simd_cross(p1, p2)
@@ -198,7 +199,7 @@ public final class CameraController: ObservableObject {
         // Horizontal rotation around Z axis
         theta -= deltaX * orbitSensitivity
 
-        // Vertical tilt — unclamped for full 360° rotation
+        // Vertical tilt: unclamped for full 360° rotation
         phi -= deltaY * orbitSensitivity
         // Wrap phi to [0, 2π) for clean cycling
         let twoPi = Float.pi * 2
@@ -266,16 +267,19 @@ public final class CameraController: ObservableObject {
     ///   - delta: Scroll delta (positive = zoom in)
     ///   - cursorNormalized: Cursor position in normalized coordinates (−1…+1), or `nil` for center zoom
     ///   - aspectRatio: View aspect ratio (width / height)
-    public func scrollZoom(delta: Float, cursorNormalized: SIMD2<Float>? = nil, aspectRatio: Float = 1.0) {
+    public func scrollZoom(
+        delta: Float, cursorNormalized: SIMD2<Float>? = nil, aspectRatio: Float = 1.0
+    ) {
         // Exponential mapping: smooth, symmetric (in/out cancel), and never produces a non-positive
         // factor. The old linear 1 + delta·k jumped wildly on precise-trackpad pixel deltas.
         let factor = exp(delta * scrollZoomSensitivity)
         zoomToward(factor: factor, cursorNormalized: cursorNormalized, aspectRatio: aspectRatio)
     }
 
-    /// Zooms by `factor`, keeping the world point under `cursorNormalized` (NDC −1…+1) stationary —
-    /// pinch-at-fingers / zoom-at-cursor. `nil` cursor = plain centre zoom.
-    public func zoomToward(factor: Float, cursorNormalized: SIMD2<Float>?, aspectRatio: Float = 1.0) {
+    /// Zooms by `factor`, keeping the world point under `cursorNormalized` (NDC −1…+1) stationary
+    /// (pinch-at-fingers / zoom-at-cursor). `nil` cursor = plain centre zoom.
+    public func zoomToward(factor: Float, cursorNormalized: SIMD2<Float>?, aspectRatio: Float = 1.0)
+    {
         guard factor > 0 else { return }
 
         let oldDistance = cameraState.distance
@@ -461,7 +465,8 @@ public final class CameraController: ObservableObject {
 
     private func angleTo(standardView view: StandardView) -> Float {
         let targetRotation = view.rotation
-        let dot = abs(simd_dot(simd_normalize(cameraState.rotation), simd_normalize(targetRotation)))
+        let dot = abs(
+            simd_dot(simd_normalize(cameraState.rotation), simd_normalize(targetRotation)))
         return 2.0 * acos(min(1.0, dot))
     }
 
@@ -473,14 +478,14 @@ public final class CameraController: ObservableObject {
         let forward = cameraState.rotation.act(SIMD3<Float>(0, 0, 1))
 
         // Phi is angle from Z axis (acos gives [0, pi])
-        // We accept the [0, pi] range here — continuous dragging maintains
+        // We accept the [0, pi] range here, since continuous dragging maintains
         // the full phi via incremental updates in orbitTurntable.
         phi = acos(simd_clamp(forward.z, -1, 1))
 
         // Theta is angle in XY plane
         theta = atan2(forward.y, forward.x)
 
-        // Reset roll — standard views have no roll, and extracting roll
+        // Reset roll: standard views have no roll, and extracting roll
         // from an arbitrary quaternion is fragile.
         rollAngle = 0
     }
@@ -504,7 +509,8 @@ public final class CameraController: ObservableObject {
         guard animationTimer == nil else { return }
 
         lastUpdateTime = Date.timeIntervalSinceReferenceDate
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) {
+            [weak self] _ in
             Task { @MainActor in
                 self?.updateAnimation()
             }
@@ -542,7 +548,9 @@ public final class CameraController: ObservableObject {
 
         // Inertia update
         if simd_length(angularVelocity) > 0.001 {
-            orbit(deltaX: angularVelocity.x * deltaTime * 60, deltaY: angularVelocity.y * deltaTime * 60)
+            orbit(
+                deltaX: angularVelocity.x * deltaTime * 60,
+                deltaY: angularVelocity.y * deltaTime * 60)
             angularVelocity *= (1.0 - dampingFactor)
             needsContinue = true
         } else {

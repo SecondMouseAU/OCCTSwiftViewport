@@ -18,8 +18,8 @@ public struct RaycastHit: Sendable {
 /// CPU-side raycasting against viewport geometry.
 ///
 /// Uses a two-phase approach:
-/// 1. **Broadphase** — ray-AABB test for each visible body
-/// 2. **Narrowphase** — Moller-Trumbore triangle intersection on surviving bodies
+/// 1. **Broadphase**: ray-AABB test for each visible body
+/// 2. **Narrowphase**: Moller-Trumbore triangle intersection on surviving bodies
 public enum SceneRaycast {
 
     /// Casts a ray against the given bodies.

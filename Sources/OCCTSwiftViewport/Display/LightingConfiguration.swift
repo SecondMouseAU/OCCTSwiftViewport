@@ -86,28 +86,36 @@ public struct LightingConfiguration: Sendable {
     /// PCSS blocker search radius in light-space UV.
     public var shadowSearchRadius: Float
 
-    /// Environment map HDR data (equirectangular), or nil for procedural sky.
-    /// Legacy raw-bytes path: `Int32 width | Int32 height | RGBA32Float pixels`.
-    /// Prefer `environmentMapURL` for `.hdr` files.
+    /// Equirectangular environment map as raw bytes, or nil to fall back to the procedural sky.
+    ///
+    /// The legacy in-memory path, laid out as `Int32 width | Int32 height | RGBA32Float pixels`.
+    /// Prefer `environmentMapURL` for `.hdr` files, which decodes them for you.
     public var environmentMapData: Data?
 
-    /// File URL for an HDR environment map. Loaded via `HDRLoader` (Radiance `.hdr`).
-    /// Takes precedence over `environmentMapData` when set.
+    /// File URL of a Radiance `.hdr` environment map, decoded through `HDRLoader`.
+    ///
+    /// Takes precedence over `environmentMapData` when both are set.
     public var environmentMapURL: URL?
 
-    /// Environment map intensity multiplier — scales IBL contribution to lighting.
+    /// Environment map intensity multiplier, scaling the IBL contribution to lighting.
     public var environmentIntensity: Float
 
-    /// Y-axis rotation of the environment in radians. Rotates reflection/lighting only,
-    /// not scene geometry. Range typically 0…2π.
+    /// Y-axis rotation of the environment, in radians.
+    ///
+    /// Turns the reflections and image-based lighting without moving scene geometry, so it
+    /// aims the environment rather than the model. Typically 0...2π.
     public var environmentRotationY: Float
 
-    /// Exposure for the visible background (sky). Independent of `environmentIntensity`
-    /// so the background can be darkened to a black product-shot while lighting persists.
+    /// Exposure of the visible sky background, separate from how brightly it lights the scene.
+    ///
+    /// Independent of `environmentIntensity`, so the background can be pulled down to a black
+    /// product-shot backdrop while the environment keeps lighting the model.
     public var backgroundExposure: Float
 
-    /// Whether to draw the environment as a skybox background.
-    /// Off: use solid clear colour. On: cubemap is rendered as the background.
+    /// Whether the environment is drawn as a skybox behind the scene.
+    ///
+    /// When off, the background is the solid clear colour instead; the cubemap still lights
+    /// the scene either way.
     public var drawBackground: Bool
 
     // MARK: - Initialization
@@ -296,7 +304,10 @@ public enum LightType: Sendable, Equatable {
 
 /// Settings for a single light source.
 public struct LightSettings: Sendable {
-    /// Direction the light is pointing (normalized). For point lights, ignored.
+    /// Normalized direction the light points, for directional lights.
+    ///
+    /// Ignored for `.point` lights, which take their direction from the light position
+    /// relative to each shaded fragment.
     public var direction: SIMD3<Float>
 
     /// Light intensity (0-2 typical range).

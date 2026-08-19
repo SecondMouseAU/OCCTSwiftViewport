@@ -26,16 +26,22 @@ final class EnvironmentMapManager {
     init(device: MTLDevice, library: MTLLibrary) {
         self.device = device
 
-        self.equirectToCubePipeline = Self.makeComputePipeline(device: device, library: library, name: "equirect_to_cubemap")
-        self.prefilterPipeline = Self.makeComputePipeline(device: device, library: library, name: "prefilter_environment")
-        self.irradiancePipeline = Self.makeComputePipeline(device: device, library: library, name: "irradiance_convolution")
-        self.brdfPipeline = Self.makeComputePipeline(device: device, library: library, name: "brdf_integration")
+        self.equirectToCubePipeline = Self.makeComputePipeline(
+            device: device, library: library, name: "equirect_to_cubemap")
+        self.prefilterPipeline = Self.makeComputePipeline(
+            device: device, library: library, name: "prefilter_environment")
+        self.irradiancePipeline = Self.makeComputePipeline(
+            device: device, library: library, name: "irradiance_convolution")
+        self.brdfPipeline = Self.makeComputePipeline(
+            device: device, library: library, name: "brdf_integration")
 
         // Pre-generate BRDF LUT (resolution-independent, only needs to be done once)
         generateBRDFLUT(commandQueue: device.makeCommandQueue()!)
     }
 
-    private static func makeComputePipeline(device: MTLDevice, library: MTLLibrary, name: String) -> MTLComputePipelineState? {
+    private static func makeComputePipeline(device: MTLDevice, library: MTLLibrary, name: String)
+        -> MTLComputePipelineState?
+    {
         guard let function = library.makeFunction(name: name) else { return nil }
         return try? device.makeComputePipelineState(function: function)
     }
@@ -46,8 +52,11 @@ final class EnvironmentMapManager {
         irradianceMap = nil
     }
 
-    /// Loads equirectangular HDR data and generates all IBL textures.
-    /// Expects `Int32 width | Int32 height | RGBA32Float pixels` byte layout.
+    /// Loads equirectangular HDR bytes and derives the cubemap and both IBL textures from them.
+    ///
+    /// Expects the `Int32 width | Int32 height | RGBA32Float pixels` layout. Data too short to
+    /// hold that 8-byte header is ignored: the call returns silently and the existing textures
+    /// are left as they were.
     func loadEquirectangular(data: Data, commandQueue: MTLCommandQueue) {
         guard data.count > 8 else { return }
 
@@ -81,12 +90,15 @@ final class EnvironmentMapManager {
         generateCubeMap(from: eqTexture, size: cubeSize, commandQueue: commandQueue)
     }
 
-    /// Loads an HDR file from disk. Currently supports Radiance `.hdr` (RGBE).
-    /// Throws on parse failure; on success, populates cubeMap, prefilteredSpecularMap,
-    /// and irradianceMap.
+    /// Loads a Radiance `.hdr` (RGBE) file from disk and builds the IBL textures from it.
+    ///
+    /// On success `cubeMap`, `prefilteredSpecularMap` and `irradianceMap` are all populated.
+    /// Parse failures propagate out of `HDRLoader` before any texture is touched, so the
+    /// previously loaded environment survives a bad file.
     func loadHDR(url: URL, commandQueue: MTLCommandQueue) throws {
         let (width, height, pixels) = try HDRLoader.loadFromURL(url)
-        loadEquirectangular(width: width, height: height, pixels: pixels, commandQueue: commandQueue)
+        loadEquirectangular(
+            width: width, height: height, pixels: pixels, commandQueue: commandQueue)
     }
 
     /// Loads pre-decoded equirectangular RGBA32Float pixels into the IBL pipeline.
@@ -121,7 +133,9 @@ final class EnvironmentMapManager {
         generateCubeMap(from: eqTexture, size: cubeSize, commandQueue: commandQueue)
     }
 
-    private func generateCubeMap(from equirect: MTLTexture, size: Int, commandQueue: MTLCommandQueue) {
+    private func generateCubeMap(
+        from equirect: MTLTexture, size: Int, commandQueue: MTLCommandQueue
+    ) {
         guard let pipeline = equirectToCubePipeline else { return }
 
         // Create cube map
@@ -136,7 +150,8 @@ final class EnvironmentMapManager {
         self.cubeMap = cube
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+            let encoder = commandBuffer.makeComputeCommandEncoder()
+        else { return }
 
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(equirect, index: 0)
@@ -187,15 +202,18 @@ final class EnvironmentMapManager {
             let roughness = Float(mip) / Float(mipLevels - 1)
 
             // Create a view for this mip level
-            guard let mipView = prefiltered.makeTextureView(
-                pixelFormat: .rgba16Float,
-                textureType: .typeCube,
-                levels: mip..<(mip + 1),
-                slices: 0..<6
-            ) else { continue }
+            guard
+                let mipView = prefiltered.makeTextureView(
+                    pixelFormat: .rgba16Float,
+                    textureType: .typeCube,
+                    levels: mip..<(mip + 1),
+                    slices: 0..<6
+                )
+            else { continue }
 
             guard let commandBuffer = commandQueue.makeCommandBuffer(),
-                  let encoder = commandBuffer.makeComputeCommandEncoder() else { continue }
+                let encoder = commandBuffer.makeComputeCommandEncoder()
+            else { continue }
 
             encoder.setComputePipelineState(pipeline)
             encoder.setTexture(cube, index: 0)
@@ -232,7 +250,8 @@ final class EnvironmentMapManager {
         self.irradianceMap = irr
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+            let encoder = commandBuffer.makeComputeCommandEncoder()
+        else { return }
 
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(cube, index: 0)
@@ -266,7 +285,8 @@ final class EnvironmentMapManager {
         self.brdfLUT = lut
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+            let encoder = commandBuffer.makeComputeCommandEncoder()
+        else { return }
 
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(lut, index: 0)

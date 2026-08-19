@@ -2,6 +2,29 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.1.31] - 2026-08-19
+
+### Changed
+- **The code-style exemption manifest is now empty, so the style gate covers the whole of
+  `Sources/OCCTSwiftViewport` unconditionally** (issue #113, completing the #95 rollout).
+  `scripts/style-manifest-swift.txt` was a gradual-rollout exemption list that only ever shrinks;
+  v1.1.30 discharged 2 of its 48 entries and this release discharges the remaining 46. Nothing is
+  grandfathered back onto it: new code complies from creation.
+  - **No behaviour change, and no API change.** The 46 files were run through
+    `swift-format format`, which cleared 887 of their 954 `--strict` diagnostics. Every remaining
+    code-token difference comes from one of five mechanical rules (`DoNotUseSemicolons`,
+    `TrailingComma`, `OneVariableDeclarationPerLine`, `UseLetInEveryBoundCaseVariable`,
+    `OrderedImports`), verified by stripping comments and whitespace and diffing what was left.
+    The test suite is unchanged in count and result.
+  - **65 hand-written doc-comment summaries**, which `swift-format` cannot generate. Several
+    record behaviour that was previously undocumented: `ViewportBody.vertexColors` falls back to
+    the body colour on a length mismatch as well as when empty; `ViewportBody.usesDirectMesh`
+    quietly takes the interleaved path when only half-populated; `PickResult.init?` has three
+    distinct failure cases, not the two its old `- Returns:` tag listed; and
+    `NavigationCube.region(at:)` also returns `nil` for a widget too small for its own padding.
+  - `PBRMaterial.presets` documented its keys as "lowercase identifiers"; they are lowerCamelCase
+    (`brushedAluminum`, `chromedSteel`). The doc now matches the table.
+
 ## [1.1.30] - 2026-08-19
 
 ### Changed

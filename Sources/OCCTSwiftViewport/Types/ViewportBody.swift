@@ -9,8 +9,8 @@ import simd
 ///
 /// `.geometry` participates in normal depth testing. `.overlay` is drawn after the
 /// selection outline pass with an always-pass depth state, so the body is visible
-/// even when occluded by other geometry — used by manipulator widgets and similar
-/// always-on-top UI affordances.
+/// even when occluded by other geometry, which is what manipulator widgets and similar
+/// always-on-top UI affordances need.
 public enum RenderLayer: Hashable, Sendable {
     case geometry
     case overlay
@@ -31,8 +31,8 @@ public enum PickLayer: Hashable, Sendable {
 ///
 /// Existing bodies default to `.mesh` (vertexData + indices + optional edges),
 /// so this is source-compatible. `.point` switches the body to a point-cloud
-/// pass that draws `vertices` as visible point sprites — `vertexData`/`indices`
-/// are ignored. `.wire` is reserved for an explicit wire-only intent; today
+/// pass that draws `vertices` as visible point sprites, ignoring `vertexData` and
+/// `indices`. `.wire` is reserved for an explicit wire-only intent; today
 /// such bodies render through the existing edge-only path with `.mesh` and
 /// `.wire` is treated identically by the renderer.
 ///
@@ -51,13 +51,15 @@ public enum BodyPrimitiveKind: Sendable, Hashable {
 /// (16 bytes × triangle count) and gives the renderer a uniform layout for
 /// `[[primitive_id]]`-indexed lookup.
 public struct TriangleStyle: Hashable, Sendable {
-    /// RGBA. Alpha 0 means "no highlight"; alpha > 0 composites color over the
-    /// base shading at that triangle.
+    /// Highlight colour composited over the triangle's base shading, in linear RGBA.
+    ///
+    /// Alpha doubles as the on/off switch: 0 leaves the triangle untouched, and any alpha
+    /// above 0 composites this colour over the base shading at that triangle.
     public var color: SIMD4<Float>
 
     public init(color: SIMD4<Float> = .zero) { self.color = color }
 
-    /// No highlight — alpha is 0, so the renderer skips this triangle.
+    /// The no-op style: alpha is 0, so the renderer skips this triangle.
     public static let none = TriangleStyle(color: .zero)
 }
 
@@ -73,8 +75,10 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Unique identifier for this body.
     public var id: String
 
-    /// Generation tag — each `ViewportBody.init` gets a unique value.
-    /// Used by the renderer to detect geometry changes.
+    /// Monotonic tag that changes every time a body is initialised.
+    ///
+    /// Each `ViewportBody.init` call takes the next value, so the renderer can compare
+    /// generations to decide whether the GPU buffers it cached for this `id` are stale.
     public let generation: UInt64
 
     /// Interleaved vertex data: [px, py, pz, nx, ny, nz, ...] with stride 6.
@@ -83,44 +87,57 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Triangle indices for shaded rendering.
     public var indices: [UInt32]
 
-    /// Polylines for wireframe rendering. Each inner array is a connected polyline.
+    /// Pre-sampled polylines drawn by the wireframe and edge passes, in body-local space.
+    ///
+    /// Each inner array is one connected polyline, so its points are consecutive rather
+    /// than paired per segment. Sampling is fixed when the body is built, unlike `arcs`.
     public var edges: [[SIMD3<Float>]]
 
-    /// Analytic arc/circle feature edges, in body-local space (issue #48). Unlike
-    /// `edges` (pre-sampled polylines), these are tessellated to line segments by
-    /// the renderer **adaptively to projected size each frame**, so they stay
-    /// smooth at any zoom independent of mesh density. Empty by default.
+    /// Analytic arc and circle feature edges, in body-local space (issue #48).
+    ///
+    /// Unlike `edges` (pre-sampled polylines), these are tessellated to line segments by
+    /// the renderer **adaptively to projected size each frame**, so they stay smooth at
+    /// any zoom independent of mesh density. Empty by default.
     public var arcs: [ViewportArc]
 
-    /// Per-triangle source face index. Parallel to triangle count (`indices.count / 3`).
-    /// Maps each triangle back to its B-Rep face for sub-body selection. Empty if not applicable.
+    /// Maps each triangle back to the B-Rep face it was tessellated from, for face selection.
+    ///
+    /// Parallel to the triangle count (`indices.count / 3`). Empty when the body has no
+    /// B-Rep provenance, which leaves it pickable only as a whole.
     public var faceIndices: [Int32]
 
-    /// Per-line-segment source-edge index. Parallel to the line primitives in
-    /// `edges` flattened ([poly0.seg0, poly0.seg1, ..., poly1.seg0, ...]). Maps
-    /// a picked edge segment back to its B-Rep edge for selection. Empty if not
-    /// applicable — in which case the body is not edge-pickable.
+    /// Maps each drawn line segment back to the B-Rep edge it came from, for edge selection.
+    ///
+    /// Parallel to the line primitives of `edges` flattened
+    /// (`[poly0.seg0, poly0.seg1, ..., poly1.seg0, ...]`). Empty leaves the body not
+    /// edge-pickable.
     public var edgeIndices: [Int32]
 
-    /// Optional point list rendered as point sprites in the pick pass for
-    /// vertex picking. Each entry is one B-Rep vertex position. Empty if not
-    /// applicable — in which case the body is not vertex-pickable.
+    /// B-Rep vertex positions, drawn as point sprites in the pick pass so vertices can be picked.
+    ///
+    /// Each entry is one vertex position in body-local space. Empty leaves the body not
+    /// vertex-pickable. Doubles as the bounding-box source for point-cloud bodies, which
+    /// carry no `vertexData`.
     public var vertices: [SIMD3<Float>]
 
-    /// Per-point source-vertex index. Parallel to `vertices`. Maps a picked
-    /// point back to its B-Rep vertex. Empty defaults to identity (i.e. the
-    /// pick result's `primitiveIndex` is the vertex index directly).
+    /// Maps each entry of `vertices` back to its B-Rep vertex index, for vertex selection.
+    ///
+    /// Parallel to `vertices`. Empty means identity, so a pick result's `primitiveIndex` is
+    /// already the vertex index.
     public var vertexIndices: [Int32]
 
-    /// Optional per-point colour, parallel to `vertices`. Empty (default)
-    /// means every point uses `color`. Only consumed by the point-cloud
-    /// rendering pass (`primitiveKind == .point`).
+    /// Per-point colour for point-cloud bodies, parallel to `vertices`.
+    ///
+    /// Empty (the default), or any count that does not match `vertices`, falls back to the
+    /// body's `color` for every point. Read only by the point-cloud pass, so it has no
+    /// effect unless `primitiveKind` is `.point`.
     public var vertexColors: [SIMD4<Float>]
 
-    /// World-space radius for each point sprite when rendered as a point
-    /// cloud. Projected to a screen-space pixel size at draw time. Clamped
-    /// to a minimum of 1 px and a maximum of 64 px (Apple's `[[point_size]]`
-    /// limit) by the shader.
+    /// Radius of each point sprite in world units, for point-cloud bodies.
+    ///
+    /// Projected to a screen-space pixel size at draw time, then clamped by the shader to
+    /// between 1 px and 64 px (Apple's `[[point_size]]` limit), so points stop tracking the
+    /// world-space radius once they hit either end of that range.
     public var pointRadius: Float
 
     /// What primitive the renderer should draw this body as. `.mesh`
@@ -129,8 +146,10 @@ public struct ViewportBody: Identifiable, Sendable {
     /// edge buffers.
     public var primitiveKind: BodyPrimitiveKind
 
-    /// Per-triangle highlight style. Empty (default) = no highlight pass for
-    /// this body. When populated, `count == indices.count / 3`.
+    /// Per-triangle highlight overlay, e.g. to tint the triangles of a selected face.
+    ///
+    /// Empty (the default) skips the highlight pass for this body entirely. When populated,
+    /// `count == indices.count / 3`.
     ///
     /// Set entries to non-zero-alpha colors to highlight specific triangles
     /// (e.g., the triangles of a selected face). The renderer composites the
@@ -142,28 +161,37 @@ public struct ViewportBody: Identifiable, Sendable {
     /// (vertex / index / edge / point buffers) is preserved.
     public var triangleStyles: [TriangleStyle]
 
-    /// Body colour (RGBA). Used as the base colour fallback when `material` is nil.
+    /// Base colour in linear RGBA, used for shading when no `material` is set.
+    ///
+    /// The alpha channel doubles as opacity: any value below 1 moves the body out of the
+    /// opaque pass into the depth-sorted transparent one (issue #53).
     public var color: SIMD4<Float>
 
-    /// Surface roughness (0 = mirror, 1 = fully rough). Default 0.5.
-    /// Ignored when `material` is set.
+    /// Perceptual surface roughness, from 0 (mirror) to 1 (fully rough); defaults to 0.5.
+    ///
+    /// Ignored when `material` is set, since `PBRMaterial` carries its own roughness.
     public var roughness: Float
 
-    /// Metallic factor (0 = dielectric, 1 = metal). Default 0.0.
-    /// Ignored when `material` is set.
+    /// Metalness, from 0 (dielectric) to 1 (metal); defaults to 0.
+    ///
+    /// Ignored when `material` is set, since `PBRMaterial` carries its own metallic factor.
     public var metallic: Float
 
-    /// Optional full PBR material. When set, overrides `color`/`roughness`/`metallic`
-    /// and enables clearcoat, IOR-driven F0, and emission.
+    /// Full PBR material, superseding the simpler `color`/`roughness`/`metallic` triple.
+    ///
+    /// Setting it unlocks what those three cannot express: clearcoat, IOR-driven F0, and
+    /// emission. Read it through `effectiveMaterial` rather than directly, so the fallback
+    /// to the legacy fields stays in one place.
     public var material: PBRMaterial?
 
     /// Whether this body should be rendered.
     public var isVisible: Bool
 
-    /// Whether this body participates in GPU picking (issue #63). When `false` the
-    /// body is still drawn but excluded from the pick buffer, so it never wins a
-    /// pick over the geometry behind it — useful for always-on-top reference bodies
-    /// (datum/ground planes, overlays) that shouldn't steal face/edge/vertex picks.
+    /// Whether this body is written to the pick buffer, and so can be picked at all (issue #63).
+    ///
+    /// When `false` the body is still drawn, just left out of the pick pass, so it never wins
+    /// a pick over the geometry behind it. Intended for always-on-top reference bodies (datum
+    /// and ground planes, overlays) that should not steal face, edge or vertex picks.
     public var isPickable: Bool
 
     /// Render-time layer. `.overlay` bodies are drawn always-on-top.
@@ -173,26 +201,35 @@ public struct ViewportBody: Identifiable, Sendable {
     /// `ViewportController.widgetPickResult` instead of `pickResult`.
     public var pickLayer: PickLayer
 
-    /// Per-body model transform. Applied as an additional matrix on top of the
-    /// scene model matrix in the vertex shader, so the renderer can move a body
-    /// (e.g., during a manipulator drag) without re-uploading vertex data.
+    /// Model matrix applied to this body alone, on top of the scene-wide model matrix.
+    ///
+    /// Multiplied in the vertex shader, so moving a body (during a manipulator drag, say)
+    /// costs a uniform update rather than a re-upload of its vertex data.
     public var transform: simd_float4x4
 
-    /// **Direct-mesh path (Option A spike).** De-interleaved triangle positions, stride 3
-    /// (`[px, py, pz, …]`). When non-empty alongside `meshNormals`, the renderer uploads these
-    /// straight to GPU buffers and skips the interleaved `vertexData`, so geometry coming from a
-    /// kernel that already holds separate position/normal arrays (e.g. OCCT's `Poly_Triangulation`,
-    /// surfaced as `Mesh.metalBufferData()`) renders without a CPU interleave/repack. Empty for the
-    /// normal interleaved path.
+    /// De-interleaved triangle positions for the direct-mesh path, stride 3 (`[px, py, pz, …]`).
+    ///
+    /// Part of the Option A spike. When non-empty alongside `meshNormals`, the renderer uploads
+    /// these straight to GPU buffers and skips the interleaved `vertexData`, so geometry from a
+    /// kernel that already holds separate position/normal arrays (e.g. OCCT's
+    /// `Poly_Triangulation`, surfaced as `Mesh.metalBufferData()`) renders without a CPU
+    /// interleave/repack. Empty for the normal interleaved path.
     public var meshPositions: [Float]
 
-    /// **Direct-mesh path (Option A spike).** De-interleaved per-vertex normals, stride 3, parallel
-    /// to `meshPositions`. See ``meshPositions``.
+    /// De-interleaved per-vertex normals for the direct-mesh path, stride 3.
+    ///
+    /// Parallel to `meshPositions`, and has to match it in length for the direct-mesh path to
+    /// engage at all. See ``meshPositions``.
     public var meshNormals: [Float]
 
-    /// True when this body carries de-interleaved position/normal arrays for the direct-mesh render
-    /// path (rather than interleaved `vertexData`). See ``meshPositions``.
-    public var usesDirectMesh: Bool { !meshPositions.isEmpty && meshNormals.count == meshPositions.count }
+    /// Whether the renderer takes the direct-mesh path for this body instead of `vertexData`.
+    ///
+    /// True only when `meshPositions` is non-empty *and* `meshNormals` matches it in length, so
+    /// a half-populated body silently falls back to the interleaved path rather than failing.
+    /// See ``meshPositions``.
+    public var usesDirectMesh: Bool {
+        !meshPositions.isEmpty && meshNormals.count == meshPositions.count
+    }
 
     public init(
         id: String,
@@ -253,13 +290,14 @@ public struct ViewportBody: Identifiable, Sendable {
 
 extension ViewportBody {
 
-    /// Build a body from **de-interleaved** position/normal/index arrays — the shape a geometry
-    /// kernel already produces (e.g. OCCT's `Mesh.vertexData` / `.normalData` / `.indices`), so no
-    /// CPU interleave/repack is needed before upload. The renderer detects ``usesDirectMesh`` and
-    /// uploads `positions`/`normals` to separate GPU buffers.
+    /// Builds a body from de-interleaved position/normal/index arrays, skipping the CPU repack.
+    ///
+    /// This is the shape a geometry kernel already produces (e.g. OCCT's `Mesh.vertexData`,
+    /// `.normalData` and `.indices`), so nothing needs interleaving before upload: the renderer
+    /// detects ``usesDirectMesh`` and uploads `positions`/`normals` to separate GPU buffers.
     ///
     /// `positions` and `normals` are stride-3 (`[x, y, z, …]`) and must be the same length.
-    /// `vertices` (for bounding box / fit / CPU picking) is derived from `positions`.
+    /// `vertices` (for bounding box, fit and CPU picking) is derived from `positions`.
     public static func directMesh(
         id: String,
         positions: [Float],
@@ -300,9 +338,11 @@ extension ViewportBody {
 
 extension ViewportBody {
 
-    /// Returns `material` if set, otherwise a `PBRMaterial` derived from the
-    /// legacy `color`/`roughness`/`metallic` fields. The renderer should call
-    /// this rather than reading either source directly.
+    /// The material to shade this body with, resolving material-versus-legacy-fields in one place.
+    ///
+    /// Returns `material` when set, and otherwise synthesises a `PBRMaterial` from the legacy
+    /// `color`/`roughness`/`metallic` fields, mapping `color.w` to opacity. Renderers should
+    /// read this rather than either source directly.
     public var effectiveMaterial: PBRMaterial {
         if let material { return material }
         return PBRMaterial(

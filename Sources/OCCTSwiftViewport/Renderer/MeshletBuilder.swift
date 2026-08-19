@@ -5,26 +5,30 @@
 // Each meshlet is a group of triangles sharing vertices, with bounding sphere
 // and normal cone for per-meshlet frustum and backface culling.
 
-import simd
 @preconcurrency import Metal
+import simd
 
-/// Maximum vertices and triangles per meshlet.
-/// These match the mesh shader threadgroup output limits.
+/// Maximum vertices per meshlet.
+///
+/// This and `kMeshletMaxTriangles` match the mesh shader's threadgroup output limits, so one
+/// meshlet always fits in a single threadgroup's output.
 let kMeshletMaxVertices: Int = 64
 let kMeshletMaxTriangles: Int = 64
 
-/// Descriptor for a single meshlet, uploaded to GPU.
-/// Must match the Metal shader struct layout (all packed for alignment).
+/// Descriptor for a single meshlet, uploaded to the GPU as raw bytes.
+///
+/// Field order and packing have to match the Metal shader's struct layout, so reordering
+/// members here silently corrupts what the shader reads back.
 struct MeshletDescriptor {
-    var center: SIMD3<Float>        // Bounding sphere center
-    var radius: Float               // Bounding sphere radius
-    var coneAxis: SIMD3<Float>      // Normal cone axis (average normal)
-    var coneCutoff: Float           // cos(cone half-angle), < 0 means no backface cull
-    var vertexOffset: UInt32        // Offset into meshlet vertex index buffer
-    var vertexCount: UInt32         // Number of unique vertices in this meshlet
-    var triangleOffset: UInt32      // Offset into meshlet triangle index buffer
-    var triangleCount: UInt32       // Number of triangles in this meshlet
-    var faceIndexFirst: Int32       // Face index of first triangle (for picking)
+    var center: SIMD3<Float>  // Bounding sphere center
+    var radius: Float  // Bounding sphere radius
+    var coneAxis: SIMD3<Float>  // Normal cone axis (average normal)
+    var coneCutoff: Float  // cos(cone half-angle), < 0 means no backface cull
+    var vertexOffset: UInt32  // Offset into meshlet vertex index buffer
+    var vertexCount: UInt32  // Number of unique vertices in this meshlet
+    var triangleOffset: UInt32  // Offset into meshlet triangle index buffer
+    var triangleCount: UInt32  // Number of triangles in this meshlet
+    var faceIndexFirst: Int32  // Face index of first triangle (for picking)
     var _pad0: Int32 = 0
     var _pad1: Int32 = 0
     var _pad2: Int32 = 0
@@ -33,10 +37,10 @@ struct MeshletDescriptor {
 
 /// Per-body meshlet data uploaded to GPU.
 struct MeshletBuffers {
-    let descriptorBuffer: MTLBuffer    // MeshletDescriptor per meshlet
-    let vertexIndexBuffer: MTLBuffer   // UInt32: global vertex indices (meshlet-local → global)
-    let triangleIndexBuffer: MTLBuffer // UInt8: meshlet-local triangle indices (3 per tri)
-    let faceIndexBuffer: MTLBuffer     // Int32: per-triangle face index for picking
+    let descriptorBuffer: MTLBuffer  // MeshletDescriptor per meshlet
+    let vertexIndexBuffer: MTLBuffer  // UInt32: global vertex indices (meshlet-local → global)
+    let triangleIndexBuffer: MTLBuffer  // UInt8: meshlet-local triangle indices (3 per tri)
+    let faceIndexBuffer: MTLBuffer  // Int32: per-triangle face index for picking
     let meshletCount: Int
 }
 
@@ -61,14 +65,14 @@ enum MeshletBuilder {
         guard triangleCount > 0, faceIndices.count >= triangleCount else { return nil }
 
         var meshlets: [MeshletDescriptor] = []
-        var allVertexIndices: [UInt32] = []      // Global vertex indices
-        var allTriangleIndices: [UInt8] = []      // Meshlet-local triangle indices
-        var allFaceIndices: [Int32] = []           // Per-triangle face index
+        var allVertexIndices: [UInt32] = []  // Global vertex indices
+        var allTriangleIndices: [UInt8] = []  // Meshlet-local triangle indices
+        var allFaceIndices: [Int32] = []  // Per-triangle face index
 
         // Greedy meshlet construction
         var usedTriangles = [Bool](repeating: false, count: triangleCount)
-        var currentVertices: [UInt32] = []         // Global vertex indices in current meshlet
-        var vertexMap: [UInt32: UInt8] = [:]       // Global → local index
+        var currentVertices: [UInt32] = []  // Global vertex indices in current meshlet
+        var vertexMap: [UInt32: UInt8] = [:]  // Global → local index
         var currentTriangles: [(UInt8, UInt8, UInt8)] = []
         var currentFaceIndices: [Int32] = []
 
@@ -76,8 +80,12 @@ enum MeshletBuilder {
             guard !currentTriangles.isEmpty else { return }
 
             // Compute bounding sphere
-            var minP = SIMD3<Float>(Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude)
-            var maxP = SIMD3<Float>(-Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude)
+            var minP = SIMD3<Float>(
+                Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude,
+                Float.greatestFiniteMagnitude)
+            var maxP = SIMD3<Float>(
+                -Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude,
+                -Float.greatestFiniteMagnitude)
             var normalSum = SIMD3<Float>.zero
 
             for gIdx in currentVertices {
@@ -95,7 +103,8 @@ enum MeshletBuilder {
             }
 
             // Normal cone
-            let avgNormal = simd_length(normalSum) > 1e-6 ? simd_normalize(normalSum) : SIMD3<Float>(0, 1, 0)
+            let avgNormal =
+                simd_length(normalSum) > 1e-6 ? simd_normalize(normalSum) : SIMD3<Float>(0, 1, 0)
             var minDot: Float = 1.0
             for gIdx in currentVertices {
                 let n = normal(vertexData, Int(gIdx))
@@ -176,29 +185,37 @@ enum MeshletBuilder {
         }
 
         // Create Metal buffers
-        guard let descBuf = device.makeBuffer(
-            bytes: meshlets,
-            length: meshlets.count * MemoryLayout<MeshletDescriptor>.stride,
-            options: .storageModeShared
-        ) else { return nil }
+        guard
+            let descBuf = device.makeBuffer(
+                bytes: meshlets,
+                length: meshlets.count * MemoryLayout<MeshletDescriptor>.stride,
+                options: .storageModeShared
+            )
+        else { return nil }
 
-        guard let viBuf = device.makeBuffer(
-            bytes: allVertexIndices,
-            length: allVertexIndices.count * MemoryLayout<UInt32>.size,
-            options: .storageModeShared
-        ) else { return nil }
+        guard
+            let viBuf = device.makeBuffer(
+                bytes: allVertexIndices,
+                length: allVertexIndices.count * MemoryLayout<UInt32>.size,
+                options: .storageModeShared
+            )
+        else { return nil }
 
-        guard let tiBuf = device.makeBuffer(
-            bytes: allTriangleIndices,
-            length: allTriangleIndices.count * MemoryLayout<UInt8>.size,
-            options: .storageModeShared
-        ) else { return nil }
+        guard
+            let tiBuf = device.makeBuffer(
+                bytes: allTriangleIndices,
+                length: allTriangleIndices.count * MemoryLayout<UInt8>.size,
+                options: .storageModeShared
+            )
+        else { return nil }
 
-        guard let fiBuf = device.makeBuffer(
-            bytes: allFaceIndices,
-            length: allFaceIndices.count * MemoryLayout<Int32>.size,
-            options: .storageModeShared
-        ) else { return nil }
+        guard
+            let fiBuf = device.makeBuffer(
+                bytes: allFaceIndices,
+                length: allFaceIndices.count * MemoryLayout<Int32>.size,
+                options: .storageModeShared
+            )
+        else { return nil }
 
         return MeshletBuffers(
             descriptorBuffer: descBuf,

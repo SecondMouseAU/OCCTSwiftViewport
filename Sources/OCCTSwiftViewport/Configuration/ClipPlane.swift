@@ -36,7 +36,8 @@ public struct ClipPlane: Sendable, Equatable {
     ///   - normal: Outward-facing normal (will be normalized).
     ///   - distance: Signed distance from origin.
     ///   - isEnabled: Whether the plane is active.
-    public init(normal: SIMD3<Float> = SIMD3(0, 1, 0), distance: Float = 0, isEnabled: Bool = true) {
+    public init(normal: SIMD3<Float> = SIMD3(0, 1, 0), distance: Float = 0, isEnabled: Bool = true)
+    {
         self.normal = simd_normalize(normal)
         self.distance = distance
         self.isEnabled = isEnabled

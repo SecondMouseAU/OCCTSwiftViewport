@@ -65,8 +65,8 @@ public enum ViewCubeRegion: String, CaseIterable, Sendable {
     public var isEdge: Bool {
         switch self {
         case .topFront, .topBack, .topLeft, .topRight,
-             .bottomFront, .bottomBack, .bottomLeft, .bottomRight,
-             .frontLeft, .frontRight, .backLeft, .backRight:
+            .bottomFront, .bottomBack, .bottomLeft, .bottomRight,
+            .frontLeft, .frontRight, .backLeft, .backRight:
             return true
         default:
             return false
@@ -77,7 +77,7 @@ public enum ViewCubeRegion: String, CaseIterable, Sendable {
     public var isCorner: Bool {
         switch self {
         case .topFrontLeft, .topFrontRight, .topBackLeft, .topBackRight,
-             .bottomFrontLeft, .bottomFrontRight, .bottomBackLeft, .bottomBackRight:
+            .bottomFrontLeft, .bottomFrontRight, .bottomBackLeft, .bottomBackRight:
             return true
         default:
             return false
@@ -163,29 +163,41 @@ public enum ViewCubeRegion: String, CaseIterable, Sendable {
 
         // Edges - combinations of two views
         case .topFront:
-            rotation = interpolateRotation(StandardView.top.rotation, StandardView.front.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.top.rotation, StandardView.front.rotation, 0.5)
         case .topBack:
-            rotation = interpolateRotation(StandardView.top.rotation, StandardView.back.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.top.rotation, StandardView.back.rotation, 0.5)
         case .topLeft:
-            rotation = interpolateRotation(StandardView.top.rotation, StandardView.left.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.top.rotation, StandardView.left.rotation, 0.5)
         case .topRight:
-            rotation = interpolateRotation(StandardView.top.rotation, StandardView.right.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.top.rotation, StandardView.right.rotation, 0.5)
         case .bottomFront:
-            rotation = interpolateRotation(StandardView.bottom.rotation, StandardView.front.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.bottom.rotation, StandardView.front.rotation, 0.5)
         case .bottomBack:
-            rotation = interpolateRotation(StandardView.bottom.rotation, StandardView.back.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.bottom.rotation, StandardView.back.rotation, 0.5)
         case .bottomLeft:
-            rotation = interpolateRotation(StandardView.bottom.rotation, StandardView.left.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.bottom.rotation, StandardView.left.rotation, 0.5)
         case .bottomRight:
-            rotation = interpolateRotation(StandardView.bottom.rotation, StandardView.right.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.bottom.rotation, StandardView.right.rotation, 0.5)
         case .frontLeft:
-            rotation = interpolateRotation(StandardView.front.rotation, StandardView.left.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.front.rotation, StandardView.left.rotation, 0.5)
         case .frontRight:
-            rotation = interpolateRotation(StandardView.front.rotation, StandardView.right.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.front.rotation, StandardView.right.rotation, 0.5)
         case .backLeft:
-            rotation = interpolateRotation(StandardView.back.rotation, StandardView.left.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.back.rotation, StandardView.left.rotation, 0.5)
         case .backRight:
-            rotation = interpolateRotation(StandardView.back.rotation, StandardView.right.rotation, 0.5)
+            rotation = interpolateRotation(
+                StandardView.back.rotation, StandardView.right.rotation, 0.5)
 
         // Corners - isometric-like views
         case .topFrontLeft:
@@ -227,7 +239,7 @@ private func bottomCornerRotation(
     backRight: Bool = false
 ) -> simd_quatf {
     // Bottom corners look up from below
-    let tiltAngle = Float(atan(1.0 / sqrt(2.0))) // ~35.264°
+    let tiltAngle = Float(atan(1.0 / sqrt(2.0)))  // ~35.264°
 
     let zAngle: Float
     if frontRight {
@@ -236,7 +248,7 @@ private func bottomCornerRotation(
         zAngle = .pi / 4
     } else if backRight {
         zAngle = -.pi * 3 / 4
-    } else { // backLeft
+    } else {  // backLeft
         zAngle = .pi * 3 / 4
     }
 

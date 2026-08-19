@@ -3,49 +3,9 @@
 # that point. A file is removed from this list once it's brought into full
 # swift-format/swiftlint compliance; touching a listed file without removing it
 # fails scripts/check-style-manifest.py. See okf/policies/code-style.md.
-Sources/OCCTSwiftViewport/Camera/CameraController.swift
-Sources/OCCTSwiftViewport/Camera/CameraState+ClipPlanes.swift
-Sources/OCCTSwiftViewport/Camera/PivotStrategy.swift
-Sources/OCCTSwiftViewport/Camera/RotationStyle.swift
-Sources/OCCTSwiftViewport/Camera/StandardView.swift
-Sources/OCCTSwiftViewport/Configuration/ClipPlane.swift
-Sources/OCCTSwiftViewport/Configuration/GestureConfiguration.swift
-Sources/OCCTSwiftViewport/Configuration/MaterialLibrary.swift
-Sources/OCCTSwiftViewport/Configuration/PBRMaterial.swift
-Sources/OCCTSwiftViewport/Configuration/ViewportConfiguration.swift
-Sources/OCCTSwiftViewport/Display/DisplayMode.swift
-Sources/OCCTSwiftViewport/Display/LightingConfiguration.swift
-Sources/OCCTSwiftViewport/HUD/CameraScale.swift
-Sources/OCCTSwiftViewport/HUD/OrientationGnomon.swift
-Sources/OCCTSwiftViewport/HUD/ScaleBarView.swift
-Sources/OCCTSwiftViewport/Input/ViewportInputEvent.swift
-Sources/OCCTSwiftViewport/Input/ViewportInputRouter.swift
-Sources/OCCTSwiftViewport/Input/ViewportModifierKeys.swift
-Sources/OCCTSwiftViewport/Math/BoundingBox.swift
-Sources/OCCTSwiftViewport/Math/Frustum.swift
-Sources/OCCTSwiftViewport/Math/MatrixUtils.swift
-Sources/OCCTSwiftViewport/Math/ProjectionUtility.swift
-Sources/OCCTSwiftViewport/Math/Ray.swift
-Sources/OCCTSwiftViewport/Math/SceneRaycast.swift
-Sources/OCCTSwiftViewport/Picking/MeasurementPicking.swift
-Sources/OCCTSwiftViewport/Picking/PickingConfiguration.swift
-Sources/OCCTSwiftViewport/Picking/PickResult.swift
-Sources/OCCTSwiftViewport/Picking/PickTextureManager.swift
-Sources/OCCTSwiftViewport/Renderer/EnvironmentMapManager.swift
-Sources/OCCTSwiftViewport/Renderer/HDRLoader.swift
-Sources/OCCTSwiftViewport/Renderer/MeasurementCompositor.swift
-Sources/OCCTSwiftViewport/Renderer/MeshletBuilder.swift
-Sources/OCCTSwiftViewport/Renderer/MetalViewRepresentable.swift
-Sources/OCCTSwiftViewport/Renderer/NormalSmoothing.swift
-Sources/OCCTSwiftViewport/Renderer/Primitives.swift
-Sources/OCCTSwiftViewport/Renderer/ShadowMapManager.swift
-Sources/OCCTSwiftViewport/Renderer/TessellationManager.swift
-Sources/OCCTSwiftViewport/Types/Measurement.swift
-Sources/OCCTSwiftViewport/Types/ViewportArc.swift
-Sources/OCCTSwiftViewport/Types/ViewportBody.swift
-Sources/OCCTSwiftViewport/ViewCube/NavigationCube.swift
-Sources/OCCTSwiftViewport/ViewCube/NavigationCubeView.swift
-Sources/OCCTSwiftViewport/ViewCube/ViewCubeRegion.swift
-Sources/OCCTSwiftViewport/ViewCube/ViewCubeView.swift
-Sources/OCCTSwiftViewport/Views/MeasurementOverlay.swift
-Sources/OCCTSwiftViewport/Views/MetalViewportView.swift
+#
+# The list is now EMPTY, and deliberately so: the rollout finished on 2026-08-19 with
+# #112 (2 entries) and #113 (the remaining 46). Every file under Sources/OCCTSwiftViewport
+# is checked unconditionally by the code-style workflow. Keep it empty. Nothing is
+# grandfathered back on: new code complies from creation, which is what the manifest
+# only ever shrinking was for.

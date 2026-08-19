@@ -6,16 +6,18 @@
 // mirror the SwiftUI `MeasurementOverlay` Canvas so headless renders match
 // what the interactive viewport shows.
 
-import simd
 import CoreGraphics
 import CoreText
 import Foundation
+import simd
 
 @MainActor
 internal enum MeasurementCompositor {
 
-    /// Composites measurements over `baseImage` and returns a new image of the same dimensions.
-    /// Returns `baseImage` unchanged when `measurements` is empty.
+    /// Draws measurement annotations over `baseImage`, producing a new image of the same size.
+    ///
+    /// Returns `baseImage` itself when `measurements` is empty, so the caller can composite
+    /// unconditionally without paying for a redundant copy.
     static func composite(
         baseImage: CGImage,
         measurements: [ViewportMeasurement],
@@ -29,19 +31,22 @@ internal enum MeasurementCompositor {
         guard width > 0, height > 0 else { return baseImage }
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue:
-            CGImageAlphaInfo.premultipliedFirst.rawValue |
-            CGBitmapInfo.byteOrder32Little.rawValue
+        let bitmapInfo = CGBitmapInfo(
+            rawValue:
+                CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
         )
-        guard let ctx = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo.rawValue
-        ) else { return nil }
+        guard
+            let ctx = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo.rawValue
+            )
+        else { return nil }
 
         // Stamp the rendered scene first; CG draws bottom-up, but `draw(image,in:)`
         // already orients the CGImage so its row 0 lands at the top of the rect.
@@ -73,8 +78,9 @@ internal enum MeasurementCompositor {
         viewportSize: CGSize
     ) {
         guard let s = project(m.start, vp: vp, viewportSize: viewportSize),
-              let e = project(m.end, vp: vp, viewportSize: viewportSize),
-              let mid = project(m.midpoint, vp: vp, viewportSize: viewportSize) else { return }
+            let e = project(m.end, vp: vp, viewportSize: viewportSize),
+            let mid = project(m.midpoint, vp: vp, viewportSize: viewportSize)
+        else { return }
 
         // Leader line (white halo + blue core).
         strokeLine(s, e, in: ctx, color: Palette.white, width: 1.5)
@@ -96,8 +102,9 @@ internal enum MeasurementCompositor {
         viewportSize: CGSize
     ) {
         guard let v = project(m.vertex, vp: vp, viewportSize: viewportSize),
-              let a = project(m.pointA, vp: vp, viewportSize: viewportSize),
-              let b = project(m.pointB, vp: vp, viewportSize: viewportSize) else { return }
+            let a = project(m.pointA, vp: vp, viewportSize: viewportSize),
+            let b = project(m.pointB, vp: vp, viewportSize: viewportSize)
+        else { return }
 
         // Arms.
         strokePolyline([a, v, b], in: ctx, color: Palette.white, width: 1.5)
@@ -147,7 +154,8 @@ internal enum MeasurementCompositor {
         viewportSize: CGSize
     ) {
         guard let center = project(m.center, vp: vp, viewportSize: viewportSize),
-              let edge = project(m.edgePoint, vp: vp, viewportSize: viewportSize) else { return }
+            let edge = project(m.edgePoint, vp: vp, viewportSize: viewportSize)
+        else { return }
 
         // Leader.
         strokeLine(center, edge, in: ctx, color: Palette.white, width: 1.5)
@@ -229,11 +237,13 @@ internal enum MeasurementCompositor {
         let font = CTFontCreateWithName("HelveticaNeue-Medium" as CFString, 11, nil)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: Palette.white
+            .foregroundColor: Palette.white,
         ]
         let attr = NSAttributedString(string: text, attributes: attrs)
         let line = CTLineCreateWithAttributedString(attr)
-        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
         let textWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
         let textHeight = ascent + descent
 
@@ -254,7 +264,9 @@ internal enum MeasurementCompositor {
 
         // Rounded-rect background (fill + thin stroke).
         let cornerRadius = bgRectCG.height / 2
-        let bgPath = CGPath(roundedRect: bgRectCG, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+        let bgPath = CGPath(
+            roundedRect: bgRectCG, cornerWidth: cornerRadius, cornerHeight: cornerRadius,
+            transform: nil)
         ctx.setFillColor(Palette.blackTranslucent)
         ctx.addPath(bgPath)
         ctx.fillPath()

@@ -2,7 +2,7 @@
 // ViewportKit
 //
 // Screen-space corner axes legend (X/Y/Z) that reflects camera orientation but
-// ignores camera translation — a Graphic3d_TransMode / AIS trihedron analogue.
+// ignores camera translation: a Graphic3d_TransMode / AIS trihedron analogue.
 
 import SwiftUI
 import simd
@@ -11,7 +11,7 @@ import simd
 /// under the current camera rotation.
 ///
 /// Unlike the world-space axes drawn by the renderer, this overlay stays pinned to
-/// a viewport corner and only rotates — it is a pure orientation aid (HUD), never
+/// a viewport corner and only rotates: it is a pure orientation aid (HUD), never
 /// affected by zoom or pan.
 public struct OrientationGnomon: View {
 
@@ -73,7 +73,7 @@ public struct OrientationGnomon: View {
         let world: [(String, SIMD3<Float>, Color)] = [
             ("X", SIMD3<Float>(1, 0, 0), .red),
             ("Y", SIMD3<Float>(0, 1, 0), .green),
-            ("Z", SIMD3<Float>(0, 0, 1), .blue)
+            ("Z", SIMD3<Float>(0, 0, 1), .blue),
         ]
         return world.map { label, axis, color in
             let v = rotation.inverse.act(axis)
@@ -89,12 +89,12 @@ public struct OrientationGnomon: View {
 }
 
 #if DEBUG
-struct OrientationGnomon_Previews: PreviewProvider {
-    static var previews: some View {
-        OrientationGnomon(controller: ViewportController())
-            .frame(width: 80, height: 80)
-            .padding()
-            .previewLayout(.sizeThatFits)
+    struct OrientationGnomon_Previews: PreviewProvider {
+        static var previews: some View {
+            OrientationGnomon(controller: ViewportController())
+                .frame(width: 80, height: 80)
+                .padding()
+                .previewLayout(.sizeThatFits)
+        }
     }
-}
 #endif

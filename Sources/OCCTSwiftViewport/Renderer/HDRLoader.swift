@@ -28,9 +28,13 @@ public enum HDRLoader {
         }
     }
 
-    /// Loads an HDR file from disk, dispatching by extension.
-    /// Currently supports `.hdr` / `.rgbe` / `.pic` (Radiance RGBE).
-    public static func loadFromURL(_ url: URL) throws -> (width: Int, height: Int, pixels: [Float]) {
+    /// Loads an HDR file from disk, picking the decoder by file extension.
+    ///
+    /// Only Radiance RGBE (`.hdr`, `.rgbe`, `.pic`) is recognised; anything else throws
+    /// `LoadError.unsupportedFormat`. Dispatch is by extension alone, so a Radiance file under
+    /// another name is rejected without being sniffed.
+    public static func loadFromURL(_ url: URL) throws -> (width: Int, height: Int, pixels: [Float])
+    {
         let data = try Data(contentsOf: url)
         switch url.pathExtension.lowercased() {
         case "hdr", "rgbe", "pic":
@@ -40,8 +44,10 @@ public enum HDRLoader {
         }
     }
 
-    /// Decodes Radiance RGBE bytes into linear RGBA32Float pixels (alpha = 1).
-    /// Pixel order is left-to-right, top-to-bottom (standard Y-down image layout).
+    /// Decodes Radiance RGBE bytes into linear RGBA32Float pixels, with alpha fixed at 1.
+    ///
+    /// Pixel order is left-to-right, top-to-bottom, the standard Y-down image layout, so the
+    /// result can be uploaded to a texture without a flip.
     public static func loadRGBE(_ data: Data) throws -> (width: Int, height: Int, pixels: [Float]) {
         var cursor = 0
         let bytes = [UInt8](data)
@@ -71,8 +77,8 @@ public enum HDRLoader {
         // per the spec but rare; we support only the standard form.
         let parts = resLine.split(separator: " ").map(String.init)
         guard parts.count >= 4, parts[0] == "-Y", parts[2] == "+X",
-              let height = Int(parts[1]), let width = Int(parts[3]),
-              width > 0, height > 0
+            let height = Int(parts[1]), let width = Int(parts[3]),
+            width > 0, height > 0
         else {
             throw LoadError.invalidHeader
         }
@@ -103,18 +109,20 @@ public enum HDRLoader {
 
     private static func readLine(_ bytes: [UInt8], _ cursor: inout Int) throws -> String {
         let start = cursor
-        while cursor < bytes.count && bytes[cursor] != 0x0A { // '\n'
+        while cursor < bytes.count && bytes[cursor] != 0x0A {  // '\n'
             cursor += 1
         }
         guard cursor < bytes.count else { throw LoadError.invalidHeader }
         let line = String(bytes: bytes[start..<cursor], encoding: .ascii) ?? ""
-        cursor += 1 // skip newline
+        cursor += 1  // skip newline
         return line
     }
 
-    /// Decodes one Radiance RLE scanline. Supports the modern per-channel RLE
-    /// (4-byte marker `(2, 2, hi, lo)` where `(hi<<8)|lo == width`) and falls
-    /// back to old RLE / uncompressed if the marker is absent.
+    /// Decodes one Radiance RLE scanline into `scanline`, handling both encodings in the wild.
+    ///
+    /// A 4-byte marker `(2, 2, hi, lo)` with `(hi << 8) | lo == width` selects the modern
+    /// per-channel RLE; when that marker is absent the scanline is read as old-style RLE or
+    /// uncompressed instead. Throws `LoadError.truncated` if the data runs out mid-scanline.
     private static func decodeScanline(
         bytes: [UInt8],
         cursor: inout Int,
@@ -123,8 +131,10 @@ public enum HDRLoader {
     ) throws {
         guard cursor + 4 <= bytes.count else { throw LoadError.truncated }
 
-        let m0 = bytes[cursor], m1 = bytes[cursor + 1]
-        let m2 = bytes[cursor + 2], m3 = bytes[cursor + 3]
+        let m0 = bytes[cursor]
+        let m1 = bytes[cursor + 1]
+        let m2 = bytes[cursor + 2]
+        let m3 = bytes[cursor + 3]
 
         // Modern RLE marker: (2, 2, width_hi, width_lo) with width < 32768
         let isModernRLE = (m0 == 2 && m1 == 2 && (m2 & 0x80) == 0)
@@ -172,7 +182,9 @@ public enum HDRLoader {
     /// RGBE → linear RGB. exponent byte `e` is biased by 128.
     /// e == 0 indicates a zero pixel (no light at all).
     @inline(__always)
-    private static func rgbeToLinear(r: UInt8, g: UInt8, b: UInt8, e: UInt8) -> (Float, Float, Float) {
+    private static func rgbeToLinear(r: UInt8, g: UInt8, b: UInt8, e: UInt8) -> (
+        Float, Float, Float
+    ) {
         if e == 0 { return (0, 0, 0) }
         // (mantissa + 0.5) / 256 * 2^(e - 128)
         let scale = ldexpf(1.0 / 256.0, Int32(e) - 128)

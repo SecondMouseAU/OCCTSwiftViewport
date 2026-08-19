@@ -1,7 +1,7 @@
 // ViewportInputEvent.swift
 // ViewportKit
 //
-// Portable, source-neutral input event model — an Aspect_Touch / Aspect_VKey
+// Portable, source-neutral input event model: an Aspect_Touch / Aspect_VKey
 // analogue. Platform layers translate native input into these; the viewport
 // interprets them via ViewportController.dispatch(_:). Synthetic / XR / test
 // input can produce the same events without any AppKit / UIKit type.
@@ -14,8 +14,8 @@ import simd
 /// (which gesture action, sign conventions, zoom curve) is applied centrally by
 /// `ViewportController.dispatch(_:)`, never by the platform translation layer.
 ///
-/// This is the seam that lets non-AppKit/UIKit input sources — visionOS / XR,
-/// Catalyst, scripting, tests — drive the camera through one entry point.
+/// This is the seam that lets non-AppKit/UIKit input sources (visionOS / XR,
+/// Catalyst, scripting, tests) drive the camera through one entry point.
 public enum ViewportInputEvent: Sendable, Equatable {
 
     /// Primary pointer drag changed (mouse on macOS, single finger on iOS).

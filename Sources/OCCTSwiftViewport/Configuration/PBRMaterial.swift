@@ -20,31 +20,46 @@ import simd
 /// glTF 2.0 metallic-roughness.
 public struct PBRMaterial: Sendable, Codable, Hashable {
 
-    /// Base colour (linear RGB). Acts as albedo for dielectrics and F0 tint for metals.
+    /// Base colour in linear RGB, read differently by dielectrics and metals.
+    ///
+    /// Acts as albedo for dielectrics and as the F0 tint for metals, so the same value reads
+    /// as paint on one material and as reflected-light colour on another.
     public var baseColor: SIMD3<Float>
 
-    /// 0 = dielectric, 1 = metal. Values in between are physically meaningless
-    /// but useful for transitioning materials.
+    /// Metalness, from 0 (dielectric) to 1 (metal).
+    ///
+    /// Values in between are physically meaningless, but useful for transitioning between
+    /// two materials.
     public var metallic: Float
 
-    /// Perceptual roughness. 0 = mirror, 1 = fully rough. Squared internally for GGX.
+    /// Perceptual roughness, from 0 (mirror) to 1 (fully rough).
+    ///
+    /// Perceptual rather than linear: the shader squares it before feeding GGX, which spreads
+    /// the mid-range out over the values the eye actually distinguishes.
     public var roughness: Float
 
-    /// Index of refraction for dielectrics. Default 1.5 (plastic, glass).
-    /// Drives F0 = ((ior-1)/(ior+1))² for non-metals. Ignored when `metallic >= 1`.
+    /// Index of refraction for dielectrics, setting how much light the surface reflects head-on.
+    ///
+    /// Defaults to 1.5 (plastic, glass), and drives `F0 = ((ior - 1) / (ior + 1))²` for
+    /// non-metals. Ignored once `metallic >= 1`, where F0 comes from `baseColor` instead.
     public var ior: Float
 
     /// Clearcoat layer strength. 0 = no coat, 1 = full coat.
     public var clearcoat: Float
 
-    /// Roughness of the clearcoat layer. Independent of base roughness —
-    /// e.g. car paint has rough flake base + sharp coat.
+    /// Roughness of the clearcoat layer, independent of the base `roughness`.
+    ///
+    /// Decoupling the two is what makes car paint work: a rough flake base under a sharp coat.
     public var clearcoatRoughness: Float
 
-    /// Linear RGB emissive colour. Multiplied by `emissiveStrength` before tonemapping.
+    /// Light the surface emits on its own, in linear RGB, before `emissiveStrength` scales it.
+    ///
+    /// Added after shading and ahead of tonemapping, so it is unaffected by scene lighting.
     public var emissive: SIMD3<Float>
 
-    /// Emissive intensity multiplier. Values >1 produce true HDR emission.
+    /// Multiplier on `emissive`, split out so emission can exceed the 0...1 colour range.
+    ///
+    /// Values above 1 give true HDR emission instead of clipping at the top of that range.
     public var emissiveStrength: Float
 
     /// Surface opacity. 1 = opaque. <1 alpha-blends; not a substitute for transmission.
@@ -99,7 +114,8 @@ extension PBRMaterial {
             roughness: try c.decode(Float.self, forKey: .roughness),
             ior: try c.decodeIfPresent(Float.self, forKey: .ior) ?? 1.5,
             clearcoat: try c.decodeIfPresent(Float.self, forKey: .clearcoat) ?? 0,
-            clearcoatRoughness: try c.decodeIfPresent(Float.self, forKey: .clearcoatRoughness) ?? 0.03,
+            clearcoatRoughness: try c.decodeIfPresent(Float.self, forKey: .clearcoatRoughness)
+                ?? 0.03,
             emissive: SIMD3<Float>(em[0], em[1], em[2]),
             emissiveStrength: try c.decodeIfPresent(Float.self, forKey: .emissiveStrength) ?? 1,
             opacity: try c.decodeIfPresent(Float.self, forKey: .opacity) ?? 1
@@ -125,7 +141,9 @@ extension PBRMaterial {
 extension PBRMaterial {
 
     /// Built-in materials covering the common engineering visualization palette.
-    /// Keys are stable lowercase identifiers safe to use in serialized assets.
+    ///
+    /// Keyed by stable lowerCamelCase identifiers, so the keys are safe to persist in
+    /// serialized assets rather than being re-derived from display names.
     public static let presets: [String: PBRMaterial] = [
         "steel": PBRMaterial(
             baseColor: SIMD3<Float>(0.56, 0.57, 0.58),
@@ -179,18 +197,21 @@ extension PBRMaterial {
         ),
     ]
 
-    /// Convenience accessors. Crash on unknown keys is acceptable — these are
-    /// the canonical preset set defined alongside the table.
-    public static var steel: PBRMaterial             { presets["steel"]! }
-    public static var brushedAluminum: PBRMaterial   { presets["brushedAluminum"]! }
-    public static var brass: PBRMaterial             { presets["brass"]! }
-    public static var copper: PBRMaterial            { presets["copper"]! }
-    public static var chromedSteel: PBRMaterial      { presets["chromedSteel"]! }
-    public static var gold: PBRMaterial              { presets["gold"]! }
-    public static var titanium: PBRMaterial          { presets["titanium"]! }
-    public static var plasticGlossy: PBRMaterial     { presets["plasticGlossy"]! }
-    public static var plasticMatte: PBRMaterial      { presets["plasticMatte"]! }
+    /// Named accessor for the `steel` preset.
+    ///
+    /// This and the accessors below force-unwrap `presets`: every key they name is defined in
+    /// the same file as the table, so a missing one is a typo caught on first use rather than
+    /// a runtime condition worth handling.
+    public static var steel: PBRMaterial { presets["steel"]! }
+    public static var brushedAluminum: PBRMaterial { presets["brushedAluminum"]! }
+    public static var brass: PBRMaterial { presets["brass"]! }
+    public static var copper: PBRMaterial { presets["copper"]! }
+    public static var chromedSteel: PBRMaterial { presets["chromedSteel"]! }
+    public static var gold: PBRMaterial { presets["gold"]! }
+    public static var titanium: PBRMaterial { presets["titanium"]! }
+    public static var plasticGlossy: PBRMaterial { presets["plasticGlossy"]! }
+    public static var plasticMatte: PBRMaterial { presets["plasticMatte"]! }
     public static var paintedAutomotive: PBRMaterial { presets["paintedAutomotive"]! }
-    public static var rubber: PBRMaterial            { presets["rubber"]! }
-    public static var glass: PBRMaterial             { presets["glass"]! }
+    public static var rubber: PBRMaterial { presets["rubber"]! }
+    public static var glass: PBRMaterial { presets["glass"]! }
 }

@@ -134,7 +134,7 @@ public struct ViewCubeView: View {
             (.front, SIMD3<Float>(0, -1, 0)),
             (.back, SIMD3<Float>(0, 1, 0)),
             (.right, SIMD3<Float>(1, 0, 0)),
-            (.left, SIMD3<Float>(-1, 0, 0))
+            (.left, SIMD3<Float>(-1, 0, 0)),
         ]
 
         for (face, normal) in faceNormals {
@@ -143,11 +143,12 @@ public struct ViewCubeView: View {
             if dot > 0 {
                 // Project face center to screen space
                 let projected = projectToScreen(normal, rotation: rotation)
-                faces.append(FaceInfo(
-                    face: face,
-                    depth: CGFloat(dot),
-                    offset: projected
-                ))
+                faces.append(
+                    FaceInfo(
+                        face: face,
+                        depth: CGFloat(dot),
+                        offset: projected
+                    ))
             }
         }
 
@@ -164,7 +165,9 @@ public struct ViewCubeView: View {
         )
     }
 
-    private func cubeFace(face: ViewCubeFace, size: CGFloat, depth: CGFloat, offset: CGSize) -> some View {
+    private func cubeFace(face: ViewCubeFace, size: CGFloat, depth: CGFloat, offset: CGSize)
+        -> some View
+    {
         Button {
             let standardView = StandardView.fromViewCubeFace(face)
             controller.goToStandardView(standardView, duration: 0.3)
@@ -219,12 +222,12 @@ public struct ViewCubeView: View {
 // MARK: - Preview
 
 #if DEBUG
-struct ViewCubeView_Previews: PreviewProvider {
-    static var previews: some View {
-        ViewCubeView(controller: ViewportController())
-            .frame(width: 100, height: 100)
-            .padding()
-            .previewLayout(.sizeThatFits)
+    struct ViewCubeView_Previews: PreviewProvider {
+        static var previews: some View {
+            ViewCubeView(controller: ViewportController())
+                .frame(width: 100, height: 100)
+                .padding()
+                .previewLayout(.sizeThatFits)
+        }
     }
-}
 #endif

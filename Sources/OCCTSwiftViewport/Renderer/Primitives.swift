@@ -38,44 +38,66 @@ extension ViewportBody {
         // Face definitions: (normal, 4 corner positions)
         let faces: [(SIMD3<Float>, [SIMD3<Float>])] = [
             // Front (+Z)
-            (SIMD3<Float>(0, 0, 1), [
-                SIMD3<Float>(-hw, -hh, hd), SIMD3<Float>(hw, -hh, hd),
-                SIMD3<Float>(hw, hh, hd), SIMD3<Float>(-hw, hh, hd)
-            ]),
+            (
+                SIMD3<Float>(0, 0, 1),
+                [
+                    SIMD3<Float>(-hw, -hh, hd), SIMD3<Float>(hw, -hh, hd),
+                    SIMD3<Float>(hw, hh, hd), SIMD3<Float>(-hw, hh, hd),
+                ]
+            ),
             // Back (-Z)
-            (SIMD3<Float>(0, 0, -1), [
-                SIMD3<Float>(hw, -hh, -hd), SIMD3<Float>(-hw, -hh, -hd),
-                SIMD3<Float>(-hw, hh, -hd), SIMD3<Float>(hw, hh, -hd)
-            ]),
+            (
+                SIMD3<Float>(0, 0, -1),
+                [
+                    SIMD3<Float>(hw, -hh, -hd), SIMD3<Float>(-hw, -hh, -hd),
+                    SIMD3<Float>(-hw, hh, -hd), SIMD3<Float>(hw, hh, -hd),
+                ]
+            ),
             // Right (+X)
-            (SIMD3<Float>(1, 0, 0), [
-                SIMD3<Float>(hw, -hh, hd), SIMD3<Float>(hw, -hh, -hd),
-                SIMD3<Float>(hw, hh, -hd), SIMD3<Float>(hw, hh, hd)
-            ]),
+            (
+                SIMD3<Float>(1, 0, 0),
+                [
+                    SIMD3<Float>(hw, -hh, hd), SIMD3<Float>(hw, -hh, -hd),
+                    SIMD3<Float>(hw, hh, -hd), SIMD3<Float>(hw, hh, hd),
+                ]
+            ),
             // Left (-X)
-            (SIMD3<Float>(-1, 0, 0), [
-                SIMD3<Float>(-hw, -hh, -hd), SIMD3<Float>(-hw, -hh, hd),
-                SIMD3<Float>(-hw, hh, hd), SIMD3<Float>(-hw, hh, -hd)
-            ]),
+            (
+                SIMD3<Float>(-1, 0, 0),
+                [
+                    SIMD3<Float>(-hw, -hh, -hd), SIMD3<Float>(-hw, -hh, hd),
+                    SIMD3<Float>(-hw, hh, hd), SIMD3<Float>(-hw, hh, -hd),
+                ]
+            ),
             // Top (+Y)
-            (SIMD3<Float>(0, 1, 0), [
-                SIMD3<Float>(-hw, hh, hd), SIMD3<Float>(hw, hh, hd),
-                SIMD3<Float>(hw, hh, -hd), SIMD3<Float>(-hw, hh, -hd)
-            ]),
+            (
+                SIMD3<Float>(0, 1, 0),
+                [
+                    SIMD3<Float>(-hw, hh, hd), SIMD3<Float>(hw, hh, hd),
+                    SIMD3<Float>(hw, hh, -hd), SIMD3<Float>(-hw, hh, -hd),
+                ]
+            ),
             // Bottom (-Y)
-            (SIMD3<Float>(0, -1, 0), [
-                SIMD3<Float>(-hw, -hh, -hd), SIMD3<Float>(hw, -hh, -hd),
-                SIMD3<Float>(hw, -hh, hd), SIMD3<Float>(-hw, -hh, hd)
-            ]),
+            (
+                SIMD3<Float>(0, -1, 0),
+                [
+                    SIMD3<Float>(-hw, -hh, -hd), SIMD3<Float>(hw, -hh, -hd),
+                    SIMD3<Float>(hw, -hh, hd), SIMD3<Float>(-hw, -hh, hd),
+                ]
+            ),
         ]
 
         for (normal, corners) in faces {
             for corner in corners {
-                verts.append(contentsOf: [corner.x, corner.y, corner.z, normal.x, normal.y, normal.z])
+                verts.append(contentsOf: [
+                    corner.x, corner.y, corner.z, normal.x, normal.y, normal.z,
+                ])
             }
             // Two triangles per face: 0-1-2, 0-2-3
-            indices.append(contentsOf: [vertexIndex, vertexIndex + 1, vertexIndex + 2,
-                                        vertexIndex, vertexIndex + 2, vertexIndex + 3])
+            indices.append(contentsOf: [
+                vertexIndex, vertexIndex + 1, vertexIndex + 2,
+                vertexIndex, vertexIndex + 2, vertexIndex + 3,
+            ])
             vertexIndex += 4
         }
 
@@ -87,16 +109,18 @@ extension ViewportBody {
             SIMD3<Float>(hw, hh, hd), SIMD3<Float>(-hw, hh, hd),
         ]
         let edgeIndices: [(Int, Int)] = [
-            (0, 1), (1, 2), (2, 3), (3, 0), // back face
-            (4, 5), (5, 6), (6, 7), (7, 4), // front face
-            (0, 4), (1, 5), (2, 6), (3, 7), // connecting
+            (0, 1), (1, 2), (2, 3), (3, 0),  // back face
+            (4, 5), (5, 6), (6, 7), (7, 4),  // front face
+            (0, 4), (1, 5), (2, 6), (3, 7),  // connecting
         ]
         let edges = edgeIndices.map { (a, b) in [corners[a], corners[b]] }
 
         // 6 faces, 2 triangles each → face indices [0,0,1,1,2,2,3,3,4,4,5,5]
         let faceIndices: [Int32] = (0..<6).flatMap { face in [Int32(face), Int32(face)] }
 
-        return ViewportBody(id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices, color: color)
+        return ViewportBody(
+            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
+            color: color)
     }
 
     // MARK: - Cylinder
@@ -195,10 +219,12 @@ extension ViewportBody {
         // Face 0 = side (segments quads × 2 tris), face 1 = top cap, face 2 = bottom cap
         var faceIndices: [Int32] = []
         faceIndices.append(contentsOf: Array(repeating: Int32(0), count: segments * 2))  // side
-        faceIndices.append(contentsOf: Array(repeating: Int32(1), count: segments))       // top cap
-        faceIndices.append(contentsOf: Array(repeating: Int32(2), count: segments))       // bottom cap
+        faceIndices.append(contentsOf: Array(repeating: Int32(1), count: segments))  // top cap
+        faceIndices.append(contentsOf: Array(repeating: Int32(2), count: segments))  // bottom cap
 
-        return ViewportBody(id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices, color: color)
+        return ViewportBody(
+            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
+            color: color)
     }
 
     // MARK: - Sphere
@@ -285,6 +311,8 @@ extension ViewportBody {
         let triangleCount = indices.count / 3
         let faceIndices = Array(repeating: Int32(0), count: triangleCount)
 
-        return ViewportBody(id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices, color: color)
+        return ViewportBody(
+            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
+            color: color)
     }
 }
