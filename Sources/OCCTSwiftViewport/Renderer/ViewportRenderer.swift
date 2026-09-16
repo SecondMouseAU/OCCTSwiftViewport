@@ -2769,7 +2769,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             performExactPick(at: pixel, texture: pickTexture, completion: completion)
         } else {
             // Neighborhood pick: sample (2*radius+1)² region
-            performNeighborhoodPick(at: pixel, radius: radius, texture: pickTexture, completion: completion)
+            performNeighborhoodPick(
+                at: pixel,
+                radius: radius,
+                texture: pickTexture,
+                completion: completion)
         }
     }
 
@@ -2820,6 +2824,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     }
 
     /// Neighborhood pick: samples a square region around the target pixel.
+    ///
     /// Returns the best non-background hit, preferring edges/vertices over faces.
     private func performNeighborhoodPick(
         at pixel: SIMD2<Int>,
@@ -2871,7 +2876,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         commandBuffer.addCompletedHandler { @Sendable _ in
             // Read all pick IDs from the region
-            let pointer = readbackBuffer.contents().bindMemory(to: UInt32.self, capacity: actualWidth * actualHeight)
+            let pointer = readbackBuffer.contents()
+                .bindMemory(to: UInt32.self, capacity: actualWidth * actualHeight)
             var bestResult: PickResult? = nil
             var bestPriority = -1
 
@@ -2881,8 +2887,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 for col in 0..<actualWidth {
                     let idx = row * actualWidth + col
                     let rawValue = pointer[idx]
-                    guard let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap) else {
-                        continue // background pixel
+                    guard
+                        let result = PickResult(
+                            rawValue: rawValue,
+                            indexMap: indexMap,
+                            layerMap: layerMap
+                        )
+                    else {
+                        continue  // background pixel
                     }
 
                     // Determine priority: vertex > edge > face
