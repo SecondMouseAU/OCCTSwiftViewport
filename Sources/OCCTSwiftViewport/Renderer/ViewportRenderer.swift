@@ -2812,6 +2812,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let layerMap = currentLayerMap
         let readbackBuffer = pickReadbackBuffer
 
+        // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
+        // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
+        // that does not annotate `MTLCommandBufferHandler` as Sendable, an unannotated closure
+        // literal instead inherits this type's `@MainActor` isolation, and Swift 6 then asserts
+        // that isolation when the handler is entered. The assertion fails on Metal's queue and
+        // traps with SIGTRAP. Writing the closure `@Sendable` keeps it nonisolated on every SDK,
+        // and makes the compiler check that the captures really are safe to hand to Metal.
+        // See issue #110.
         commandBuffer.addCompletedHandler { @Sendable _ in
             let rawValue = readbackBuffer.contents().load(as: UInt32.self)
             let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
@@ -2832,8 +2840,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         texture: MTLTexture,
         completion: @escaping @Sendable (PickResult?) -> Void
     ) {
-        // Clamp region to texture bounds
-        let regionSize = 2 * radius + 1
         let startX = max(0, pixel.x - radius)
         let startY = max(0, pixel.y - radius)
         let endX = min(pickTextureManager.width - 1, pixel.x + radius)
@@ -2846,18 +2852,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return
         }
 
-        let bytesPerRow = actualWidth * MemoryLayout<UInt32>.size
-        let totalBytes = actualHeight * bytesPerRow
+        let bytesPerRow = Self.alignedBytesPerRow(forWidth: actualWidth)
+        let totalBytes = bytesPerRow * actualHeight
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let blitEncoder = commandBuffer.makeBlitCommandEncoder(),
-            let readbackBuffer = device.makeBuffer(length: totalBytes, options: .storageModeShared)
+            let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: totalBytes)
         else {
             completion(nil)
             return
         }
 
-        // Blit region from pick texture to readback buffer
         blitEncoder.copy(
             from: texture,
             sourceSlice: 0,
@@ -2873,20 +2878,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let centerX = pixel.x - startX
+        let centerY = pixel.y - startY
 
         commandBuffer.addCompletedHandler { @Sendable _ in
-            // Read all pick IDs from the region
-            let pointer = readbackBuffer.contents()
-                .bindMemory(to: UInt32.self, capacity: actualWidth * actualHeight)
+            let base = readbackBuffer.contents()
             var bestResult: PickResult? = nil
             var bestPriority = -1
+            var bestDistSq = Int.max
 
-            // Priority: background (none) = -1, face = 0, edge = 1, vertex = 2
-            // Higher priority wins when multiple primitives in neighborhood
             for row in 0..<actualHeight {
+                let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
                 for col in 0..<actualWidth {
-                    let idx = row * actualWidth + col
-                    let rawValue = pointer[idx]
+                    let rawValue = rowValues[col]
                     guard
                         let result = PickResult(
                             rawValue: rawValue,
@@ -2894,10 +2898,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             layerMap: layerMap
                         )
                     else {
-                        continue  // background pixel
+                        continue
                     }
 
-                    // Determine priority: vertex > edge > face
                     let priority: Int
                     switch result.kind {
                     case .vertex: priority = 2
@@ -2905,13 +2908,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     case .face: priority = 0
                     }
 
-                    // Prefer center pixels (closer to target) as tiebreaker
-                    let dx = col - radius
-                    let dy = row - radius
+                    let dx = col - centerX
+                    let dy = row - centerY
                     let distSq = dx * dx + dy * dy
-
-                    if priority > bestPriority || (priority == bestPriority && distSq < 0) {
+                    let isCloser = priority == bestPriority && distSq < bestDistSq
+                    if priority > bestPriority || isCloser {
                         bestPriority = priority
+                        bestDistSq = distSq
                         bestResult = result
                     }
                 }
