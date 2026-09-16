@@ -1656,7 +1656,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                 if useQuadExpansion,
                    let quadPipeline = quadEdgePipeline,
-                   let quadEdgeVB = buffers.quadEdgeVertexBuffer {
+                   let quadEdgeVB = buffers.quadEdgeVertexBuffer
+                {
                     // Quad-expanded pipeline: variable width + dash patterns
                     var edgeUniforms = EdgeUniforms(
                         viewProjectionMatrix: uniforms.viewProjectionMatrix,
