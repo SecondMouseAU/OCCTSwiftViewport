@@ -59,7 +59,14 @@ jobs:
           restore-keys: spm-${{ runner.os }}-
 
       - name: Install Metal toolchain (required on macOS 27+ / Xcode 27+)
-        run: xcodebuild -downloadComponent MetalToolchain
+        if: runner.os == 'macOS'
+        run: |
+          # Check if xcodebuild supports -downloadComponent (Xcode 27+)
+          if xcodebuild -help 2>&1 | grep -q "downloadComponent"; then
+            xcodebuild -downloadComponent MetalToolchain
+          else
+            echo "Metal toolchain download not supported on this Xcode version; skipping"
+          fi
 
       - name: swift build
         run: swift build
