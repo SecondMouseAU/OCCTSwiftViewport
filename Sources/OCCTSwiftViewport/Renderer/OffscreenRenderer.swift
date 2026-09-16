@@ -551,8 +551,14 @@ public final class OffscreenRenderer: Sendable {
                     )
                     mainEncoder.setRenderPipelineState(quadPipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setVertexBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     let segments = buffers.edgeVertexCount / 2
@@ -565,7 +571,10 @@ public final class OffscreenRenderer: Sendable {
                     // Native Metal line pipeline (backward compatible)
                     mainEncoder.setRenderPipelineState(wireframePipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setVertexBytes(
+                        &uniforms,
+                        length: MemoryLayout<Uniforms>.size,
+                        index: 1)
                     mainEncoder.setFragmentBytes(
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(

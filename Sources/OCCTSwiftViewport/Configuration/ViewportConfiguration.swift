@@ -33,7 +33,7 @@ public struct EdgeLineDashPattern: Sendable, Hashable {
     public static let dotted = EdgeLineDashPattern(dashLength: 2, gapLength: 3)
 
     /// Dash-dot pattern.
-    public static let dashDot = EdgeLineDashPattern(dashLength: 10, gapLength: 5) // simplified
+    public static let dashDot = EdgeLineDashPattern(dashLength: 10, gapLength: 5)  // simplified
 }
 
 /// Configuration for edge/wireframe line rendering.
@@ -44,6 +44,7 @@ public struct EdgeLineConfiguration: Sendable {
     public var dashPattern: EdgeLineDashPattern
     /// Whether to use quad-expanded lines (true) or native Metal lines (false).
     /// Quad expansion enables variable width and dash patterns.
+
     public var useQuadExpansion: Bool
 
     public init(

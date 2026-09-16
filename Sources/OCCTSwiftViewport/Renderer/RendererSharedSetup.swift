@@ -221,6 +221,7 @@ enum RendererSharedSetup {
     }
 
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    ///
     /// Uses the same interleaved vertex descriptor as native lines but with the
     /// quad_edge_vertex / quad_edge_fragment shaders.
     static func makeQuadEdgePipelineState(

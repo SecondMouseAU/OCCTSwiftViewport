@@ -113,10 +113,12 @@ struct EdgeUniforms {
     var viewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
     var viewMatrix: simd_float4x4
-    var cameraPosition: SIMD4<Float>       // xyz + nearPlane in w
-    var materialParams: SIMD4<Float>       // fresnelPower, fresnelIntensity, matcapBlend, farPlane
-    var edgeParams: SIMD4<Float>           // x = width (px), y = dashLength, z = gapLength, w = phase
-    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
+    var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
+    var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
+    var edgeParams: SIMD4<Float>  // x = width (px), y = dashLength, z = gapLength, w = phase
+    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
+        .zero, .zero, .zero, .zero
+    )
     var clipPlaneCount: UInt32 = 0
     var useDashPattern: UInt32 = 0
     var _pad: SIMD2<Float> = .zero
@@ -1667,8 +1669,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     )
                     mainEncoder.setRenderPipelineState(quadPipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setVertexBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     // Each line segment = 2 vertices, quad expansion = 4 vertices per segment (triangle strip)
@@ -1684,7 +1692,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     // Native Metal line pipeline (backward compatible)
                     mainEncoder.setRenderPipelineState(wireframePipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setVertexBytes(
+                        &uniforms,
+                        length: MemoryLayout<Uniforms>.size,
+                        index: 1)
                     mainEncoder.setFragmentBytes(
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
