@@ -77,6 +77,14 @@ public final class CameraController: ObservableObject {
     /// Whether inertia is enabled.
     public var enableInertia: Bool = true
 
+    /// Whether `zoomToward` should shift the pivot toward the cursor.
+    ///
+    /// When `true` (default), zoom-at-cursor keeps the world point under the cursor
+    /// stationary by shifting the pivot. When `false`, zoom only changes distance/scale
+    /// and the pivot remains fixed. This should be synced with
+    /// `ViewportConfiguration.dynamicPivotConfiguration.isEnabled`.
+    public var zoomTowardShiftsPivot: Bool = true
+
     // MARK: - Internal State
 
     /// Velocity for inertia (radians per second).
@@ -289,7 +297,8 @@ public final class CameraController: ObservableObject {
         zoom(factor: factor)
 
         // Shift pivot toward cursor to keep the world point under cursor stationary
-        guard let cursor = cursorNormalized else { return }
+        // Only if zoomTowardShiftsPivot is enabled (synced with dynamicPivotConfiguration)
+        guard zoomTowardShiftsPivot, let cursor = cursorNormalized else { return }
 
         let right = cameraState.rightVector
         let up = cameraState.upVector

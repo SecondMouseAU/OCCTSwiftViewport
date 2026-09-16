@@ -207,6 +207,9 @@ public final class ViewportController: ObservableObject {
         cameraController.enableInertia = gc.enableInertia
         cameraController.dampingFactor = gc.dampingFactor
 
+        // Sync zoom-toward-cursor pivot shift with dynamic pivot config
+        cameraController.zoomTowardShiftsPivot = configuration.dynamicPivotConfiguration.isEnabled
+
         // Subscribe to camera controller updates.
         // Both objects are @MainActor so @Published already fires on main:
         // do NOT use .receive(on:) which re-dispatches asynchronously and
