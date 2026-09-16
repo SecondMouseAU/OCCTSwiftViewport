@@ -107,6 +107,21 @@ struct SelectionOutlineParamsSwift {
     var outlineScale: Float
 }
 
+// IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
+// Field order, types, and 16-byte alignment must stay identical.
+struct EdgeUniforms {
+    var viewProjectionMatrix: simd_float4x4
+    var modelMatrix: simd_float4x4
+    var viewMatrix: simd_float4x4
+    var cameraPosition: SIMD4<Float>       // xyz + nearPlane in w
+    var materialParams: SIMD4<Float>       // fresnelPower, fresnelIntensity, matcapBlend, farPlane
+    var edgeParams: SIMD4<Float>           // x = width (px), y = dashLength, z = gapLength, w = phase
+    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
+    var clipPlaneCount: UInt32 = 0
+    var useDashPattern: UInt32 = 0
+    var _pad: SIMD2<Float> = .zero
+}
+
 struct ShadowUniformsSwift {
     var lightViewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
@@ -230,6 +245,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `ViewportBody.directMesh(...)` render without a CPU interleave.
     private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    private let quadEdgePipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
@@ -455,6 +472,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.wireframePipeline = wireframePipeline
+
+        self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -1622,15 +1643,55 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 if !hasMesh {
                     edgeBodyUniforms.metallic = -1.0
                 }
-                mainEncoder.setRenderPipelineState(wireframePipeline)
-                mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+
+                let edgeConfig = controller.configuration.edgeLineConfiguration
+                let useQuadExpansion = edgeConfig.useQuadExpansion
+
+                if useQuadExpansion, let quadPipeline = quadEdgePipeline {
+                    // Quad-expanded pipeline: variable width + dash patterns
+                    var edgeUniforms = EdgeUniforms(
+                        viewProjectionMatrix: uniforms.viewProjectionMatrix,
+                        modelMatrix: uniforms.modelMatrix,
+                        viewMatrix: uniforms.viewMatrix,
+                        cameraPosition: uniforms.cameraPosition,
+                        materialParams: uniforms.materialParams,
+                        edgeParams: SIMD4<Float>(
+                            edgeConfig.width,
+                            edgeConfig.dashPattern.dashLength,
+                            edgeConfig.dashPattern.gapLength,
+                            edgeConfig.dashPattern.phase
+                        ),
+                        clipPlaneCount: clipPlaneCount,
+                        useDashPattern: edgeConfig.dashPattern.dashLength > 0 ? 1 : 0,
+                        _pad: SIMD2<Float>(0, 0)
+                    )
+                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    // Each line segment = 2 vertices, quad expansion = 4 vertices per segment (triangle strip)
+                    // The vertex count is the same, but we draw as triangle strip with 4 vertices per 2 input vertices
+                    // Actually we need to draw 2 triangles (4 vertices) per original segment
+                    let segments = buffers.edgeVertexCount / 2
+                    mainEncoder.drawPrimitives(
+                        type: .triangleStrip,
+                        vertexStart: 0,
+                        vertexCount: 4,
+                        instanceCount: segments)
+                } else {
+                    // Native Metal line pipeline (backward compatible)
+                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                }
             }
         }
 

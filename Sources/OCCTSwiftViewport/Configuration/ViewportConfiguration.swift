@@ -6,14 +6,64 @@
 import Foundation
 import simd
 
-// MARK: - Axis Style
+// MARK: - Edge Line Style
 
-/// Rendering style for coordinate axes.
-public enum AxisStyle: Sendable {
-    /// Fixed world-space radius (default).
-    case cylinder
-    /// Radius auto-scales with camera distance to maintain constant screen width.
-    case constantScreenWidth
+/// Dash pattern for edge lines.
+public struct EdgeLineDashPattern: Sendable, Hashable {
+    /// Dash length in world units (0 = solid line, no dash).
+    public var dashLength: Float
+    /// Gap length in world units.
+    public var gapLength: Float
+    /// Phase offset in world units.
+    public var phase: Float
+
+    public init(dashLength: Float = 0, gapLength: Float = 0, phase: Float = 0) {
+        self.dashLength = dashLength
+        self.gapLength = gapLength
+        self.phase = phase
+    }
+
+    /// Solid line (no dash).
+    public static let solid = EdgeLineDashPattern()
+
+    /// Standard dashed line.
+    public static let dashed = EdgeLineDashPattern(dashLength: 10, gapLength: 5)
+
+    /// Dotted line.
+    public static let dotted = EdgeLineDashPattern(dashLength: 2, gapLength: 3)
+
+    /// Dash-dot pattern.
+    public static let dashDot = EdgeLineDashPattern(dashLength: 10, gapLength: 5) // simplified
+}
+
+/// Configuration for edge/wireframe line rendering.
+public struct EdgeLineConfiguration: Sendable {
+    /// Line width in pixels (1.0 = default thin line).
+    public var width: Float
+    /// Dash pattern for edges.
+    public var dashPattern: EdgeLineDashPattern
+    /// Whether to use quad-expanded lines (true) or native Metal lines (false).
+    /// Quad expansion enables variable width and dash patterns.
+    public var useQuadExpansion: Bool
+
+    public init(
+        width: Float = 1.0,
+        dashPattern: EdgeLineDashPattern = .solid,
+        useQuadExpansion: Bool = true
+    ) {
+        self.width = width
+        self.dashPattern = dashPattern
+        self.useQuadExpansion = useQuadExpansion
+    }
+
+    /// Default thin solid lines.
+    public static let `default` = EdgeLineConfiguration()
+
+    /// Bold lines for selection highlighting.
+    public static let bold = EdgeLineConfiguration(width: 3.0)
+
+    /// Dashed lines for construction/hidden geometry.
+    public static let dashed = EdgeLineConfiguration(dashPattern: .dashed)
 }
 
 // MARK: - Grid Style
@@ -24,6 +74,16 @@ public enum GridStyle: Sendable {
     case plane
     /// Adaptive dot grid that snaps spacing levels based on zoom.
     case dots
+}
+
+// MARK: - Axis Style
+
+/// Rendering style for coordinate axes.
+public enum AxisStyle: Sendable {
+    /// Fixed world-space radius (default).
+    case cylinder
+    /// Radius auto-scales with camera distance to maintain constant screen width.
+    case constantScreenWidth
 }
 
 // MARK: - Rendering Quality
@@ -142,6 +202,11 @@ public struct ViewportConfiguration: Sendable {
     /// Silhouette edge darkness (0 = invisible, 1 = fully dark).
     public var silhouetteIntensity: Float
 
+    // MARK: - Edge Lines
+
+    /// Configuration for edge/wireframe line rendering (width, dash pattern, quad expansion).
+    public var edgeLineConfiguration: EdgeLineConfiguration
+
     /// Whether to skip bodies whose world-space bounds fall wholly outside the view (issue #42).
     ///
     /// On by default, since off-screen bodies are not visible anyway and skipping them is the
@@ -236,6 +301,7 @@ public struct ViewportConfiguration: Sendable {
         enableSilhouettes: Bool = true,
         silhouetteThickness: Float = 1.0,
         silhouetteIntensity: Float = 0.7,
+        edgeLineConfiguration: EdgeLineConfiguration = .default,
         enableFrustumCulling: Bool = true,
         autoSmoothNormals: Bool = false,
         normalSmoothingCreaseAngle: Float = 0.524,
@@ -278,6 +344,7 @@ public struct ViewportConfiguration: Sendable {
         self.enableSilhouettes = enableSilhouettes
         self.silhouetteThickness = silhouetteThickness
         self.silhouetteIntensity = silhouetteIntensity
+        self.edgeLineConfiguration = edgeLineConfiguration
         self.enableFrustumCulling = enableFrustumCulling
         self.autoSmoothNormals = autoSmoothNormals
         self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle

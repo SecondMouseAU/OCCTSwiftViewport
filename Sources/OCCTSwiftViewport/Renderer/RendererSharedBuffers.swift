@@ -77,17 +77,28 @@ enum RendererSharedBuffers {
 
     /// Flattens edge polylines into line-segment pairs with the interleaved stride-6 layout.
     ///
-    /// The normal slots are zeroed: the wireframe shader ignores them, but the standard vertex
-    /// descriptor still expects them.
+    /// Format per vertex: [x, y, z, arcLength, 0, 0]
+    /// - arcLength is the distance along the polyline from its start (in world units).
+    /// - The last two components are reserved (normal slots, zeroed for backward compat).
+    /// - For native Metal lines (width=1, solid), only x,y,z are used.
+    /// - For quad-expanded lines, arcLength enables dash patterns in the fragment shader.
     static func edgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
             guard polyline.count >= 2 else { continue }
+            // Compute arc-length prefix sums
+            var arcLengths: [Float] = [0]
+            for i in 1..<polyline.count {
+                let d = length(polyline[i] - polyline[i - 1])
+                arcLengths.append(arcLengths.last! + d)
+            }
             for i in 0..<(polyline.count - 1) {
                 let a = polyline[i]
                 let b = polyline[i + 1]
-                vertices.append(contentsOf: [a.x, a.y, a.z, 0, 0, 0])
-                vertices.append(contentsOf: [b.x, b.y, b.z, 0, 0, 0])
+                let arcA = arcLengths[i]
+                let arcB = arcLengths[i + 1]
+                vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])
+                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])
             }
         }
         return vertices

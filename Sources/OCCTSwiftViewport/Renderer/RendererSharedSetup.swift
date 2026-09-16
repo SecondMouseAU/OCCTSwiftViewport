@@ -220,6 +220,32 @@ enum RendererSharedSetup {
         )
     }
 
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    /// Uses the same interleaved vertex descriptor as native lines but with the
+    /// quad_edge_vertex / quad_edge_fragment shaders.
+    static func makeQuadEdgePipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        sampleCount: Int,
+        depthFormat: MTLPixelFormat,
+        vertexDescriptor: MTLVertexDescriptor,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "quad_edge_vertex",
+            fragmentFunction: "quad_edge_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat,
+            stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount,
+            blending: .sourceAlpha,
+            vertexDescriptor: vertexDescriptor
+        )
+    }
+
     /// Adaptive instanced dot-grid pipeline (no vertex descriptor: instanced from `[[vertex_id]]`).
     static func makeGridPipelineState(
         device: MTLDevice,

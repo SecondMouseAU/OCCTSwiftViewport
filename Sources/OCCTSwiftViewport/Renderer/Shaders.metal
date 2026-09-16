@@ -727,6 +727,11 @@ fragment void depth_only_fragment() {
 
 // MARK: - Wireframe Pipeline
 
+struct WireframeVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+};
+
 vertex WireframeVertexOut wireframe_vertex(
     VertexIn in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]]
@@ -785,6 +790,162 @@ fragment WireframeFragmentOut wireframe_fragment(
     // edgeIntensity: 0 = invisible, 1 = normal, 2 = fully opaque at all depths
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+
+    WireframeFragmentOut out;
+    out.color = float4(edgeColor, edgeAlpha);
+    return out;
+}
+
+// MARK: - Quad-Expanded Wireframe Pipeline (variable width + dash patterns)
+
+/// Vertex input for quad-expanded edges. Uses the same stride-6 buffer as native lines,
+/// but reads arcLength from normal.x (offset 12).
+struct QuadEdgeVertexIn {
+    float3 position [[attribute(0)]];
+    float3 arcLengthAndPad [[attribute(1)]]; // x = arcLength along polyline, y/z = reserved
+};
+
+struct QuadEdgeVertexOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition;
+    float  arcLength;        // distance along polyline for dash pattern
+    float2 quadCorner;       // which corner of the quad (0-3) for width expansion
+};
+
+/// Uniforms for quad-expanded edge rendering
+struct EdgeUniforms {
+    float4x4 viewProjectionMatrix;
+    float4x4 modelMatrix;
+    float4x4 viewMatrix;
+    float4   cameraPosition;     // xyz = position, w = nearPlane
+    float4   materialParams;     // x = fresnelPower, y = fresnelIntensity, z = matcapBlend, w = farPlane
+    float4   edgeParams;         // x = width (pixels), y = dashLength, z = gapLength, w = phase
+    float4   clipPlanes[4];      // xyz = normal, w = distance
+    uint     clipPlaneCount;
+    uint     useDashPattern;     // 1 = enabled, 0 = solid
+    float2   _pad;
+};
+
+vertex QuadEdgeVertexOut quad_edge_vertex(
+    QuadEdgeVertexIn in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    uint vertexID [[vertex_id]]
+) {
+    // Each line segment is expanded to a quad (4 vertices = 2 triangles)
+    // vertexID maps to: segment * 4 + corner (0..3)
+    // But we're using instanced rendering where each segment is one instance
+    // and we draw 4 vertices per instance as a triangle strip
+    
+    // For now, use a simple approach: expand in vertex shader using [[vertex_id]]
+    // We'll use the instance_id to get the segment, and vertex_id % 4 for the corner
+    
+    // Actually, let's use a different approach: pass segment data via instance buffer
+    // and use vertex_id for the quad corner
+    
+    QuadEdgeVertexOut out;
+    
+    // Get the segment data from the instance buffer (attribute 0 = position, attribute 1 = arcLength)
+    float3 pos = in.position;
+    float arcLength = in.arcLengthAndPad.x;
+    
+    float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
+    float4 clipPos = uniforms.viewProjectionMatrix * worldPos;
+    
+    // Compute screen-space normal for quad expansion
+    // We need the direction perpendicular to the line in screen space
+    // For simplicity, use camera-facing quads (billboard-style)
+    
+    float3 viewPos = (uniforms.viewMatrix * uniforms.modelMatrix * float4(pos, 1.0)).xyz;
+    float3 viewDir = normalize(-viewPos); // direction from point to camera
+    
+    // Line direction in view space (approximate from neighbors)
+    // For a proper implementation, we'd pass the segment direction
+    // For now, use a simple cross with up vector
+    float3 up = float3(0, 1, 0);
+    float3 right = normalize(cross(viewDir, up));
+    if (length(right) < 0.1) {
+        right = float3(1, 0, 0);
+    }
+    
+    // Quad corner: vertexID % 4 maps to 4 corners of the quad
+    // 0: bottom-left, 1: bottom-right, 2: top-left, 3: top-right
+    uint corner = vertexID % 4u;
+    float2 cornerOffset = float2(
+        (corner % 2u == 0u) ? -0.5 : 0.5,
+        (corner < 2u) ? -0.5 : 0.5
+    );
+    
+    // Width in clip space
+    float widthPixels = uniforms.edgeParams.x;
+    float clipW = clipPos.w;
+    float ndcWidth = widthPixels / (clipW * 0.5); // approximate
+    
+    // Offset in view space
+    float3 offset = right * cornerOffset.x * ndcWidth * clipW;
+    
+    float4 expandedWorldPos = float4(viewPos + offset, 1.0);
+    float4 expandedClipPos = uniforms.viewProjectionMatrix * uniforms.modelMatrix * expandedWorldPos;
+    
+    out.clipPosition = expandedClipPos;
+    out.worldPosition = pos;
+    out.arcLength = arcLength;
+    out.quadCorner = cornerOffset;
+    
+    return out;
+}
+
+fragment WireframeFragmentOut quad_edge_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    // Clip plane discard
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        float4 plane = uniforms.clipPlanes[cp];
+        if (dot(plane.xyz, in.worldPosition) + plane.w < 0.0) {
+            discard_fragment();
+        }
+    }
+
+    float3 bodyColor = bodyUniforms.color.rgb;
+    float bodyAlpha = bodyUniforms.color.a;
+
+    // Edge-only bodies (metallic == -1 sentinel): use body color directly
+    if (bodyUniforms.metallic < 0.0) {
+        WireframeFragmentOut out;
+        out.color = float4(bodyColor, bodyAlpha);
+        return out;
+    }
+
+    // Dash pattern
+    float alpha = 1.0;
+    if (uniforms.useDashPattern != 0u) {
+        float dashLength = uniforms.edgeParams.y;
+        float gapLength = uniforms.edgeParams.z;
+        float phase = uniforms.edgeParams.w;
+        float period = dashLength + gapLength;
+        if (period > 0.0) {
+            float pos = fmod(in.arcLength + phase, period);
+            if (pos > dashLength) {
+                discard_fragment();
+            }
+        }
+    }
+
+    float edgeIntensity = max(uniforms.edgeParams.x > 1.5 ? 2.0 : 1.0, 0.0);
+
+    // Contrast-adaptive edge color
+    float luminance = dot(bodyColor, float3(0.299, 0.587, 0.114));
+    float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
+    float3 lightEdge = bodyColor * 0.4 + 0.6;
+    float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+
+    // Depth-based edge alpha
+    float nearPlane = uniforms.cameraPosition.w;
+    float farPlane = uniforms.materialParams.w;
+    // Note: we don't have clipPositionCopy in QuadEdgeVertexOut, simplify
+    float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
+    float edgeAlpha = alpha * minAlpha;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);

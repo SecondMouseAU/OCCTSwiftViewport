@@ -50,6 +50,9 @@ public struct OffscreenRenderOptions: Sendable {
     /// `ViewportConfiguration.gridSubdivisions`.
     public var gridSubdivisions: Int
 
+    /// Edge line rendering configuration (width, dash pattern, quad expansion).
+    public var edgeLineConfiguration: EdgeLineConfiguration
+
     /// Optional explicit orthographic projection bounds (world units).
     ///
     /// When set, overrides `cameraState.projectionMatrix(...)` and forces
@@ -86,6 +89,7 @@ public struct OffscreenRenderOptions: Sendable {
         msaaSampleCount: Int = 4,
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
+        edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
         measurements: [ViewportMeasurement] = []
@@ -101,6 +105,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.msaaSampleCount = msaaSampleCount
         self.gridBaseSpacing = gridBaseSpacing
         self.gridSubdivisions = gridSubdivisions
+        self.edgeLineConfiguration = edgeLineConfiguration
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
         self.measurements = measurements
@@ -131,6 +136,8 @@ public final class OffscreenRenderer: Sendable {
     /// render without a CPU interleave.
     private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    private let quadEdgePipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
 
@@ -215,6 +222,10 @@ public final class OffscreenRenderer: Sendable {
                 depthFormat: depthFormat, vertexDescriptor: vertexDesc)
         else { return nil }
         self.wireframePipeline = wireframePipeline
+
+        self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -515,15 +526,53 @@ public final class OffscreenRenderer: Sendable {
             if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
                 var edgeBodyUniforms = bodyUniforms
                 if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
-                mainEncoder.setRenderPipelineState(wireframePipeline)
-                mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+
+                let edgeConfig = options.edgeLineConfiguration
+                let useQuadExpansion = edgeConfig.useQuadExpansion
+
+                if useQuadExpansion, let quadPipeline = quadEdgePipeline {
+                    // Quad-expanded pipeline: variable width + dash patterns
+                    var edgeUniforms = EdgeUniforms(
+                        viewProjectionMatrix: uniforms.viewProjectionMatrix,
+                        modelMatrix: uniforms.modelMatrix,
+                        viewMatrix: uniforms.viewMatrix,
+                        cameraPosition: uniforms.cameraPosition,
+                        materialParams: uniforms.materialParams,
+                        edgeParams: SIMD4<Float>(
+                            edgeConfig.width,
+                            edgeConfig.dashPattern.dashLength,
+                            edgeConfig.dashPattern.gapLength,
+                            edgeConfig.dashPattern.phase
+                        ),
+                        clipPlanes: uniforms.clipPlanes,
+                        clipPlaneCount: uniforms.clipPlaneCount,
+                        useDashPattern: edgeConfig.dashPattern.dashLength > 0 ? 1 : 0,
+                        _pad: SIMD2<Float>(0, 0)
+                    )
+                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    let segments = buffers.edgeVertexCount / 2
+                    mainEncoder.drawPrimitives(
+                        type: .triangleStrip,
+                        vertexStart: 0,
+                        vertexCount: 4,
+                        instanceCount: segments)
+                } else {
+                    // Native Metal line pipeline (backward compatible)
+                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                }
             }
         }
 
