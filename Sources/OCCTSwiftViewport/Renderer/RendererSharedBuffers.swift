@@ -75,13 +75,14 @@ enum RendererSharedBuffers {
         return buffers
     }
 
-    /// Flattens edge polylines into line-segment pairs with the interleaved stride-6 layout.
+    /// Flattens edge polylines into line-segment quads with the interleaved stride-6 layout.
     ///
     /// Format per vertex: [x, y, z, arcLength, 0, 0]
     /// - arcLength is the distance along the polyline from its start (in world units).
     /// - The last two components are reserved (normal slots, zeroed for backward compat).
-    /// - For native Metal lines (width=1, solid), only x,y,z are used.
-    /// - For quad-expanded lines, arcLength enables dash patterns in the fragment shader.
+    /// - For native Metal lines (width=1, solid), only first 2 vertices per segment are used (start, end).
+    /// - For quad-expanded lines, all 6 vertices per segment are used:
+    ///   4 corner vertices (start×2, end×2) + 2 degenerate vertices to break triangle strip between segments.
     static func edgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
@@ -97,6 +98,42 @@ enum RendererSharedBuffers {
                 let b = polyline[i + 1]
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
+                // For native lines: 2 vertices (start, end)
+                // For quad expansion: 4 corner vertices (start×2, end×2) + 2 degenerate vertices
+                // Degenerate vertices break the triangle strip between segments
+                vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])  // corner 0
+                vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])  // corner 1
+                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // corner 2
+                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // corner 3
+                // Degenerate vertices (duplicate of last corner) to break triangle strip
+                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // degenerate
+                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // degenerate
+            }
+        }
+        return vertices
+    }
+
+    /// Flattens edge polylines into line-segment pairs for native Metal line rendering.
+    ///
+    /// Format per vertex: [x, y, z, arcLength, 0, 0] (same stride as quad buffer for compatibility)
+    /// - Only 2 vertices per segment (start, end) — suitable for MTLPrimitiveType.line
+    /// - arcLength is included for consistency but unused by native line shader
+    static func nativeEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
+        var vertices: [Float] = []
+        for polyline in polylines {
+            guard polyline.count >= 2 else { continue }
+            // Compute arc-length prefix sums
+            var arcLengths: [Float] = [0]
+            for i in 1..<polyline.count {
+                let d = length(polyline[i] - polyline[i - 1])
+                arcLengths.append(arcLengths.last! + d)
+            }
+            for i in 0..<(polyline.count - 1) {
+                let a = polyline[i]
+                let b = polyline[i + 1]
+                let arcA = arcLengths[i]
+                let arcB = arcLengths[i + 1]
+                // Native lines: 2 vertices per segment (start, end)
                 vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])
                 vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])
             }

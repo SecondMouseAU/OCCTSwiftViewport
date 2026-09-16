@@ -310,7 +310,7 @@ struct RendererSharedSetupTests {
 
     // MARK: - Shared buffer building
 
-    @Test("Edge polylines flatten to stride-6 line-segment pairs with arc-length")
+    @Test("Edge polylines flatten to stride-6 line-segment quads with arc-length")
     func edgeLineVerticesFlattenPolylines() {
         let polylines: [[SIMD3<Float>]] = [
             [SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(1, 1, 0)],
@@ -318,6 +318,48 @@ struct RendererSharedSetupTests {
             [],  // empty: dropped
         ]
         let flat = RendererSharedBuffers.edgeLineVertices(from: polylines)
+
+        // Two segments from the first polyline, SIX vertices each (4 corners + 2 degenerate), stride 6.
+        // Format: [x, y, z, arcLength, 0, 0]
+        // Segment 0: (0,0,0) to (1,0,0) — arc 0 to 1
+        // Segment 1: (1,0,0) to (1,1,0) — arc 1 to 2
+        // Each segment produces 6 vertices: start, start, end, end, end(degen), end(degen)
+        #expect(flat.count == 2 * 6 * 6)
+        // Segment 0, vertex 0: start (0,0,0) arc 0
+        #expect(Array(flat[0..<6]) == [0, 0, 0, 0, 0, 0])
+        // Segment 0, vertex 1: start (0,0,0) arc 0
+        #expect(Array(flat[6..<12]) == [0, 0, 0, 0, 0, 0])
+        // Segment 0, vertex 2: end (1,0,0) arc 1
+        #expect(Array(flat[12..<18]) == [1, 0, 0, 1, 0, 0])
+        // Segment 0, vertex 3: end (1,0,0) arc 1
+        #expect(Array(flat[18..<24]) == [1, 0, 0, 1, 0, 0])
+        // Segment 0, vertex 4: degenerate end (1,0,0) arc 1
+        #expect(Array(flat[24..<30]) == [1, 0, 0, 1, 0, 0])
+        // Segment 0, vertex 5: degenerate end (1,0,0) arc 1
+        #expect(Array(flat[30..<36]) == [1, 0, 0, 1, 0, 0])
+        // Segment 1, vertex 0: start (1,0,0) arc 1
+        #expect(Array(flat[36..<42]) == [1, 0, 0, 1, 0, 0])
+        // Segment 1, vertex 1: start (1,0,0) arc 1
+        #expect(Array(flat[42..<48]) == [1, 0, 0, 1, 0, 0])
+        // Segment 1, vertex 2: end (1,1,0) arc 2
+        #expect(Array(flat[48..<54]) == [1, 1, 0, 2, 0, 0])
+        // Segment 1, vertex 3: end (1,1,0) arc 2
+        #expect(Array(flat[54..<60]) == [1, 1, 0, 2, 0, 0])
+        // Segment 1, vertex 4: degenerate end (1,1,0) arc 2
+        #expect(Array(flat[60..<66]) == [1, 1, 0, 2, 0, 0])
+        // Segment 1, vertex 5: degenerate end (1,1,0) arc 2
+        #expect(Array(flat[66..<72]) == [1, 1, 0, 2, 0, 0])
+        #expect(RendererSharedBuffers.edgeLineVertices(from: []).isEmpty)
+    }
+
+    @Test("Native edge polylines flatten to stride-6 line-segment pairs")
+    func nativeEdgeLineVerticesFlattenPolylines() {
+        let polylines: [[SIMD3<Float>]] = [
+            [SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(1, 1, 0)],
+            [SIMD3<Float>(5, 5, 5)],  // degenerate: dropped
+            [],  // empty: dropped
+        ]
+        let flat = RendererSharedBuffers.nativeEdgeLineVertices(from: polylines)
 
         // Two segments from the first polyline, two vertices each, stride 6.
         // Format: [x, y, z, arcLength, 0, 0]
@@ -328,7 +370,7 @@ struct RendererSharedSetupTests {
         #expect(Array(flat[6..<12]) == [1, 0, 0, 1, 0, 0])
         #expect(Array(flat[12..<18]) == [1, 0, 0, 1, 0, 0])
         #expect(Array(flat[18..<24]) == [1, 1, 0, 2, 0, 0])
-        #expect(RendererSharedBuffers.edgeLineVertices(from: []).isEmpty)
+        #expect(RendererSharedBuffers.nativeEdgeLineVertices(from: []).isEmpty)
     }
 
     @Test("Mesh buffer building routes direct-mesh and interleaved bodies to the right layout")
