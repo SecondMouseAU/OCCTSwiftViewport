@@ -58,6 +58,9 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
 
+      - name: Install Metal toolchain (required on macOS 27+ / Xcode 27+)
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: swift build
         run: swift build
 
