@@ -58,7 +58,8 @@ struct RendererSharedSetupTests {
         var sceneMax = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
         var hasGeometry = false
         for body in bodies where body.isVisible {
-            let box = applyingTransforms
+            let box =
+                applyingTransforms
                 ? body.boundingBox?.transformed(by: body.transform) : body.boundingBox
             if let bb = box {
                 sceneMin = simd_min(sceneMin, bb.min)
@@ -310,46 +311,31 @@ struct RendererSharedSetupTests {
 
     // MARK: - Shared buffer building
 
-    @Test("Edge polylines flatten to stride-6 line-segment quads with arc-length")
+    @Test("Edge polylines flatten to screen-expandable quads with arc-length and direction")
     func edgeLineVerticesFlattenPolylines() {
         let polylines: [[SIMD3<Float>]] = [
             [SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(1, 1, 0)],
             [SIMD3<Float>(5, 5, 5)],  // degenerate: dropped
             [],  // empty: dropped
         ]
-        let flat = RendererSharedBuffers.edgeLineVertices(from: polylines)
+        let flat = RendererSharedBuffers.quadEdgeLineVertices(from: polylines)
 
-        // Two segments from the first polyline, SIX vertices each (4 corners + 2 degenerate), stride 6.
-        // Format: [x, y, z, arcLength, 0, 0]
-        // Segment 0: (0,0,0) to (1,0,0) — arc 0 to 1
-        // Segment 1: (1,0,0) to (1,1,0) — arc 1 to 2
-        // Each segment produces 6 vertices: start, start, end, end, end(degen), end(degen)
-        #expect(flat.count == 2 * 6 * 6)
-        // Segment 0, vertex 0: start (0,0,0) arc 0
-        #expect(Array(flat[0..<6]) == [0, 0, 0, 0, 0, 0])
-        // Segment 0, vertex 1: start (0,0,0) arc 0
-        #expect(Array(flat[6..<12]) == [0, 0, 0, 0, 0, 0])
-        // Segment 0, vertex 2: end (1,0,0) arc 1
-        #expect(Array(flat[12..<18]) == [1, 0, 0, 1, 0, 0])
-        // Segment 0, vertex 3: end (1,0,0) arc 1
-        #expect(Array(flat[18..<24]) == [1, 0, 0, 1, 0, 0])
-        // Segment 0, vertex 4: degenerate end (1,0,0) arc 1
-        #expect(Array(flat[24..<30]) == [1, 0, 0, 1, 0, 0])
-        // Segment 0, vertex 5: degenerate end (1,0,0) arc 1
-        #expect(Array(flat[30..<36]) == [1, 0, 0, 1, 0, 0])
-        // Segment 1, vertex 0: start (1,0,0) arc 1
-        #expect(Array(flat[36..<42]) == [1, 0, 0, 1, 0, 0])
-        // Segment 1, vertex 1: start (1,0,0) arc 1
-        #expect(Array(flat[42..<48]) == [1, 0, 0, 1, 0, 0])
-        // Segment 1, vertex 2: end (1,1,0) arc 2
-        #expect(Array(flat[48..<54]) == [1, 1, 0, 2, 0, 0])
-        // Segment 1, vertex 3: end (1,1,0) arc 2
-        #expect(Array(flat[54..<60]) == [1, 1, 0, 2, 0, 0])
-        // Segment 1, vertex 4: degenerate end (1,1,0) arc 2
-        #expect(Array(flat[60..<66]) == [1, 1, 0, 2, 0, 0])
-        // Segment 1, vertex 5: degenerate end (1,1,0) arc 2
-        #expect(Array(flat[66..<72]) == [1, 1, 0, 2, 0, 0])
-        #expect(RendererSharedBuffers.edgeLineVertices(from: []).isEmpty)
+        // Two segments from the first polyline, six vertices each, stride 9.
+        // Format: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].
+        #expect(flat.count == 2 * 6 * 9)
+        #expect(Array(flat[0..<9]) == [0, 0, 0, 0, -0.5, -0.5, 1, 0, 0])
+        #expect(Array(flat[9..<18]) == [0, 0, 0, 0, -0.5, 0.5, 1, 0, 0])
+        #expect(Array(flat[18..<27]) == [0, 0, 0, 0, 0.5, -0.5, 1, 0, 0])
+        #expect(Array(flat[27..<36]) == [0, 0, 0, 0, 0.5, 0.5, 1, 0, 0])
+        #expect(Array(flat[36..<45]) == [1, 0, 0, 1, 0.5, 0.5, 1, 0, 0])
+        #expect(Array(flat[45..<54]) == [1, 0, 0, 1, 0.5, 0.5, 1, 0, 0])
+        #expect(Array(flat[54..<63]) == [1, 0, 0, 1, -0.5, -0.5, 0, 1, 0])
+        #expect(Array(flat[63..<72]) == [1, 0, 0, 1, -0.5, 0.5, 0, 1, 0])
+        #expect(Array(flat[72..<81]) == [1, 0, 0, 1, 0.5, -0.5, 0, 1, 0])
+        #expect(Array(flat[81..<90]) == [1, 0, 0, 1, 0.5, 0.5, 0, 1, 0])
+        #expect(Array(flat[90..<99]) == [1, 1, 0, 2, 0.5, 0.5, 0, 1, 0])
+        #expect(Array(flat[99..<108]) == [1, 1, 0, 2, 0.5, 0.5, 0, 1, 0])
+        #expect(RendererSharedBuffers.quadEdgeLineVertices(from: []).isEmpty)
     }
 
     @Test("Native edge polylines flatten to stride-6 line-segment pairs")

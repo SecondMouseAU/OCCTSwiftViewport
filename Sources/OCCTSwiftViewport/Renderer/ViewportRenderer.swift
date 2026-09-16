@@ -115,12 +115,14 @@ struct EdgeUniforms {
     var viewMatrix: simd_float4x4
     var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
     var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
-    var edgeParams: SIMD4<Float>  // x = width (px), y = dashLength, z = gapLength, w = phase
+    var dashPatternParams: SIMD4<Float>  // dashLength, gapLength, dotLength, phase
+    var edgeParams: SIMD4<Float>  // x = width (px), y/z/w = unused
     var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
         .zero, .zero, .zero, .zero
     )
     var clipPlaneCount: UInt32 = 0
-    var useDashPattern: UInt32 = 0
+    var dashPatternType: UInt32 = 0
+    var viewportSize: SIMD2<Float> = .zero
     var _pad: SIMD2<Float> = .zero
 }
 
@@ -177,7 +179,8 @@ private struct BodyBuffers {
     /// Used to gate edge picking, since the line primitive count must equal
     /// `body.edgeIndices.count` for the index map to be usable.
     let edgePrimitiveCount: Int
-    /// Quad-expanded edge vertex buffer (6 vertices per segment: 4 corners + 2 degenerate).
+    /// Quad-expanded edge vertex buffer (9 floats per vertex: endpoint, arc length,
+    /// corner offset, and segment direction; 6 vertices per segment including strip breaks).
     ///
     /// Used by the quad-edge pipeline for variable width and dash patterns.
     let quadEdgeVertexBuffer: MTLBuffer?
@@ -482,7 +485,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
             device: device, library: library, sampleCount: sampleCount,
-            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -1655,8 +1659,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let useQuadExpansion = edgeConfig.useQuadExpansion
 
                 if useQuadExpansion,
-                   let quadPipeline = quadEdgePipeline,
-                   let quadEdgeVB = buffers.quadEdgeVertexBuffer
+                    let quadPipeline = quadEdgePipeline,
+                    let quadEdgeVB = buffers.quadEdgeVertexBuffer
                 {
                     // Quad-expanded pipeline: variable width + dash patterns
                     var edgeUniforms = EdgeUniforms(
@@ -1665,15 +1669,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         viewMatrix: uniforms.viewMatrix,
                         cameraPosition: uniforms.cameraPosition,
                         materialParams: uniforms.materialParams,
-                        edgeParams: SIMD4<Float>(
-                            edgeConfig.width,
+                        dashPatternParams: SIMD4<Float>(
                             edgeConfig.dashPattern.dashLength,
                             edgeConfig.dashPattern.gapLength,
+                            edgeConfig.dashPattern.dotLength,
                             edgeConfig.dashPattern.phase
                         ),
+                        edgeParams: SIMD4<Float>(edgeConfig.width, 0, 0, 0),
                         clipPlanes: uniforms.clipPlanes,
                         clipPlaneCount: clipPlaneCount,
-                        useDashPattern: edgeConfig.dashPattern.dashLength > 0 ? 1 : 0,
+                        dashPatternType: edgeConfig.dashPattern.kind.rawValue,
+                        viewportSize: SIMD2<Float>(
+                            Float(max(drawableSize.width, 1)),
+                            Float(max(drawableSize.height, 1))
+                        ),
                         _pad: SIMD2<Float>(0, 0)
                     )
                     mainEncoder.setRenderPipelineState(quadPipeline)
@@ -1688,8 +1697,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    // Buffer has 6 vertices per segment (4 corners + 2 degenerate to break triangle strip)
-                    // Draw entire buffer as one triangle strip
+                    // The CPU buffer already contains the six-vertex triangle strip per segment.
                     mainEncoder.drawPrimitives(
                         type: .triangleStrip,
                         vertexStart: 0,
@@ -2706,12 +2714,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let nativeEdgeVertexCount = nativeEdgeVertices.count / 6
         let nativeEdgePrimitiveCount = nativeEdgeVertexCount / 2
 
-        // Quad-expanded lines: 6 vertices per segment (4 corners + 2 degenerate)
-        let quadEdgeVertices = RendererSharedBuffers.edgeLineVertices(from: body.edges)
+        // Quad-expanded lines: six vertices per segment, each with a 9-float payload.
+        let quadEdgeVertices = RendererSharedBuffers.quadEdgeLineVertices(from: body.edges)
         let quadEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
             device: device, edgeVertices: quadEdgeVertices)
-        let quadEdgeVertexCount = quadEdgeVertices.count / 6
-        let _edgePrimitiveCount = nativeEdgePrimitiveCount  // same logical segment count
+        let quadEdgeVertexCount = quadEdgeVertices.count / 9
 
         // Build point vertex buffer for vertex picking. Each entry in body.vertices
         // becomes one point sprite; uses the same position+normal stride as the

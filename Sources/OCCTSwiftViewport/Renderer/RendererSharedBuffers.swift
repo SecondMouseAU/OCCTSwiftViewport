@@ -75,19 +75,17 @@ enum RendererSharedBuffers {
         return buffers
     }
 
-    /// Flattens edge polylines into line-segment quads with the interleaved stride-6 layout.
+    /// Flattens edge polylines into screen-expandable line-segment quads.
     ///
-    /// Format per vertex: [x, y, z, arcLength, 0, 0]
-    /// - arcLength is the distance along the polyline from its start (in world units).
-    /// - The last two components are reserved (normal slots, zeroed for backward compat).
-    /// - For native Metal lines (width=1, solid), only first 2 vertices per segment are used (start, end).
-    /// - For quad-expanded lines, all 6 vertices per segment are used:
-    ///   4 corner vertices (start×2, end×2) + 2 degenerate vertices to break triangle strip between segments.
-    static func edgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
+    /// Format per vertex: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].
+    /// - `arcLength` is the distance along the polyline from its start (in world units).
+    /// - `corner` is the quad corner offset in the range -0.5...0.5.
+    /// - `direction` is the normalized local-space segment direction.
+    /// - Each segment produces 6 vertices: 4 corners plus 2 degenerate strip-break vertices.
+    static func quadEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
             guard polyline.count >= 2 else { continue }
-            // Compute arc-length prefix sums
             var arcLengths: [Float] = [0]
             for i in 1..<polyline.count {
                 let d = length(polyline[i] - polyline[i - 1])
@@ -96,18 +94,28 @@ enum RendererSharedBuffers {
             for i in 0..<(polyline.count - 1) {
                 let a = polyline[i]
                 let b = polyline[i + 1]
+                let segment = b - a
+                let segmentLength = length(segment)
+                guard segmentLength > 0 else { continue }
+                let direction = segment / segmentLength
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
-                // For native lines: 2 vertices (start, end)
-                // For quad expansion: 4 corner vertices (start×2, end×2) + 2 degenerate vertices
-                // Degenerate vertices break the triangle strip between segments
-                vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])  // corner 0
-                vertices.append(contentsOf: [a.x, a.y, a.z, arcA, 0, 0])  // corner 1
-                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // corner 2
-                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // corner 3
-                // Degenerate vertices (duplicate of last corner) to break triangle strip
-                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // degenerate
-                vertices.append(contentsOf: [b.x, b.y, b.z, arcB, 0, 0])  // degenerate
+                let corners: [SIMD2<Float>] = [
+                    SIMD2<Float>(-0.5, -0.5),
+                    SIMD2<Float>(-0.5, 0.5),
+                    SIMD2<Float>(0.5, -0.5),
+                    SIMD2<Float>(0.5, 0.5),
+                    SIMD2<Float>(0.5, 0.5),
+                    SIMD2<Float>(0.5, 0.5),
+                ]
+                for (index, corner) in corners.enumerated() {
+                    let position = index < 4 ? a : b
+                    let arcLength = index < 4 ? arcA : arcB
+                    vertices.append(contentsOf: [
+                        position.x, position.y, position.z, arcLength, corner.x, corner.y,
+                        direction.x, direction.y, direction.z,
+                    ])
+                }
             }
         }
         return vertices

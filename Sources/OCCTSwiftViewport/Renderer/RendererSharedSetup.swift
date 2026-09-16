@@ -43,6 +43,25 @@ enum RendererSharedSetup {
         return descriptor
     }
 
+    /// Position, arc length, quad corner, and segment direction for expanded edges.
+    static func quadEdgeVertexDescriptor() -> MTLVertexDescriptor {
+        let descriptor = MTLVertexDescriptor()
+        descriptor.attributes[0].format = .float3
+        descriptor.attributes[0].offset = 0
+        descriptor.attributes[0].bufferIndex = 0
+        descriptor.attributes[1].format = .float
+        descriptor.attributes[1].offset = MemoryLayout<Float>.size * 3
+        descriptor.attributes[1].bufferIndex = 0
+        descriptor.attributes[2].format = .float2
+        descriptor.attributes[2].offset = MemoryLayout<Float>.size * 4
+        descriptor.attributes[2].bufferIndex = 0
+        descriptor.attributes[3].format = .float3
+        descriptor.attributes[3].offset = MemoryLayout<Float>.size * 6
+        descriptor.attributes[3].bufferIndex = 0
+        descriptor.layouts[0].stride = MemoryLayout<Float>.size * 9
+        return descriptor
+    }
+
     /// De-interleaved direct-mesh layout: position in buffer 0, normal in buffer 2, stride 3 floats
     /// each.
     ///
@@ -222,8 +241,8 @@ enum RendererSharedSetup {
 
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     ///
-    /// Uses the same interleaved vertex descriptor as native lines but with the
-    /// quad_edge_vertex / quad_edge_fragment shaders.
+    /// Uses a dedicated descriptor for endpoint, arc-length, corner, and direction attributes
+    /// with the `quad_edge_vertex` / `quad_edge_fragment` shaders.
     static func makeQuadEdgePipelineState(
         device: MTLDevice,
         library: MTLLibrary,

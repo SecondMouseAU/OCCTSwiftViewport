@@ -8,18 +8,51 @@ import simd
 
 // MARK: - Edge Line Style
 
+/// Dash pattern kind for edge lines.
+public enum EdgeLineDashKind: UInt32, Sendable, Hashable {
+    case solid
+    case dashed
+    case dotted
+    case dashDot
+}
+
 /// Dash pattern for edge lines.
 public struct EdgeLineDashPattern: Sendable, Hashable {
-    /// Dash length in world units (0 = solid line, no dash).
+    /// Pattern kind.
+    public var kind: EdgeLineDashKind
+    /// Dash length in world units.
     public var dashLength: Float
     /// Gap length in world units.
     public var gapLength: Float
+    /// Dot length in world units.
+    public var dotLength: Float
     /// Phase offset in world units.
     public var phase: Float
 
-    public init(dashLength: Float = 0, gapLength: Float = 0, phase: Float = 0) {
+    public init(
+        dashLength: Float = 0,
+        gapLength: Float = 0,
+        dotLength: Float = 2,
+        phase: Float = 0
+    ) {
+        self.kind = dashLength > 0 ? .dashed : .solid
         self.dashLength = dashLength
         self.gapLength = gapLength
+        self.dotLength = dotLength
+        self.phase = phase
+    }
+
+    public init(
+        kind: EdgeLineDashKind,
+        dashLength: Float,
+        gapLength: Float,
+        dotLength: Float = 2,
+        phase: Float = 0
+    ) {
+        self.kind = kind
+        self.dashLength = dashLength
+        self.gapLength = gapLength
+        self.dotLength = dotLength
         self.phase = phase
     }
 
@@ -27,13 +60,16 @@ public struct EdgeLineDashPattern: Sendable, Hashable {
     public static let solid = EdgeLineDashPattern()
 
     /// Standard dashed line.
-    public static let dashed = EdgeLineDashPattern(dashLength: 10, gapLength: 5)
+    public static let dashed = EdgeLineDashPattern(
+        kind: .dashed, dashLength: 10, gapLength: 5)
 
     /// Dotted line.
-    public static let dotted = EdgeLineDashPattern(dashLength: 2, gapLength: 3)
+    public static let dotted = EdgeLineDashPattern(
+        kind: .dotted, dashLength: 2, gapLength: 3, dotLength: 2)
 
-    /// Dash-dot pattern.
-    public static let dashDot = EdgeLineDashPattern(dashLength: 10, gapLength: 5)  // simplified
+    /// Dash-dot line.
+    public static let dashDot = EdgeLineDashPattern(
+        kind: .dashDot, dashLength: 8, gapLength: 3, dotLength: 2)
 }
 
 /// Configuration for edge/wireframe line rendering.
