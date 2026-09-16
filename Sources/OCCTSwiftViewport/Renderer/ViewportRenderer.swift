@@ -107,6 +107,25 @@ struct SelectionOutlineParamsSwift {
     var outlineScale: Float
 }
 
+// IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
+// Field order, types, and 16-byte alignment must stay identical.
+struct EdgeUniforms {
+    var viewProjectionMatrix: simd_float4x4
+    var modelMatrix: simd_float4x4
+    var viewMatrix: simd_float4x4
+    var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
+    var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
+    var dashPatternParams: SIMD4<Float>  // dashLength, gapLength, dotLength, phase
+    var edgeParams: SIMD4<Float>  // x = width (px), y/z/w = unused
+    var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
+        .zero, .zero, .zero, .zero
+    )
+    var clipPlaneCount: UInt32 = 0
+    var dashPatternType: UInt32 = 0
+    var viewportSize: SIMD2<Float> = .zero
+    var _pad: SIMD2<Float> = .zero
+}
+
 struct ShadowUniformsSwift {
     var lightViewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
@@ -160,6 +179,12 @@ private struct BodyBuffers {
     /// Used to gate edge picking, since the line primitive count must equal
     /// `body.edgeIndices.count` for the index map to be usable.
     let edgePrimitiveCount: Int
+    /// Quad-expanded edge vertex buffer (9 floats per vertex: endpoint, arc length,
+    /// corner offset, and segment direction; 6 vertices per segment including strip breaks).
+    ///
+    /// Used by the quad-edge pipeline for variable width and dash patterns.
+    let quadEdgeVertexBuffer: MTLBuffer?
+    let quadEdgeVertexCount: Int
     /// Vertex buffer for point-sprite picking, built from `body.vertices`.
     ///
     /// Same stride as the mesh vertex buffer (position + zeroed normal) so it
@@ -230,6 +255,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `ViewportBody.directMesh(...)` render without a CPU interleave.
     private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    private let quadEdgePipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
@@ -455,6 +482,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.wireframePipeline = wireframePipeline
+
+        self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -1622,15 +1654,69 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 if !hasMesh {
                     edgeBodyUniforms.metallic = -1.0
                 }
-                mainEncoder.setRenderPipelineState(wireframePipeline)
-                mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+
+                let edgeConfig = controller.configuration.edgeLineConfiguration
+                let useQuadExpansion = edgeConfig.useQuadExpansion
+
+                if useQuadExpansion,
+                    let quadPipeline = quadEdgePipeline,
+                    let quadEdgeVB = buffers.quadEdgeVertexBuffer
+                {
+                    // Quad-expanded pipeline: variable width + dash patterns
+                    var edgeUniforms = EdgeUniforms(
+                        viewProjectionMatrix: uniforms.viewProjectionMatrix,
+                        modelMatrix: uniforms.modelMatrix,
+                        viewMatrix: uniforms.viewMatrix,
+                        cameraPosition: uniforms.cameraPosition,
+                        materialParams: uniforms.materialParams,
+                        dashPatternParams: SIMD4<Float>(
+                            edgeConfig.dashPattern.dashLength,
+                            edgeConfig.dashPattern.gapLength,
+                            edgeConfig.dashPattern.dotLength,
+                            edgeConfig.dashPattern.phase
+                        ),
+                        edgeParams: SIMD4<Float>(edgeConfig.width, 0, 0, 0),
+                        clipPlanes: uniforms.clipPlanes,
+                        clipPlaneCount: clipPlaneCount,
+                        dashPatternType: edgeConfig.dashPattern.kind.rawValue,
+                        viewportSize: SIMD2<Float>(
+                            Float(max(drawableSize.width, 1)),
+                            Float(max(drawableSize.height, 1))
+                        ),
+                        _pad: SIMD2<Float>(0, 0)
+                    )
+                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    // The CPU buffer already contains the six-vertex triangle strip per segment.
+                    mainEncoder.drawPrimitives(
+                        type: .triangleStrip,
+                        vertexStart: 0,
+                        vertexCount: buffers.quadEdgeVertexCount)
+                } else {
+                    // Native Metal line pipeline (backward compatible)
+                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(
+                        &uniforms,
+                        length: MemoryLayout<Uniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                }
             }
         }
 
@@ -2620,12 +2706,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let indexCount = mesh.indexCount
         let vertexCount = mesh.vertexCount
 
-        // Build edge vertex buffer (convert polylines to line segment pairs)
-        let edgeVertices = RendererSharedBuffers.edgeLineVertices(from: body.edges)
-        let edgeVB = RendererSharedBuffers.makeEdgeBuffer(
-            device: device, edgeVertices: edgeVertices)
-        let edgeVertexCount = edgeVertices.count / 6
-        let edgePrimitiveCount = edgeVertexCount / 2
+        // Build edge vertex buffers
+        // Native lines: 2 vertices per segment (start, end)
+        let nativeEdgeVertices = RendererSharedBuffers.nativeEdgeLineVertices(from: body.edges)
+        let nativeEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: nativeEdgeVertices)
+        let nativeEdgeVertexCount = nativeEdgeVertices.count / 6
+        let nativeEdgePrimitiveCount = nativeEdgeVertexCount / 2
+
+        // Quad-expanded lines: six vertices per segment, each with a 9-float payload.
+        let quadEdgeVertices = RendererSharedBuffers.quadEdgeLineVertices(from: body.edges)
+        let quadEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: quadEdgeVertices)
+        let quadEdgeVertexCount = quadEdgeVertices.count / 9
 
         // Build point vertex buffer for vertex picking. Each entry in body.vertices
         // becomes one point sprite; uses the same position+normal stride as the
@@ -2660,7 +2753,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Skip bodies with no renderable data at all. Arc-only bodies have none of
         // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
-        guard vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil || !body.arcs.isEmpty
+        guard
+            vertexBuffer != nil
+                || nativeEdgeVB != nil
+                || pointPositionVB != nil
+                || !body.arcs.isEmpty
         else { return }
 
         // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
@@ -2729,9 +2826,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             normalBuffer: normalBuffer,
             indexBuffer: indexBuffer,
             indexCount: indexCount,
-            edgeVertexBuffer: edgeVB,
-            edgeVertexCount: edgeVertexCount,
-            edgePrimitiveCount: edgePrimitiveCount,
+            edgeVertexBuffer: nativeEdgeVB,
+            edgeVertexCount: nativeEdgeVertexCount,
+            edgePrimitiveCount: nativeEdgePrimitiveCount,
+            quadEdgeVertexBuffer: quadEdgeVB,
+            quadEdgeVertexCount: quadEdgeVertexCount,
             pointVertexBuffer: pointVB,
             pointVertexCount: pointVertexCount,
             pointPositionBuffer: pointPositionVB,

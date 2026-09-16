@@ -50,6 +50,9 @@ public struct OffscreenRenderOptions: Sendable {
     /// `ViewportConfiguration.gridSubdivisions`.
     public var gridSubdivisions: Int
 
+    /// Edge line rendering configuration (width, dash pattern, quad expansion).
+    public var edgeLineConfiguration: EdgeLineConfiguration
+
     /// Optional explicit orthographic projection bounds (world units).
     ///
     /// When set, overrides `cameraState.projectionMatrix(...)` and forces
@@ -86,6 +89,7 @@ public struct OffscreenRenderOptions: Sendable {
         msaaSampleCount: Int = 4,
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
+        edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
         measurements: [ViewportMeasurement] = []
@@ -101,6 +105,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.msaaSampleCount = msaaSampleCount
         self.gridBaseSpacing = gridBaseSpacing
         self.gridSubdivisions = gridSubdivisions
+        self.edgeLineConfiguration = edgeLineConfiguration
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
         self.measurements = measurements
@@ -131,6 +136,8 @@ public final class OffscreenRenderer: Sendable {
     /// render without a CPU interleave.
     private let directMeshPipeline: MTLRenderPipelineState
     private let wireframePipeline: MTLRenderPipelineState
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    private let quadEdgePipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
 
@@ -215,6 +222,11 @@ public final class OffscreenRenderer: Sendable {
                 depthFormat: depthFormat, vertexDescriptor: vertexDesc)
         else { return nil }
         self.wireframePipeline = wireframePipeline
+
+        self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -515,15 +527,65 @@ public final class OffscreenRenderer: Sendable {
             if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
                 var edgeBodyUniforms = bodyUniforms
                 if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
-                mainEncoder.setRenderPipelineState(wireframePipeline)
-                mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+
+                let edgeConfig = options.edgeLineConfiguration
+                let useQuadExpansion = edgeConfig.useQuadExpansion
+                var edgeUniforms = EdgeUniforms(
+                    viewProjectionMatrix: uniforms.viewProjectionMatrix,
+                    modelMatrix: uniforms.modelMatrix,
+                    viewMatrix: uniforms.viewMatrix,
+                    cameraPosition: uniforms.cameraPosition,
+                    materialParams: uniforms.materialParams,
+                    dashPatternParams: SIMD4<Float>(
+                        edgeConfig.dashPattern.dashLength,
+                        edgeConfig.dashPattern.gapLength,
+                        edgeConfig.dashPattern.dotLength,
+                        edgeConfig.dashPattern.phase
+                    ),
+                    edgeParams: SIMD4<Float>(edgeConfig.width, 0, 0, 0),
+                    clipPlanes: uniforms.clipPlanes,
+                    clipPlaneCount: uniforms.clipPlaneCount,
+                    dashPatternType: edgeConfig.dashPattern.kind.rawValue,
+                    viewportSize: SIMD2<Float>(Float(max(w, 1)), Float(max(h, 1))),
+                    _pad: SIMD2<Float>(0, 0)
+                )
+
+                if useQuadExpansion,
+                    let quadPipeline = quadEdgePipeline,
+                    let quadEdgeVB = buffers.quadEdgeVertexBuffer,
+                    buffers.quadEdgeVertexCount > 0
+                {
+                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeUniforms,
+                        length: MemoryLayout<EdgeUniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .triangleStrip,
+                        vertexStart: 0,
+                        vertexCount: buffers.quadEdgeVertexCount)
+                } else {
+                    // Native Metal line pipeline (backward compatible)
+                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                    mainEncoder.setVertexBytes(
+                        &uniforms,
+                        length: MemoryLayout<Uniforms>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                }
             }
         }
 
@@ -731,10 +793,15 @@ public final class OffscreenRenderer: Sendable {
 
         let mesh = RendererSharedBuffers.makeMeshBuffers(device: device, body: body)
 
-        let edgeVertices = RendererSharedBuffers.edgeLineVertices(from: body.edges)
-        let edgeVB = RendererSharedBuffers.makeEdgeBuffer(
-            device: device, edgeVertices: edgeVertices)
-        let edgeVertexCount = edgeVertices.count / 6
+        let nativeEdgeVertices = RendererSharedBuffers.nativeEdgeLineVertices(from: body.edges)
+        let nativeEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: nativeEdgeVertices)
+        let nativeEdgeVertexCount = nativeEdgeVertices.count / 6
+
+        let quadEdgeVertices = RendererSharedBuffers.quadEdgeLineVertices(from: body.edges)
+        let quadEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: quadEdgeVertices)
+        let quadEdgeVertexCount = quadEdgeVertices.count / 9
 
         // Point-cloud buffers (issue #28), built only when `body.vertices` is non-empty.
         let pointPositionVB = RendererSharedBuffers.makePointPositionBuffer(
@@ -742,15 +809,19 @@ public final class OffscreenRenderer: Sendable {
         let pointColorVB = RendererSharedBuffers.makePointColorBuffer(
             device: device, vertexColors: body.vertexColors, vertexCount: body.vertices.count)
 
-        guard mesh.vertexBuffer != nil || edgeVB != nil || pointPositionVB != nil else { return }
+        guard mesh.vertexBuffer != nil || nativeEdgeVB != nil || pointPositionVB != nil else {
+            return
+        }
 
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
             vertexBuffer: mesh.vertexBuffer,
             normalBuffer: mesh.normalBuffer,
             indexBuffer: mesh.indexBuffer,
             indexCount: mesh.indexCount,
-            edgeVertexBuffer: edgeVB,
-            edgeVertexCount: edgeVertexCount,
+            edgeVertexBuffer: nativeEdgeVB,
+            edgeVertexCount: nativeEdgeVertexCount,
+            quadEdgeVertexBuffer: quadEdgeVB,
+            quadEdgeVertexCount: quadEdgeVertexCount,
             vertexCount: mesh.vertexCount,
             pointPositionBuffer: pointPositionVB,
             pointVertexCount: pointPositionVB != nil ? body.vertices.count : 0,
@@ -774,6 +845,8 @@ private struct BodyBuffersOffscreen {
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
     let edgeVertexCount: Int
+    let quadEdgeVertexBuffer: MTLBuffer?
+    let quadEdgeVertexCount: Int
     let vertexCount: Int
 
     /// Tight position buffer (stride 12) for the visible point-cloud pass.

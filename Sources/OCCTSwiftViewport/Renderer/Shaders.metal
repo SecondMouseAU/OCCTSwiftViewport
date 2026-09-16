@@ -727,6 +727,11 @@ fragment void depth_only_fragment() {
 
 // MARK: - Wireframe Pipeline
 
+struct WireframeVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+};
+
 vertex WireframeVertexOut wireframe_vertex(
     VertexIn in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]]
@@ -785,6 +790,165 @@ fragment WireframeFragmentOut wireframe_fragment(
     // edgeIntensity: 0 = invisible, 1 = normal, 2 = fully opaque at all depths
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+
+    WireframeFragmentOut out;
+    out.color = float4(edgeColor, edgeAlpha);
+    return out;
+}
+
+// MARK: - Quad-Expanded Wireframe Pipeline (variable width + dash patterns)
+
+/// Vertex input for quad-expanded edges. Each vertex carries its endpoint,
+/// arc length, quad corner, and local segment direction.
+struct QuadEdgeVertexIn {
+    float3 position [[attribute(0)]];
+    float arcLength [[attribute(1)]];
+    float2 quadCorner [[attribute(2)]];
+    float3 segmentDirection [[attribute(3)]];
+};
+
+struct QuadEdgeVertexOut {
+    float4 clipPosition [[position]];
+    float4 clipPositionCopy;
+    float3 worldPosition;
+    float arcLength;
+    float2 quadCorner;
+};
+
+struct EdgeUniforms {
+    float4x4 viewProjectionMatrix;
+    float4x4 modelMatrix;
+    float4x4 viewMatrix;
+    float4   cameraPosition;
+    float4   materialParams;
+    float4   dashPatternParams;  // x = dashLength, y = gapLength, z = dotLength, w = phase
+    float4   edgeParams;         // x = width in pixels
+    float4   clipPlanes[4];
+    uint     clipPlaneCount;
+    uint     dashPatternType;
+    float2   viewportSize;
+    float2   _pad;
+};
+
+vertex QuadEdgeVertexOut quad_edge_vertex(
+    QuadEdgeVertexIn in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    uint vertexID [[vertex_id]]
+) {
+    uint localVertex = vertexID % 6u;
+    float2 cornerOffset = in.quadCorner;
+    if (localVertex >= 4u) {
+        cornerOffset = float2(0.5, 0.5);
+    }
+
+    float3 localDirection = normalize(in.segmentDirection);
+    if (dot(localDirection, localDirection) < 1e-8) {
+        localDirection = float3(1.0, 0.0, 0.0);
+    }
+
+    float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
+    float4 baseClipPos = uniforms.viewProjectionMatrix * worldPos;
+    float3 worldDirection = normalize(
+        (uniforms.modelMatrix * float4(localDirection, 0.0)).xyz);
+    if (dot(worldDirection, worldDirection) < 1e-8) {
+        worldDirection = float3(1.0, 0.0, 0.0);
+    }
+
+    float4 endClipPos = uniforms.viewProjectionMatrix
+        * (worldPos + float4(worldDirection, 0.0));
+    float baseW = max(baseClipPos.w, 1e-6);
+    float endW = max(endClipPos.w, 1e-6);
+    float2 directionNDC = endClipPos.xy / endW - baseClipPos.xy / baseW;
+    float2 viewportSize = max(uniforms.viewportSize, float2(1.0, 1.0));
+    float2 directionPixels = directionNDC * viewportSize;
+    float directionLengthSq = dot(directionPixels, directionPixels);
+    float2 perpendicular;
+    if (directionLengthSq > 1e-12) {
+        perpendicular = normalize(float2(-directionPixels.y, directionPixels.x));
+    } else {
+        perpendicular = float2(0.0, 1.0);
+    }
+
+    float2 ndcOffset = perpendicular
+        * (uniforms.edgeParams.x * 0.5)
+        * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y)
+        * cornerOffset;
+    float4 expandedClipPos = baseClipPos;
+    expandedClipPos.xy += ndcOffset;
+
+    QuadEdgeVertexOut out;
+    out.clipPosition = expandedClipPos;
+    out.clipPositionCopy = expandedClipPos;
+    out.worldPosition = worldPos.xyz;
+    out.arcLength = in.arcLength;
+    out.quadCorner = cornerOffset;
+    return out;
+}
+
+fragment WireframeFragmentOut quad_edge_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    // Clip plane discard
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        float4 plane = uniforms.clipPlanes[cp];
+        if (dot(plane.xyz, in.worldPosition) + plane.w < 0.0) {
+            discard_fragment();
+        }
+    }
+
+    float3 bodyColor = bodyUniforms.color.rgb;
+    float bodyAlpha = bodyUniforms.color.a;
+
+    if (bodyUniforms.metallic < 0.0) {
+        WireframeFragmentOut out;
+        out.color = float4(bodyColor, bodyAlpha);
+        return out;
+    }
+
+    float alpha = 1.0;
+    uint patternType = uniforms.dashPatternType;
+    if (patternType != 0u) {
+        float dashLength = max(uniforms.dashPatternParams.x, 0.0);
+        float gapLength = max(uniforms.dashPatternParams.y, 0.0);
+        float dotLength = max(uniforms.dashPatternParams.z, 0.0);
+        float phase = uniforms.dashPatternParams.w;
+        if (patternType == 3u) {
+            float period = dashLength + gapLength + dotLength + gapLength;
+            if (period > 0.0) {
+                float pos = fmod(in.arcLength + phase, period);
+                if (pos < 0.0) { pos += period; }
+                if ((pos > dashLength && pos < dashLength + gapLength)
+                    || pos > dashLength + gapLength + dotLength) {
+                    discard_fragment();
+                }
+            }
+        } else {
+            float period = dashLength + gapLength;
+            if (period > 0.0) {
+                float pos = fmod(in.arcLength + phase, period);
+                if (pos < 0.0) { pos += period; }
+                if (pos > dashLength) {
+                    discard_fragment();
+                }
+            }
+        }
+    }
+
+    float edgeIntensity = max(uniforms.edgeParams.x > 1.5 ? 2.0 : 1.0, 0.0);
+    float luminance = dot(bodyColor, float3(0.299, 0.587, 0.114));
+    float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
+    float3 lightEdge = bodyColor * 0.4 + 0.6;
+    float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+
+    float nearPlane = uniforms.cameraPosition.w;
+    float farPlane = uniforms.materialParams.w;
+    float clipZ = in.clipPositionCopy.z;
+    float clipW = in.clipPositionCopy.w;
+    float linearDepth = saturate((clipZ / clipW - nearPlane / farPlane) / (1.0 - nearPlane / farPlane));
+    float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
+    float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
