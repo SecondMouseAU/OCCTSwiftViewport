@@ -42,4 +42,14 @@ public struct BoundingBox: Hashable, Sendable {
             max: simd_max(self.max, other.max)
         )
     }
+
+    /// Returns the minimum distance from `point` to the box.
+    ///
+    /// If the point is inside the box, returns 0.
+    public func distance(to point: SIMD3<Float>) -> Float {
+        let dx = Swift.max(0, Swift.max(min.x - point.x, point.x - max.x))
+        let dy = Swift.max(0, Swift.max(min.y - point.y, point.y - max.y))
+        let dz = Swift.max(0, Swift.max(min.z - point.z, point.z - max.z))
+        return simd_length(SIMD3<Float>(dx, dy, dz))
+    }
 }

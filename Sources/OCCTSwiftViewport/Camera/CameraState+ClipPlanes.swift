@@ -24,11 +24,17 @@ extension CameraState {
         let radius = max(bounds.diagonalLength * 0.5, 1e-4)
         let camDist = simd_length(position - center)
 
+        // Compute actual minimum distance from camera to the AABB.
+        // This correctly handles the case when the camera is inside the scene bounds
+        // (returns 0), avoiding the section-view artifact where the near plane
+        // cut through geometry as the camera entered the bounding sphere.
+        let minDistToBox = bounds.distance(to: position)
+
         // Far reaches past the back of the scene with margin; near hugs the front
         // of the scene but is clamped so far/near never exceeds ~1e4.
         var far = (camDist + radius) * 2.0
         far = max(far, radius * 2.0)
-        var near = max(camDist - radius, far * 1e-4)
+        var near = max(minDistToBox, far * 1e-4)
         near = max(near, 1e-4)
         if near >= far { near = far * 1e-4 }
         return (near, far)
