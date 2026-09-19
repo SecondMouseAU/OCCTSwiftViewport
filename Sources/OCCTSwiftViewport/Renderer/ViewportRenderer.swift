@@ -2747,7 +2747,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Picking
 
-    /// Reads a single pixel from the pick ID buffer and decodes the result.
+    /// Reads a pixel (or neighborhood) from the pick ID buffer and decodes the result.
     ///
     /// - Parameters:
     ///   - pixel: The pixel coordinate (in drawable pixels) to sample.
@@ -2760,6 +2760,29 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return
         }
 
+        // Get pick radius from configuration (0 = exact pixel, >0 = neighborhood)
+        let pickRadius = controller?.configuration.pickingConfiguration.pickRadius ?? 0
+        let radius = max(0, pickRadius)
+
+        if radius == 0 {
+            // Fast path: exact 1x1 pixel pick
+            performExactPick(at: pixel, texture: pickTexture, completion: completion)
+        } else {
+            // Neighborhood pick: sample (2*radius+1)² region
+            performNeighborhoodPick(
+                at: pixel,
+                radius: radius,
+                texture: pickTexture,
+                completion: completion)
+        }
+    }
+
+    /// Exact 1x1 pixel pick (original implementation).
+    private func performExactPick(
+        at pixel: SIMD2<Int>,
+        texture: MTLTexture,
+        completion: @escaping @Sendable (PickResult?) -> Void
+    ) {
         // Clamp to texture bounds
         let x = max(0, min(pixel.x, pickTextureManager.width - 1))
         let y = max(0, min(pixel.y, pickTextureManager.height - 1))
@@ -2773,7 +2796,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Blit 1x1 region from private pick texture to shared readback buffer
         blitEncoder.copy(
-            from: pickTexture,
+            from: texture,
             sourceSlice: 0,
             sourceLevel: 0,
             sourceOrigin: MTLOrigin(x: x, y: y, z: 0),
@@ -2802,6 +2825,103 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
             Task { @MainActor in
                 completion(result)
+            }
+        }
+
+        commandBuffer.commit()
+    }
+
+    /// Neighborhood pick: samples a square region around the target pixel.
+    ///
+    /// Returns the best non-background hit, preferring edges/vertices over faces.
+    private func performNeighborhoodPick(
+        at pixel: SIMD2<Int>,
+        radius: Int,
+        texture: MTLTexture,
+        completion: @escaping @Sendable (PickResult?) -> Void
+    ) {
+        let startX = max(0, pixel.x - radius)
+        let startY = max(0, pixel.y - radius)
+        let endX = min(pickTextureManager.width - 1, pixel.x + radius)
+        let endY = min(pickTextureManager.height - 1, pixel.y + radius)
+        let actualWidth = endX - startX + 1
+        let actualHeight = endY - startY + 1
+
+        guard actualWidth > 0, actualHeight > 0 else {
+            completion(nil)
+            return
+        }
+
+        let bytesPerRow = Self.alignedBytesPerRow(forWidth: actualWidth)
+        let totalBytes = bytesPerRow * actualHeight
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+            let blitEncoder = commandBuffer.makeBlitCommandEncoder(),
+            let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: totalBytes)
+        else {
+            completion(nil)
+            return
+        }
+
+        blitEncoder.copy(
+            from: texture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: startX, y: startY, z: 0),
+            sourceSize: MTLSize(width: actualWidth, height: actualHeight, depth: 1),
+            to: readbackBuffer,
+            destinationOffset: 0,
+            destinationBytesPerRow: bytesPerRow,
+            destinationBytesPerImage: totalBytes
+        )
+        blitEncoder.endEncoding()
+
+        let indexMap = currentIndexMap
+        let layerMap = currentLayerMap
+        let centerX = pixel.x - startX
+        let centerY = pixel.y - startY
+
+        commandBuffer.addCompletedHandler { @Sendable _ in
+            let base = readbackBuffer.contents()
+            var bestResult: PickResult? = nil
+            var bestPriority = -1
+            var bestDistSq = Int.max
+
+            for row in 0..<actualHeight {
+                let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
+                for col in 0..<actualWidth {
+                    let rawValue = rowValues[col]
+                    guard
+                        let result = PickResult(
+                            rawValue: rawValue,
+                            indexMap: indexMap,
+                            layerMap: layerMap
+                        )
+                    else {
+                        continue
+                    }
+
+                    let priority: Int
+                    switch result.kind {
+                    case .vertex: priority = 2
+                    case .edge: priority = 1
+                    case .face: priority = 0
+                    }
+
+                    let dx = col - centerX
+                    let dy = row - centerY
+                    let distSq = dx * dx + dy * dy
+                    let isCloser = priority == bestPriority && distSq < bestDistSq
+                    if priority > bestPriority || isCloser {
+                        bestPriority = priority
+                        bestDistSq = distSq
+                        bestResult = result
+                    }
+                }
+            }
+
+            Task { @MainActor in
+                completion(bestResult)
             }
         }
 
