@@ -2,6 +2,68 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [1.2.1] - 2026-09-19
+
+### Fixed
+- **The near clip plane is now measured to the scene's bounding box, not its bounding sphere**
+  (issue #116). `CameraState.clipPlanes(sceneBounds:)` derived `near` from `cameraDistance - sphereRadius`.
+  For any scene that is not roughly cubic, the circumscribed sphere is much larger than the geometry,
+  so a camera clear of the model could still be inside the sphere. That made the expression negative,
+  `near` collapsed to the `far * 1e-4` floor, and roughly four orders of magnitude of depth precision
+  went with it, showing up as section-view artifacts on flat or elongated models.
+  - `near` is now `BoundingBox.distance(to: cameraPosition)`. On a 20 x 20 x 2 slab viewed from 5 units
+    out, `near` goes from the 0.0038 floor to the true 4.0, and the `far/near` ratio from 10,000 to
+    about 9.6.
+  - Behaviour is unchanged when the camera is genuinely inside the geometry: the distance to the box
+    is `0` there, so the floor still applies, and unchanged for `nil` bounds.
+- **Zoom-at-cursor no longer drifts the pivot when dynamic pivoting is turned off** (issue #117).
+  `CameraController.zoomToward(factor:cursorNormalized:aspectRatio:)` always shifted the pivot toward
+  the cursor, so apps that set `dynamicPivotConfiguration.isEnabled = false` still had their orbit
+  centre walk across the model as the user scrolled. The zoom itself is unaffected; only the pivot
+  shift is gated.
+
+### Added
+- **`BoundingBox.distance(to:)`**, the minimum distance from a point to the box, returning `0` for a
+  point inside or on it. Extracted for the clip-plane fix above and useful on its own wherever a
+  sphere approximation is too coarse.
+- **`CameraController.zoomTowardShiftsPivot`** (`Bool`, defaults to `true`, so existing behaviour is
+  the default). `ViewportController` keeps it in step with
+  `ViewportConfiguration.dynamicPivotConfiguration.isEnabled`.
+
+### Changed
+- CI installs the Metal toolchain on Xcode 27+ runners, where it is no longer present by default and
+  shader compilation failed with `cannot execute tool 'metal'` (issue #120). The step is guarded on
+  `xcodebuild -downloadComponent` existing, since the macos-15 runner's Xcode predates it.
+- `okf/policies/context-first.md` is resynced with the ecosystem canonical. The per-class OCCT
+  reference manual **is** indexed as `occt-refman`; this copy said it was not, which sent agents to
+  the bundled headers or to `WebFetch` as a first resort.
+
+### Tests
+- **228 tests in 40 suites**, up from 217 in 39. The two fixes above merged without test coverage;
+  this release backfills it rather than tagging over the gap.
+  - `BoundingBoxTests`: five cases for `distance(to:)` (inside, on the boundary, off one face, off a
+    corner, and the slab case that distinguishes box distance from sphere distance).
+  - `ClipPlaneTests`: two cases pinning #116. The camera-inside-the-sphere case was verified to fail
+    against the pre-fix expression and pass after it; the pre-existing "camera inside the scene" test
+    passed either way, which is why the regression was not caught.
+  - `CameraControllerZoomTests` (new suite): four cases covering the pivot shift on and off, a centred
+    cursor, and the `ViewportController` sync.
+
+### Documentation
+- `README.md`: the install snippet resolved from a `../OCCTSwiftViewport` sibling path, which the
+  ecosystem standard reversed on 2026-08-20 in favour of URL-only resolution (a path dependency is
+  never version-checked and drops the pin from `Package.resolved`). It now resolves from the published
+  URL, pinned at `1.2.1` rather than the stale `1.1.23`. Test counts corrected from "37 tests across
+  9 suites".
+- `docs/reference/Math.md`: `BoundingBox.distance(to:)` documented.
+- `docs/reference/Camera.md`: `clipPlanes(sceneBounds:)` prose corrected from sphere to box,
+  `zoomTowardShiftsPivot` added to the configuration table, and `zoomToward` documents the gate.
+
+### Note on versioning
+Tags and changelog headings diverged before this release. Sections `[1.1.28]` through `[1.1.31]`
+were never tagged individually: they all shipped in the **v1.2.0** tag of 2026-08-19, which has no
+heading of its own. `[1.2.1]` corresponds to the `v1.2.1` tag, and headings track tags from here.
+
 ## [1.1.31] - 2026-08-19
 
 ### Changed
