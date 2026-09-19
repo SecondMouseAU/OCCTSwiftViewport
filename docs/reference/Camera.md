@@ -138,7 +138,9 @@ Returns a perspective or orthographic projection matrix in Metal NDC (z in [0, 1
 public func clipPlanes(sceneBounds: BoundingBox?) -> (near: Float, far: Float)
 ```
 
-Returns scene-adaptive near/far clip distances. When `sceneBounds` is `nil` (empty scene) returns `(0.01, 10_000)`. Otherwise computes distances from the camera to the near and far surfaces of the scene's bounding sphere, clamping the `far/near` ratio to ≤ 1e4 to preserve depth-buffer precision regardless of model scale.
+Returns scene-adaptive near/far clip distances. When `sceneBounds` is `nil` (empty scene) returns `(0.01, 10_000)`. Otherwise `far` reaches past the back of the scene's bounding sphere, while `near` is the true distance from the camera to the bounding **box** (`BoundingBox.distance(to:)`), clamping the `far/near` ratio to ≤ 1e4 to preserve depth-buffer precision regardless of model scale.
+
+Measuring `near` against the box rather than the sphere matters for non-cubic scenes. A camera that is clear of the geometry but inside its circumscribed sphere used to collapse `near` to the `far * 1e-4` floor, throwing away roughly four orders of magnitude of depth precision and producing section-view artifacts (issue #116). `near` still falls back to that floor when the camera is genuinely inside the geometry, where the distance to the box is `0`.
 
 ```swift
 let (near, far) = state.clipPlanes(sceneBounds: sceneBB)
@@ -278,6 +280,7 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 | `maxPhi` | `Float` | `π − 0.01` | Max vertical angle (turntable) |
 | `dampingFactor` | `Float` | `0.1` | Inertia decay per frame (0 = coast forever) |
 | `enableInertia` | `Bool` | `true` | Whether inertia is applied after gestures end |
+| `zoomTowardShiftsPivot` | `Bool` | `true` | Whether `zoomToward` shifts the pivot toward the cursor |
 
 ---
 
@@ -332,6 +335,8 @@ public func zoomToward(factor: Float, cursorNormalized: SIMD2<Float>?, aspectRat
 ```
 
 Zoom-at-cursor / pinch-at-fingers. Adjusts the pivot so the world point under `cursorNormalized` stays stationary during the zoom. Works in both perspective and orthographic modes. `nil` cursor = plain centre zoom.
+
+The pivot shift is gated on `zoomTowardShiftsPivot`. When that is `false` the zoom still changes distance (or orthographic scale) and the pivot holds still, so zoom-at-cursor no longer drifts the orbit centre for apps that have turned dynamic pivoting off. `ViewportController` keeps the flag in step with `ViewportConfiguration.dynamicPivotConfiguration.isEnabled` (issue #117).
 
 ---
 

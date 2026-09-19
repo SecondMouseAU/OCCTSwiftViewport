@@ -50,8 +50,7 @@ This package provides two library products:
 ```swift
 // Package.swift
 dependencies: [
-    .package(path: "../OCCTSwiftViewport"),
-    // or: .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.1.23")
+    .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.2.1")
 ],
 targets: [
     .target(
@@ -542,7 +541,7 @@ The demo app imports STEP, STL, OBJ, and BREP files. On macOS, drag and drop or 
 
 ## Testing
 
-37 tests across 9 suites using Swift Testing framework:
+228 tests across 40 suites using Swift Testing framework:
 
 ```bash
 swift test                                    # Run all tests
@@ -550,7 +549,7 @@ swift test --filter CameraStateTests          # Single suite
 swift test --filter "CameraStateTests/Default initialization"  # Single test
 ```
 
-Test suites cover camera state, bounding box, ray casting, projection, pivot strategy, and viewport body primitives.
+Test suites cover camera state and control, bounding boxes, clip planes, ray casting, projection, pivot strategy, picking and pick filters, viewport body primitives, and headless renders of the live renderer.
 
 ## Build
 

@@ -15,7 +15,7 @@ Spatial primitives for 3D viewport operations: axis-aligned bounding boxes, view
 
 ## BoundingBox
 
-`BoundingBox` is an axis-aligned bounding box (AABB) value type defined by minimum and maximum corners. It supports union operations, diagonal measurement, and transformation by 4×4 matrices. When combined with `Frustum`, it enables per-body frustum culling to skip out-of-view geometry at render time.
+`BoundingBox` is an axis-aligned bounding box (AABB) value type defined by minimum and maximum corners. It supports union operations, diagonal measurement, point-to-box distance queries, and transformation by 4×4 matrices. When combined with `Frustum`, it enables per-body frustum culling to skip out-of-view geometry at render time.
 
 ---
 
@@ -143,6 +143,31 @@ Useful for combining scene bounds or merging multiple body AABBs.
   let box2 = BoundingBox(min: SIMD3(3, 3, 3), max: SIMD3(8, 8, 8))
   let combined = box1.union(box2)
   // combined.min = (0, 0, 0), combined.max = (8, 8, 8)
+  ```
+
+---
+
+### `distance(to:)`
+
+Returns the shortest distance from `point` to the box, or `0` when the point is inside it.
+
+```swift
+public func distance(to point: SIMD3<Float>) -> Float
+```
+
+Measured to the box itself, not to its circumscribed sphere. The two disagree sharply for
+non-cubic bounds: a flat slab's sphere can be several times its own thickness, so a point clear of
+the slab can still sit inside the sphere. `CameraState.clipPlanes(sceneBounds:)` relies on this to
+keep the near plane against the geometry once the camera moves inside the scene's bounding sphere
+(issue #116).
+
+- **Parameters:** `point`, the point to measure from.
+- **Returns:** The minimum distance to the box, and `0` for a point inside or on it.
+- **Example:**
+  ```swift
+  let slab = BoundingBox(min: SIMD3(-10, -10, -1), max: SIMD3(10, 10, 1))
+  slab.distance(to: SIMD3(0, 0, 5))   // 4.0, clear of the slab
+  slab.distance(to: SIMD3(0, 0, 0))   // 0.0, inside it
   ```
 
 ---
