@@ -2,6 +2,15 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Orbit, pinch and rotate work again on macOS 27** (issue #127). SwiftUI `DragGesture`,
+  `MagnifyGesture` and `RotateGesture` never fire over the Metal view there. `ScrollCaptureMTKView`
+  now handles `mouseDragged`, `mouseUp`, `magnify` and `rotate` natively and dispatches `.dragChanged`,
+  `.dragEnded`, `.pinchAtChanged` and `.rotateChanged` itself; the SwiftUI macOS gestures are removed.
+  iOS/visionOS are unchanged.
+
 ## [1.2.1] - 2026-09-19
 
 ### Fixed
