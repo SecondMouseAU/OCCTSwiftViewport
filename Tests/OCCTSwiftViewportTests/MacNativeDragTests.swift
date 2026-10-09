@@ -62,10 +62,10 @@
             }
             view.onMagnifyEnd = { ends += 1 }
 
-            view.handleMagnify(magnification: 0.25, phase: .changed, locationInWindow: .zero)
-            view.handleMagnify(magnification: -0.1, phase: .changed, locationInWindow: .zero)
-            view.handleMagnify(magnification: 0, phase: .ended, locationInWindow: .zero)
-            view.handleMagnify(magnification: 0, phase: .cancelled, locationInWindow: .zero)
+            view.handleMagnify(magnificationDelta: 0.25, phase: .changed, locationInWindow: .zero)
+            view.handleMagnify(magnificationDelta: -0.1, phase: .changed, locationInWindow: .zero)
+            view.handleMagnify(magnificationDelta: 0, phase: .ended, locationInWindow: .zero)
+            view.handleMagnify(magnificationDelta: 0, phase: .cancelled, locationInWindow: .zero)
 
             #expect(scales == [1.25, 0.9])
             #expect(ends == 2)

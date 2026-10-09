@@ -123,7 +123,7 @@ import SwiftUI
 
         override func magnify(with event: NSEvent) {
             handleMagnify(
-                magnification: event.magnification, phase: event.phase,
+                magnificationDelta: event.magnification, phase: event.phase,
                 locationInWindow: event.locationInWindow)
         }
 
@@ -132,16 +132,17 @@ import SwiftUI
         }
 
         func handleMagnify(
-            magnification: CGFloat, phase: NSEvent.Phase, locationInWindow: CGPoint
+            magnificationDelta: CGFloat, phase: NSEvent.Phase, locationInWindow: CGPoint
         ) {
             switch phase {
             case .ended, .cancelled:
                 onMagnifyEnd?()
             default:
-                // `NSEvent.magnification` is the per-event delta (0 = no change), so 1 + delta
-                // is the incremental scale factor `.pinchAtChanged` expects.
+                // Apple: `NSEvent.magnification` is "the change in magnification" for this event
+                // (0 = no change; a cumulative scale is the SwiftUI `MagnifyGesture` model, not this).
+                // `.pinchAtChanged` wants an incremental scale factor (1 = no change), hence 1 + delta.
                 let locationInView = convert(locationInWindow, from: nil)
-                onMagnify?(1 + magnification, locationInView, bounds.size)
+                onMagnify?(1 + magnificationDelta, locationInView, bounds.size)
             }
         }
 
