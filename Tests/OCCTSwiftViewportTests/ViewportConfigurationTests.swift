@@ -1,4 +1,5 @@
 import Testing
+
 @testable import OCCTSwiftViewport
 
 @Suite("ViewportConfiguration presets")
@@ -34,5 +35,12 @@ struct ViewportConfigurationTests {
     func cadHighQualityAutoSmoothNormals() {
         #expect(ViewportConfiguration.cadHighQuality.autoSmoothNormals == true)
         #expect(ViewportConfiguration().autoSmoothNormals == false)
+    }
+
+    @Test("Pick radius clamps negative and oversized values")
+    func pickRadiusClampsToBounds() {
+        #expect(PickingConfiguration(pickRadius: -4).pickRadius == 0)
+        #expect(PickingConfiguration(pickRadius: 3).pickRadius == 3)
+        #expect(PickingConfiguration(pickRadius: 10_000).pickRadius == 32)
     }
 }
