@@ -2762,7 +2762,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Get pick radius from configuration (0 = exact pixel, >0 = neighborhood)
         let pickRadius = controller?.configuration.pickingConfiguration.pickRadius ?? 0
-        let radius = max(0, pickRadius)
+        // `pickRadius` is a public mutable property, so enforce the documented 32px bound here
+        // as well as in `PickingConfiguration.init`.
+        let radius = min(max(0, pickRadius), 32)
 
         if radius == 0 {
             // Fast path: exact 1x1 pixel pick
@@ -2857,7 +2859,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let blitEncoder = commandBuffer.makeBlitCommandEncoder(),
-            let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: totalBytes)
+            // Per-request buffer (tiny: at most 65x65 px): the shared region buffer could be
+            // overwritten by an overlapping pick before this completion handler reads it.
+            let readbackBuffer = device.makeBuffer(length: totalBytes, options: .storageModeShared)
         else {
             completion(nil)
             return
