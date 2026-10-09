@@ -63,7 +63,8 @@ public struct EdgeLineDashPattern: Sendable, Hashable {
     public static let dashed = EdgeLineDashPattern(
         kind: .dashed, dashLength: 10, gapLength: 5)
 
-    /// Dotted line.
+    /// Dotted line, rendered as very short square-ended dashes (`dashLength`/`gapLength`);
+    /// round dots are not supported and `dotLength` is unused for this kind.
     public static let dotted = EdgeLineDashPattern(
         kind: .dotted, dashLength: 2, gapLength: 3, dotLength: 2)
 

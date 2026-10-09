@@ -835,11 +835,8 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     constant EdgeUniforms &uniforms [[buffer(1)]],
     uint vertexID [[vertex_id]]
 ) {
-    uint localVertex = vertexID % 6u;
+    // The two degenerate strip-break vertices (4, 5) already carry corner (0.5, 0.5) from the buffer.
     float2 cornerOffset = in.quadCorner;
-    if (localVertex >= 4u) {
-        cornerOffset = float2(0.5, 0.5);
-    }
 
     float3 localDirection = normalize(in.segmentDirection);
     if (dot(localDirection, localDirection) < 1e-8) {
