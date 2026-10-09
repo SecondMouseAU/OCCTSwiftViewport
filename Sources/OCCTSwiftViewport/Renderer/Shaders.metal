@@ -835,8 +835,9 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     constant EdgeUniforms &uniforms [[buffer(1)]],
     uint vertexID [[vertex_id]]
 ) {
-    // The two degenerate strip-break vertices (4, 5) already carry corner (0.5, 0.5) from the buffer.
-    float2 cornerOffset = in.quadCorner;
+    // quadCorner = (along, side): `along` is already baked into the vertex position (start/end);
+    // `side` (+-0.5) is the perpendicular offset in units of the line width.
+    float side = in.quadCorner.y;
 
     float3 localDirection = normalize(in.segmentDirection);
     if (dot(localDirection, localDirection) < 1e-8) {
@@ -867,9 +868,8 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     }
 
     float2 ndcOffset = perpendicular
-        * (uniforms.edgeParams.x * 0.5)
-        * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y)
-        * cornerOffset;
+        * (uniforms.edgeParams.x * side * 2.0)
+        * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y);
     float4 expandedClipPos = baseClipPos;
     expandedClipPos.xy += ndcOffset;
 
@@ -878,7 +878,7 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     out.clipPositionCopy = expandedClipPos;
     out.worldPosition = worldPos.xyz;
     out.arcLength = in.arcLength;
-    out.quadCorner = cornerOffset;
+    out.quadCorner = in.quadCorner;
     return out;
 }
 
@@ -933,19 +933,13 @@ fragment WireframeFragmentOut quad_edge_fragment(
         }
     }
 
-    float edgeIntensity = max(uniforms.edgeParams.x > 1.5 ? 2.0 : 1.0, 0.0);
     float luminance = dot(bodyColor, float3(0.299, 0.587, 0.114));
     float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
 
-    float nearPlane = uniforms.cameraPosition.w;
-    float farPlane = uniforms.materialParams.w;
-    float clipZ = in.clipPositionCopy.z;
-    float clipW = in.clipPositionCopy.w;
-    float linearDepth = saturate((clipZ / clipW - nearPlane / farPlane) / (1.0 - nearPlane / farPlane));
-    float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
-    float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    // Matches the native wireframe path at its default edge intensity (1.0): no depth fade.
+    float edgeAlpha = alpha;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);

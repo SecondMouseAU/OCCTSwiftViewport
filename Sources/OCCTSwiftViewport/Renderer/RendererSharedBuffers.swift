@@ -79,7 +79,8 @@ enum RendererSharedBuffers {
     ///
     /// Format per vertex: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].
     /// - `arcLength` is the distance along the polyline from its start (in world units).
-    /// - `corner` is the quad corner offset in the range -0.5...0.5.
+    /// - `corner` is `(along, side)`: `along` is -0.5 at the segment start and 0.5 at its end;
+    ///   `side` (-0.5 or 0.5) is the perpendicular offset, in units of the line width.
     /// - `direction` is the normalized local-space segment direction.
     /// - Each segment produces 6 vertices: 4 corners plus 2 degenerate strip-break vertices.
     static func quadEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
@@ -100,6 +101,8 @@ enum RendererSharedBuffers {
                 let direction = segment / segmentLength
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
+                // Strip order: start-left, start-right, end-left, end-right, then two repeats of the
+                // last vertex to break the strip before the next segment.
                 let corners: [SIMD2<Float>] = [
                     SIMD2<Float>(-0.5, -0.5),
                     SIMD2<Float>(-0.5, 0.5),
@@ -109,8 +112,9 @@ enum RendererSharedBuffers {
                     SIMD2<Float>(0.5, 0.5),
                 ]
                 for (index, corner) in corners.enumerated() {
-                    let position = index < 4 ? a : b
-                    let arcLength = index < 4 ? arcA : arcB
+                    let atStart = index < 2
+                    let position = atStart ? a : b
+                    let arcLength = atStart ? arcA : arcB
                     vertices.append(contentsOf: [
                         position.x, position.y, position.z, arcLength, corner.x, corner.y,
                         direction.x, direction.y, direction.z,
