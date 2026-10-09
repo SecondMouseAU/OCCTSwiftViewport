@@ -91,10 +91,8 @@ public struct MetalViewportView: View {
                         )
                         .gesture(doubleTapGesture)
                     #else
-                        .gesture(macGestures)
-                        // Same exclusivity issue on the macOS trackpad.
-                        .simultaneousGesture(macMagnifyGesture(viewSize: geometry.size))
-                        .simultaneousGesture(macRotateGesture)
+                        // Drag / magnify / rotate are handled natively by
+                        // `ScrollCaptureMTKView` (SwiftUI gestures never fire over it on macOS 27).
                     #endif
 
                 if controller.showViewCube {
@@ -280,12 +278,45 @@ public struct MetalViewportView: View {
             let onMouseDown: (CGPoint, CGSize) -> Void = { location, viewSize in
                 handlePickAt(location, viewSize: viewSize)
             }
+            let onDrag: (SIMD2<Float>, ViewportModifierKeys) -> Void = { delta, modifiers in
+                controller.dispatch(.dragChanged(delta: delta, modifiers: modifiers))
+            }
+            let onDragEnd: (SIMD2<Float>, ViewportModifierKeys) -> Void = { velocity, modifiers in
+                controller.dispatch(.dragEnded(velocity: velocity, modifiers: modifiers))
+                controller.scheduleDynamicPivotUpdate(bodies: bodies)
+            }
+            let onMagnify: (CGFloat, CGPoint, CGSize) -> Void = { scale, cursor, viewSize in
+                guard viewSize.width > 0, viewSize.height > 0 else { return }
+                // AppKit view coords are y-up; pinchCenterNDC expects top-left origin.
+                let topLeft = CGPoint(x: cursor.x, y: viewSize.height - cursor.y)
+                controller.dispatch(
+                    .pinchAtChanged(
+                        scale: Float(scale),
+                        centerNDC: pinchCenterNDC(topLeft, viewSize),
+                        aspectRatio: Float(viewSize.width / viewSize.height)))
+            }
+            let onMagnifyEnd: () -> Void = {
+                controller.dispatch(.pinchEnded)
+                controller.scheduleDynamicPivotUpdate(bodies: bodies)
+            }
+            let onRotate: (Float) -> Void = { radians in
+                controller.dispatch(.rotateChanged(radians: radians))
+            }
+            let onRotateEnd: () -> Void = {
+                controller.dispatch(.rotateEnded)
+            }
             MetalViewRepresentable(
                 renderer: renderer,
                 backgroundColor: canvasBackgroundColor,
                 sampleCount: controller.configuration.msaaSampleCount,
                 onScrollWheel: onScrollWheel,
-                onMouseDown: onMouseDown
+                onMouseDown: onMouseDown,
+                onDrag: onDrag,
+                onDragEnd: onDragEnd,
+                onMagnify: onMagnify,
+                onMagnifyEnd: onMagnifyEnd,
+                onRotate: onRotate,
+                onRotateEnd: onRotateEnd
             )
         }
     #else
@@ -391,70 +422,6 @@ public struct MetalViewportView: View {
             TapGesture(count: 2)
                 .onEnded {
                     controller.dispatch(.tap(ndc: .zero, count: 2))
-                }
-        }
-    #endif
-
-    // MARK: - macOS Gestures
-
-    #if os(macOS)
-        private var macGestures: some Gesture {
-            DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    let delta = CGSize(
-                        width: value.translation.width - lastDragValue.width,
-                        height: value.translation.height - lastDragValue.height
-                    )
-                    lastDragValue = value.translation
-
-                    let modifiers = ViewportModifierKeys(NSApp.currentEvent?.modifierFlags ?? [])
-                    controller.dispatch(
-                        .dragChanged(
-                            delta: SIMD2<Float>(Float(delta.width), Float(delta.height)),
-                            modifiers: modifiers
-                        ))
-                }
-                .onEnded { value in
-                    lastDragValue = .zero
-                    let modifiers = ViewportModifierKeys(NSApp.currentEvent?.modifierFlags ?? [])
-                    controller.dispatch(
-                        .dragEnded(
-                            velocity: SIMD2<Float>(
-                                Float(value.velocity.width), Float(value.velocity.height)),
-                            modifiers: modifiers
-                        ))
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
-                }
-        }
-
-        private func macMagnifyGesture(viewSize: CGSize) -> some Gesture {
-            MagnifyGesture()
-                .onChanged { value in
-                    let delta = value.magnification / lastMagnification
-                    lastMagnification = value.magnification
-                    // Zoom toward the trackpad cursor, not the view centre.
-                    let ndc = pinchCenterNDC(value.startLocation, viewSize)
-                    let aspect = Float(viewSize.width / max(viewSize.height, 1))
-                    controller.dispatch(
-                        .pinchAtChanged(scale: Float(delta), centerNDC: ndc, aspectRatio: aspect))
-                }
-                .onEnded { _ in
-                    lastMagnification = 1.0
-                    controller.dispatch(.pinchEnded)
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
-                }
-        }
-
-        private var macRotateGesture: some Gesture {
-            RotateGesture()
-                .onChanged { value in
-                    let delta = Float((value.rotation - lastRotation).radians)
-                    lastRotation = value.rotation
-                    controller.dispatch(.rotateChanged(radians: delta))
-                }
-                .onEnded { _ in
-                    lastRotation = .zero
-                    controller.dispatch(.rotateEnded)
                 }
         }
     #endif
