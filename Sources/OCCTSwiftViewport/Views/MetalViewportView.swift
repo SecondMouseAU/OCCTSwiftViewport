@@ -74,6 +74,8 @@ public struct MetalViewportView: View {
     public var body: some View {
         GeometryReader { geometry in
             ZStack {
+                // On macOS, drag / magnify / rotate are handled natively by `ScrollCaptureMTKView`
+                // (SwiftUI gestures never fire over it on macOS 27, issue #127).
                 metalView
                     #if os(iOS) || os(visionOS)
                         .overlay { panGestureOverlay }
@@ -90,9 +92,6 @@ public struct MetalViewportView: View {
                                 }
                         )
                         .gesture(doubleTapGesture)
-                    #else
-                        // Drag / magnify / rotate are handled natively by
-                        // `ScrollCaptureMTKView` (SwiftUI gestures never fire over it on macOS 27).
                     #endif
 
                 if controller.showViewCube {

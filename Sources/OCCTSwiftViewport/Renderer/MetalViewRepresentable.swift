@@ -122,22 +122,36 @@ import SwiftUI
         }
 
         override func magnify(with event: NSEvent) {
-            switch event.phase {
-            case .ended, .cancelled:
-                onMagnifyEnd?()
-            default:
-                let locationInView = convert(event.locationInWindow, from: nil)
-                onMagnify?(1 + event.magnification, locationInView, bounds.size)
-            }
+            handleMagnify(
+                magnification: event.magnification, phase: event.phase,
+                locationInWindow: event.locationInWindow)
         }
 
         override func rotate(with event: NSEvent) {
-            switch event.phase {
+            handleRotate(degrees: event.rotation, phase: event.phase)
+        }
+
+        func handleMagnify(
+            magnification: CGFloat, phase: NSEvent.Phase, locationInWindow: CGPoint
+        ) {
+            switch phase {
+            case .ended, .cancelled:
+                onMagnifyEnd?()
+            default:
+                // `NSEvent.magnification` is the per-event delta (0 = no change), so 1 + delta
+                // is the incremental scale factor `.pinchAtChanged` expects.
+                let locationInView = convert(locationInWindow, from: nil)
+                onMagnify?(1 + magnification, locationInView, bounds.size)
+            }
+        }
+
+        func handleRotate(degrees: Float, phase: NSEvent.Phase) {
+            switch phase {
             case .ended, .cancelled:
                 onRotateEnd?()
             default:
-                // NSEvent.rotation is degrees, counterclockwise positive.
-                onRotate?(-event.rotation * .pi / 180)
+                // `NSEvent.rotation` is degrees, counterclockwise positive.
+                onRotate?(-degrees * .pi / 180)
             }
         }
     }
