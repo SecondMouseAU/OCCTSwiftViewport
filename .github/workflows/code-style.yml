@@ -38,7 +38,7 @@ on:
 
 jobs:
   code-style:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       # fetch-depth: 0, not the default shallow clone: check-style-manifest.py
