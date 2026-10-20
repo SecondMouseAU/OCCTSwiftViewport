@@ -109,8 +109,11 @@ import SwiftUI
             guard dragActive else { return }
             // Velocity over the last ~100 ms of movement.
             var velocity = SIMD2<Float>.zero
+            // Fall back to the previous sample when a quick flick leaves only one in the window.
             if let last = dragSamples.last,
-                let first = dragSamples.first(where: { last.time - $0.time <= 0.1 }),
+                let first = dragSamples.first(where: {
+                    $0.time < last.time && last.time - $0.time <= 0.1
+                }) ?? (dragSamples.count >= 2 ? dragSamples[dragSamples.count - 2] : nil),
                 last.time > first.time
             {
                 let dt = Float(last.time - first.time)
