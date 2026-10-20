@@ -323,18 +323,24 @@ struct RendererSharedSetupTests {
         // Two segments from the first polyline, six vertices each, stride 9.
         // Format: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].
         #expect(flat.count == 2 * 6 * 9)
-        #expect(Array(flat[0..<9]) == [0, 0, 0, 0, -0.5, -0.5, 1, 0, 0])
-        #expect(Array(flat[9..<18]) == [0, 0, 0, 0, -0.5, 0.5, 1, 0, 0])
-        #expect(Array(flat[18..<27]) == [1, 0, 0, 1, 0.5, -0.5, 1, 0, 0])
-        #expect(Array(flat[27..<36]) == [1, 0, 0, 1, 0.5, 0.5, 1, 0, 0])
-        #expect(Array(flat[36..<45]) == [1, 0, 0, 1, 0.5, 0.5, 1, 0, 0])
-        #expect(Array(flat[45..<54]) == [1, 0, 0, 1, 0.5, 0.5, 1, 0, 0])
-        #expect(Array(flat[54..<63]) == [1, 0, 0, 1, -0.5, -0.5, 0, 1, 0])
-        #expect(Array(flat[63..<72]) == [1, 0, 0, 1, -0.5, 0.5, 0, 1, 0])
-        #expect(Array(flat[72..<81]) == [1, 1, 0, 2, 0.5, -0.5, 0, 1, 0])
-        #expect(Array(flat[81..<90]) == [1, 1, 0, 2, 0.5, 0.5, 0, 1, 0])
-        #expect(Array(flat[90..<99]) == [1, 1, 0, 2, 0.5, 0.5, 0, 1, 0])
-        #expect(Array(flat[99..<108]) == [1, 1, 0, 2, 0.5, 0.5, 0, 1, 0])
+        // Per segment: start-left x2, start-right, end-left, end-right x2 (strip-breaking repeats).
+        let layout: [(start: Bool, corner: [Float])] = [
+            (true, [-0.5, -0.5]), (true, [-0.5, -0.5]), (true, [-0.5, 0.5]),
+            (false, [0.5, -0.5]), (false, [0.5, 0.5]), (false, [0.5, 0.5]),
+        ]
+        let segments: [(a: [Float], b: [Float], arcA: Float, arcB: Float, dir: [Float])] = [
+            ([0, 0, 0], [1, 0, 0], 0, 1, [1, 0, 0]),
+            ([1, 0, 0], [1, 1, 0], 1, 2, [0, 1, 0]),
+        ]
+        for (s, seg) in segments.enumerated() {
+            for (v, entry) in layout.enumerated() {
+                let base = (s * 6 + v) * 9
+                let expected =
+                    (entry.start ? seg.a : seg.b) + [entry.start ? seg.arcA : seg.arcB]
+                    + entry.corner + seg.dir
+                #expect(Array(flat[base..<base + 9]) == expected)
+            }
+        }
         #expect(RendererSharedBuffers.quadEdgeLineVertices(from: []).isEmpty)
     }
 

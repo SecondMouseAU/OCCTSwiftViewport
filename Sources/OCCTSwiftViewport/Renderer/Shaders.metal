@@ -832,8 +832,7 @@ struct EdgeUniforms {
 
 vertex QuadEdgeVertexOut quad_edge_vertex(
     QuadEdgeVertexIn in [[stage_in]],
-    constant EdgeUniforms &uniforms [[buffer(1)]],
-    uint vertexID [[vertex_id]]
+    constant EdgeUniforms &uniforms [[buffer(1)]]
 ) {
     // quadCorner = (along, side): `along` is already baked into the vertex position (start/end);
     // `side` (+-0.5) is the perpendicular offset in units of the line width.
@@ -873,7 +872,7 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
         * (uniforms.edgeParams.x * side * 2.0)
         * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y);
     float4 expandedClipPos = baseClipPos;
-    expandedClipPos.xy += ndcOffset * baseClipPos.w;
+    expandedClipPos.xy += ndcOffset * baseW;
 
     QuadEdgeVertexOut out;
     out.clipPosition = expandedClipPos;

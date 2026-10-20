@@ -82,7 +82,7 @@ enum RendererSharedBuffers {
     /// - `corner` is `(along, side)`: `along` is -0.5 at the segment start and 0.5 at its end;
     ///   `side` (-0.5 or 0.5) is the perpendicular offset, in units of the line width.
     /// - `direction` is the normalized local-space segment direction.
-    /// - Each segment produces 6 vertices: 4 corners plus 2 degenerate strip-break vertices.
+    /// - Each segment produces 6 vertices: 4 corners plus 2 repeated vertices that break the strip.
     static func quadEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
@@ -101,18 +101,18 @@ enum RendererSharedBuffers {
                 let direction = segment / segmentLength
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
-                // Strip order: start-left, start-right, end-left, end-right, then two repeats of the
-                // last vertex to break the strip before the next segment.
-                let corners: [SIMD2<Float>] = [
-                    SIMD2<Float>(-0.5, -0.5),
-                    SIMD2<Float>(-0.5, 0.5),
-                    SIMD2<Float>(0.5, -0.5),
-                    SIMD2<Float>(0.5, 0.5),
-                    SIMD2<Float>(0.5, 0.5),
-                    SIMD2<Float>(0.5, 0.5),
+                // Strip order: start-left (twice), start-right, end-left, end-right (twice). With the
+                // previous segment's trailing repeat, the doubled leading vertex makes every triangle
+                // bridging two segments degenerate, so segments never connect.
+                let corners: [(corner: SIMD2<Float>, atStart: Bool)] = [
+                    (SIMD2<Float>(-0.5, -0.5), true),
+                    (SIMD2<Float>(-0.5, -0.5), true),
+                    (SIMD2<Float>(-0.5, 0.5), true),
+                    (SIMD2<Float>(0.5, -0.5), false),
+                    (SIMD2<Float>(0.5, 0.5), false),
+                    (SIMD2<Float>(0.5, 0.5), false),
                 ]
-                for (index, corner) in corners.enumerated() {
-                    let atStart = index < 2
+                for (corner, atStart) in corners {
                     let position = atStart ? a : b
                     let arcLength = atStart ? arcA : arcB
                     vertices.append(contentsOf: [
