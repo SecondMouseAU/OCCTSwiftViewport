@@ -58,7 +58,8 @@ struct RendererSharedSetupTests {
         var sceneMax = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
         var hasGeometry = false
         for body in bodies where body.isVisible {
-            let box = applyingTransforms
+            let box =
+                applyingTransforms
                 ? body.boundingBox?.transformed(by: body.transform) : body.boundingBox
             if let bb = box {
                 sceneMin = simd_min(sceneMin, bb.min)
@@ -310,22 +311,58 @@ struct RendererSharedSetupTests {
 
     // MARK: - Shared buffer building
 
-    @Test("Edge polylines flatten to stride-6 line-segment pairs")
+    @Test("Edge polylines flatten to screen-expandable quads with arc-length and direction")
     func edgeLineVerticesFlattenPolylines() {
         let polylines: [[SIMD3<Float>]] = [
             [SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(1, 1, 0)],
             [SIMD3<Float>(5, 5, 5)],  // degenerate: dropped
             [],  // empty: dropped
         ]
-        let flat = RendererSharedBuffers.edgeLineVertices(from: polylines)
+        let flat = RendererSharedBuffers.quadEdgeLineVertices(from: polylines)
+
+        // Two segments from the first polyline, six vertices each, stride 9.
+        // Format: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].
+        #expect(flat.count == 2 * 6 * 9)
+        // Per segment: start-left x2, start-right, end-left, end-right x2 (strip-breaking repeats).
+        let layout: [(start: Bool, corner: [Float])] = [
+            (true, [-0.5, -0.5]), (true, [-0.5, -0.5]), (true, [-0.5, 0.5]),
+            (false, [0.5, -0.5]), (false, [0.5, 0.5]), (false, [0.5, 0.5]),
+        ]
+        let segments: [(a: [Float], b: [Float], arcA: Float, arcB: Float, dir: [Float])] = [
+            ([0, 0, 0], [1, 0, 0], 0, 1, [1, 0, 0]),
+            ([1, 0, 0], [1, 1, 0], 1, 2, [0, 1, 0]),
+        ]
+        for (s, seg) in segments.enumerated() {
+            for (v, entry) in layout.enumerated() {
+                let base = (s * 6 + v) * 9
+                let expected =
+                    (entry.start ? seg.a : seg.b) + [entry.start ? seg.arcA : seg.arcB]
+                    + entry.corner + seg.dir
+                #expect(Array(flat[base..<base + 9]) == expected)
+            }
+        }
+        #expect(RendererSharedBuffers.quadEdgeLineVertices(from: []).isEmpty)
+    }
+
+    @Test("Native edge polylines flatten to stride-6 line-segment pairs")
+    func nativeEdgeLineVerticesFlattenPolylines() {
+        let polylines: [[SIMD3<Float>]] = [
+            [SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(1, 1, 0)],
+            [SIMD3<Float>(5, 5, 5)],  // degenerate: dropped
+            [],  // empty: dropped
+        ]
+        let flat = RendererSharedBuffers.nativeEdgeLineVertices(from: polylines)
 
         // Two segments from the first polyline, two vertices each, stride 6.
+        // Format: [x, y, z, arcLength, 0, 0]
+        // Segment 0: (0,0,0) to (1,0,0) — arc 0 to 1
+        // Segment 1: (1,0,0) to (1,1,0) — arc 1 to 2
         #expect(flat.count == 2 * 2 * 6)
         #expect(Array(flat[0..<6]) == [0, 0, 0, 0, 0, 0])
-        #expect(Array(flat[6..<12]) == [1, 0, 0, 0, 0, 0])
-        #expect(Array(flat[12..<18]) == [1, 0, 0, 0, 0, 0])
-        #expect(Array(flat[18..<24]) == [1, 1, 0, 0, 0, 0])
-        #expect(RendererSharedBuffers.edgeLineVertices(from: []).isEmpty)
+        #expect(Array(flat[6..<12]) == [1, 0, 0, 1, 0, 0])
+        #expect(Array(flat[12..<18]) == [1, 0, 0, 1, 0, 0])
+        #expect(Array(flat[18..<24]) == [1, 1, 0, 2, 0, 0])
+        #expect(RendererSharedBuffers.nativeEdgeLineVertices(from: []).isEmpty)
     }
 
     @Test("Mesh buffer building routes direct-mesh and interleaved bodies to the right layout")
