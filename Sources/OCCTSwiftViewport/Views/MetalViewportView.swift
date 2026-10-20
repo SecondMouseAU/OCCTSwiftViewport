@@ -55,10 +55,10 @@ public struct MetalViewportView: View {
     // `ViewportInputEvent`s; interpretation (which action a drag performs) lives
     // in `ViewportController.dispatch(_:)`.
     #if os(iOS) || os(visionOS)
-    @State private var lastDragValue: CGSize = .zero
-    @State private var lastMagnification: CGFloat = 1.0
-    @State private var isPanning: Bool = false
-    @State private var lastRotation: Angle = .zero
+        @State private var lastDragValue: CGSize = .zero
+        @State private var lastMagnification: CGFloat = 1.0
+        @State private var isPanning: Bool = false
+        @State private var lastRotation: Angle = .zero
     #endif
 
     // MARK: - Initialization
