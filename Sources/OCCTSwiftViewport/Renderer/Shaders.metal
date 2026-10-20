@@ -867,11 +867,13 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
         perpendicular = float2(0.0, 1.0);
     }
 
+    // side is +-0.5, so width * side is the per-side pixel offset; NDC spans 2 units per
+    // viewport axis, hence the 2.0. Scaled by w below so the offset is constant in screen space.
     float2 ndcOffset = perpendicular
         * (uniforms.edgeParams.x * side * 2.0)
         * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y);
     float4 expandedClipPos = baseClipPos;
-    expandedClipPos.xy += ndcOffset;
+    expandedClipPos.xy += ndcOffset * baseClipPos.w;
 
     QuadEdgeVertexOut out;
     out.clipPosition = expandedClipPos;
