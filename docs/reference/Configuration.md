@@ -327,7 +327,7 @@ Darkness of detected edges. `0.0` = invisible (silhouette pass does nothing), `1
 public var edgeLineConfiguration: EdgeLineConfiguration  // default: .default
 ```
 
-Width and dash pattern for body edge polylines (wireframe and shaded-with-edges modes). See [`EdgeLineConfiguration`](#edgelineconfiguration).
+Width and dash pattern for body edge polylines (wireframe, shaded-with-edges and x-ray modes). See [`EdgeLineConfiguration`](#edgelineconfiguration).
 
 **Example — thick dashed edges:**
 
@@ -684,7 +684,7 @@ public init(
 | `.bold` | 3 px solid |
 | `.dashed` | 1 px, `EdgeLineDashPattern.dashed` |
 
-**Limitation:** dash patterns apply to edges of bodies that have a mesh. Edge-only bodies (wires, sketches, sampled curves) take the body colour directly and are drawn solid at the configured width.
+**Limitation:** dash patterns apply to edges of bodies that have a mesh. Edge-only bodies (wires, sketches, sampled curves) take the body colour directly and are drawn solid, at the configured width when `useQuadExpansion` is on and 1 px when it is off.
 
 ---
 
