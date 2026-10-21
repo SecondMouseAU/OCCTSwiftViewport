@@ -25,6 +25,18 @@ The renderer allocates a second R32Uint color attachment only when picking is en
 
 ---
 
+## Pick tolerance for thin edges and vertices
+
+By default a pick reads exactly one pixel, so a 1 px edge or a vertex marker needs a pixel-perfect click. Set `pickRadius` to search a small square around the cursor instead:
+
+```swift
+config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 3)
+```
+
+Within that `7 x 7` neighbourhood the pick prefers a vertex over an edge over a face, and the nearest hit among equals, so clicking near an edge on top of a face selects the edge. 2–4 px suits most CAD work; the value is clamped to 32.
+
+---
+
 ## Reading a pick result
 
 After a tap, the renderer reads the pick texture and populates `ViewportController.pickResult` (a `@Published` property). Subscribe with Combine or read it directly in SwiftUI:

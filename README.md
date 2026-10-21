@@ -20,9 +20,9 @@ Your App
 - **Metal renderer** — Blinn-Phong shading, 3-light setup, shadow maps, environment mapping
 - **Camera system** — Arcball, turntable, and first-person rotation with inertia and animation
 - **ViewCube** — Interactive orientation widget with 26 clickable regions
-- **GPU picking** — TBDR imageblock-based pick ID buffer for body and face selection
+- **GPU picking** — TBDR imageblock-based pick ID buffer for body, face, edge and vertex selection, with an optional pick tolerance radius
 - **Direct-mesh path** — render a kernel's triangulation from de-interleaved arrays, skipping the interleave repack
-- **Display modes** — Wireframe, shaded, shaded-with-edges
+- **Display modes** — Wireframe, shaded, shaded-with-edges, with configurable edge width and dash patterns
 - **Lighting presets** — `.threePoint`, `.studio`, `.architectural`, `.flat`
 - **Gesture presets** — `.default`, `.blender`, `.fusion360`
 - **Clip planes** — Section views with configurable cut planes
@@ -50,7 +50,7 @@ This package provides two library products:
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.2.1")
+    .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.2.2")
 ],
 targets: [
     .target(
