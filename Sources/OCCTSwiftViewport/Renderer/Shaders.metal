@@ -896,15 +896,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
         }
     }
 
-    float3 bodyColor = bodyUniforms.color.rgb;
-    float bodyAlpha = bodyUniforms.color.a;
-
-    if (bodyUniforms.metallic < 0.0) {
-        WireframeFragmentOut out;
-        out.color = float4(bodyColor, bodyAlpha);
-        return out;
-    }
-
+    // Dash test runs first so it applies to edge-only bodies too, which return early below.
     float alpha = 1.0;
     uint patternType = uniforms.dashPatternType;
     if (patternType != 0u) {
@@ -932,6 +924,16 @@ fragment WireframeFragmentOut quad_edge_fragment(
                 }
             }
         }
+    }
+
+    float3 bodyColor = bodyUniforms.color.rgb;
+    float bodyAlpha = bodyUniforms.color.a;
+
+    // Edge-only body (metallic = -1 sentinel): draw in the body colour, not the contrast edge colour.
+    if (bodyUniforms.metallic < 0.0) {
+        WireframeFragmentOut out;
+        out.color = float4(bodyColor, bodyAlpha);
+        return out;
     }
 
     float luminance = dot(bodyColor, float3(0.299, 0.587, 0.114));

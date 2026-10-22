@@ -684,7 +684,7 @@ public init(
 | `.bold` | 3 px solid |
 | `.dashed` | 1 px, `EdgeLineDashPattern.dashed` |
 
-**Limitation:** dash patterns apply to edges of bodies that have a mesh. Edge-only bodies (wires, sketches, sampled curves) take the body colour directly and are drawn solid, at the configured width when `useQuadExpansion` is on and 1 px when it is off.
+Edge-only bodies (wires, sketches, sampled curves) take the body colour directly rather than the contrast-adaptive edge colour, and are dashed like any other edge. Dash patterns need `useQuadExpansion`: with it off, every edge draws as a solid 1 px line.
 
 ---
 

@@ -2,6 +2,24 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Dash patterns now apply to edge-only bodies** (wires, sketches, sampled curves). The quad edge
+  fragment shader returned the body colour for them before reaching the dash test, so they always drew
+  solid; v1.2.2 documented this as a limitation. The dash test now runs first for every edge.
+
+### Changed
+- The neighborhood pick behind `PickingConfiguration.pickRadius` (#118) is split into two pure functions,
+  `clampPickNeighborhood` and `bestNeighborhoodPickResult`, as `performRegionPick` already was. No
+  behaviour change.
+
+### Tests
+- `NeighborhoodPickTests` (new, 14 cases): clamping at texture edges, and best-hit selection (vertex over
+  edge over face, nearest of the same kind, 2D distance, ties, unknown bodies, layer map).
+- `EdgeDashRenderingTests` (new, 3 cases): headless renders counting dashes along a line, for an
+  edge-only body and a meshed body. The edge-only case fails against the v1.2.2 shader.
+
 ## [1.2.2] - 2026-10-21
 
 ### Added
