@@ -2,7 +2,23 @@
 
 All notable changes to OCCTSwiftViewport are documented in this file.
 
-## [Unreleased]
+## [1.2.2] - 2026-10-21
+
+### Added
+- **Pick tolerance for thin edges and vertices** (issue #118). `PickingConfiguration.pickRadius`
+  (`Int`, default `0`) makes a point pick read the `(2 * radius + 1)²` square around the cursor instead of
+  one pixel, and return the best hit: vertex over edge over face, then nearest to the cursor. A click
+  beside a 1 px edge now selects it. Clamped to `0...32` in the initializer and again at pick time, since
+  the property is mutable. `0` keeps the old exact-pixel behaviour.
+- **Variable edge line width and dash patterns** (issue #119). `ViewportConfiguration.edgeLineConfiguration`
+  and `OffscreenRenderOptions.edgeLineConfiguration` take an `EdgeLineConfiguration` (`width` in pixels,
+  `dashPattern`, `useQuadExpansion`), with presets `.default`, `.bold` and `.dashed`.
+  `EdgeLineDashPattern` (`.solid`, `.dashed`, `.dotted`, `.dashDot`, or custom lengths in world units
+  along each polyline) and `EdgeLineDashKind` are new public types, re-exported as `_EdgeLine*`.
+  - Edges are now drawn as screen-aligned quads by default, so width stays constant on screen at any zoom.
+    `useQuadExpansion = false` restores the native 1 px line pipeline.
+  - Dash patterns apply to edges of meshed bodies only. Edge-only bodies (wires, sketches, sampled
+    curves) take the configured width but are drawn solid.
 
 ### Fixed
 - **Orbit, pinch and rotate work again on macOS 27** (issue #127). SwiftUI `DragGesture`,
@@ -10,6 +26,10 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   now handles `mouseDragged`, `mouseUp`, `magnify` and `rotate` natively and dispatches `.dragChanged`,
   `.dragEnded`, `.pinchAtChanged` and `.rotateChanged` itself; the SwiftUI macOS gestures are removed.
   iOS/visionOS are unchanged.
+
+### Tests
+- **234 tests in 41 suites**, up from 228 in 40: `MacNativeDragTests` (new, #127), quad edge strip layout in
+  `RendererSharedSetupTests` (#119), and `pickRadius` clamping in `ViewportConfigurationTests` (#118).
 
 ## [1.2.1] - 2026-09-19
 

@@ -5,13 +5,13 @@ parent: API Reference
 
 # Configuration
 
-These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. The supporting enums — `RenderingQuality`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
+These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
 
 [`GestureConfiguration`](Input.md#gestureconfiguration) and [`DynamicPivotConfiguration`](Camera.md#dynamicpivotconfiguration) are documented on the Input and Camera pages respectively — `ViewportConfiguration` embeds them by value.
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -319,6 +319,25 @@ Darkness of detected edges. `0.0` = invisible (silhouette pass does nothing), `1
 
 ---
 
+### Edge lines
+
+#### `edgeLineConfiguration`
+
+```swift
+public var edgeLineConfiguration: EdgeLineConfiguration  // default: .default
+```
+
+Width and dash pattern for body edge polylines (wireframe, shaded-with-edges and x-ray modes). See [`EdgeLineConfiguration`](#edgelineconfiguration).
+
+**Example — thick dashed edges:**
+
+```swift
+var config = ViewportConfiguration.cad
+config.edgeLineConfiguration = EdgeLineConfiguration(width: 2.5, dashPattern: .dashed)
+```
+
+---
+
 ### Frustum culling
 
 #### `enableFrustumCulling`
@@ -486,6 +505,7 @@ public init(
     enableSilhouettes: Bool = true,
     silhouetteThickness: Float = 1.0,
     silhouetteIntensity: Float = 0.7,
+    edgeLineConfiguration: EdgeLineConfiguration = .default,
     enableFrustumCulling: Bool = true,
     autoSmoothNormals: Bool = false,
     normalSmoothingCreaseAngle: Float = 0.524,
@@ -636,6 +656,94 @@ gizmo.renderLayer = .overlay  // always visible, never occluded
 
 ---
 
+## EdgeLineConfiguration
+
+```swift
+public struct EdgeLineConfiguration: Sendable
+```
+
+Controls how body edge polylines are drawn. With `useQuadExpansion` on (the default), each edge segment is expanded into a screen-aligned quad, which is what makes widths other than 1 px and dash patterns possible. Width is constant in screen space regardless of camera distance. Both `ViewportRenderer` (via `ViewportConfiguration.edgeLineConfiguration`) and `OffscreenRenderer` (via `OffscreenRenderOptions.edgeLineConfiguration`) honour it.
+
+| Property | Type | Default | Notes |
+|---|---|---|---|
+| `width` | `Float` | `1.0` | Line width in pixels. |
+| `dashPattern` | `EdgeLineDashPattern` | `.solid` | See [`EdgeLineDashPattern`](#edgelinedashpattern). |
+| `useQuadExpansion` | `Bool` | `true` | `false` falls back to native 1 px Metal lines; `width` and `dashPattern` are then ignored. |
+
+```swift
+public init(
+    width: Float = 1.0,
+    dashPattern: EdgeLineDashPattern = .solid,
+    useQuadExpansion: Bool = true
+)
+```
+
+| Preset | Value |
+|---|---|
+| `.default` | 1 px solid |
+| `.bold` | 3 px solid |
+| `.dashed` | 1 px, `EdgeLineDashPattern.dashed` |
+
+**Limitation:** dash patterns apply to edges of bodies that have a mesh. Edge-only bodies (wires, sketches, sampled curves) take the body colour directly and are drawn solid, at the configured width when `useQuadExpansion` is on and 1 px when it is off.
+
+---
+
+## EdgeLineDashPattern
+
+```swift
+public struct EdgeLineDashPattern: Sendable, Hashable
+```
+
+A dash pattern measured along each edge polyline in **world units** (the cumulative arc length of the polyline, starting at its first point). Because lengths are in world units, the dashes scale on screen with zoom.
+
+| Property | Type | Notes |
+|---|---|---|
+| `kind` | `EdgeLineDashKind` | Pattern kind. |
+| `dashLength` | `Float` | Length of each dash. |
+| `gapLength` | `Float` | Length of each gap. |
+| `dotLength` | `Float` | Length of the dot in `.dashDot`. Unused by other kinds. |
+| `phase` | `Float` | Offset added to the arc length before the pattern is applied. |
+
+```swift
+// kind is inferred: .dashed when dashLength > 0, otherwise .solid
+public init(dashLength: Float = 0, gapLength: Float = 0, dotLength: Float = 2, phase: Float = 0)
+
+public init(kind: EdgeLineDashKind, dashLength: Float, gapLength: Float, dotLength: Float = 2, phase: Float = 0)
+```
+
+| Preset | Kind | dash / gap / dot |
+|---|---|---|
+| `.solid` | `.solid` | — |
+| `.dashed` | `.dashed` | 10 / 5 / — |
+| `.dotted` | `.dotted` | 2 / 3 / — (very short square-ended dashes; round dots are not supported) |
+| `.dashDot` | `.dashDot` | 8 / 3 / 2 |
+
+Pick lengths relative to your model's scale: the presets suit models a few hundred units across.
+
+**Example — dashes sized for a 50 mm part:**
+
+```swift
+let pattern = EdgeLineDashPattern(kind: .dashed, dashLength: 2, gapLength: 1)
+config.edgeLineConfiguration = EdgeLineConfiguration(width: 1.5, dashPattern: pattern)
+```
+
+---
+
+## EdgeLineDashKind
+
+```swift
+public enum EdgeLineDashKind: UInt32, Sendable, Hashable {
+    case solid
+    case dashed
+    case dotted
+    case dashDot
+}
+```
+
+The pattern kind of an [`EdgeLineDashPattern`](#edgelinedashpattern). `.dotted` is drawn with the same dash/gap logic as `.dashed`; `.dashDot` alternates dash, gap, dot, gap.
+
+---
+
 ## AxisStyle
 
 ```swift
@@ -710,19 +818,31 @@ When `false`, the pick texture is not allocated and no pick-ID pass is rendered.
 
 ---
 
-### `init(isEnabled:)`
+### `pickRadius`
 
 ```swift
-public init(isEnabled: Bool = false)
+public var pickRadius: Int  // default: 0
+```
+
+Pick tolerance in pixels for a point pick. At `0` the pick reads the single pixel under the cursor. Above `0` it reads the `(2 * pickRadius + 1)²` square around it and returns the best hit: a vertex beats an edge, an edge beats a face, and among hits of the same kind the one nearest the cursor wins. Background pixels are ignored, so a click just beside a thin edge still lands on it.
+
+Values are clamped to `0...32`, both in the initializer and when the pick runs, to bound GPU readback size. 2–4 px suits CAD interaction. Region picks (`performRegionPick`) are unaffected.
+
+---
+
+### `init(isEnabled:pickRadius:)`
+
+```swift
+public init(isEnabled: Bool = false, pickRadius: Int = 0)
 ```
 
 Creates a picking configuration.
 
-**Example — enable picking when wiring up a selection handler:**
+**Example — enable picking with a 3 px tolerance for edges and vertices:**
 
 ```swift
 var config = ViewportConfiguration.cad
-config.pickingConfiguration = PickingConfiguration(isEnabled: true)
+config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 3)
 ```
 
 ---
