@@ -36,7 +36,8 @@ guard let renderer = await MainActor.run(body: { OffscreenRenderer() }) else {
 }
 
 // 2. Geometry.
-let body = ViewportBody.box(size: SIMD3<Float>(2, 1, 3), color: SIMD4<Float>(0.4, 0.6, 0.9, 1))
+let body = ViewportBody.box(id: "box", width: 2, height: 3, depth: 1,
+                            color: SIMD4<Float>(0.4, 0.6, 0.9, 1), up: .z)
 
 // 3. Frame the camera to fit the geometry.
 let aspectRatio: Float = 1024.0 / 768.0
@@ -182,8 +183,8 @@ result visualisations — and lighting-induced brightness variation would obscur
 the data.
 
 ```swift
-let redBody   = ViewportBody.box(size: .one, color: SIMD4<Float>(1, 0, 0, 1))
-let greenBody = ViewportBody.box(size: .one, color: SIMD4<Float>(0, 1, 0, 1))
+let redBody   = ViewportBody.box(id: "red", color: SIMD4<Float>(1, 0, 0, 1), up: .z)
+let greenBody = ViewportBody.box(id: "green", color: SIMD4<Float>(0, 1, 0, 1), up: .z)
 // place bodies at different positions via body.transform …
 
 let options = OffscreenRenderOptions(

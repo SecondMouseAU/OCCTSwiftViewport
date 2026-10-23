@@ -74,38 +74,34 @@ public struct CADSampleView: View {
 
     // MARK: - Sample Content
 
+    /// A short length of track laid out in the viewport's Z-up world: it runs along Y, and the bed,
+    /// sleepers and rails stack up along +Z on the XY grid.
     private static func buildSampleBodies() -> [ViewportBody] {
         var result: [ViewportBody] = []
 
-        // Track bed
+        // Track bed: 2 wide (X), 5 long (Y), 0.2 tall (Z), resting on the grid.
         var bed = ViewportBody.box(id: "bed", width: 2, height: 0.2, depth: 5,
-                                   color: SIMD4<Float>(0.5, 0.5, 0.5, 1))
-        offsetVertices(&bed, dx: 0, dy: 0.1, dz: 0)
+                                   color: SIMD4<Float>(0.5, 0.5, 0.5, 1), up: .z)
+        offsetVertices(&bed, dx: 0, dy: 0, dz: 0.1)
         result.append(bed)
 
-        // Left rail
-        var leftRail = ViewportBody.cylinder(id: "leftRail", radius: 0.05, height: 5,
-                                             color: SIMD4<Float>(0.5, 0.5, 0.5, 1))
-        rotateVerticesX(&leftRail, angle: .pi / 2)
-        offsetVertices(&leftRail, dx: -0.5, dy: 0.25, dz: 0)
-        result.append(leftRail)
-
-        // Right rail
-        var rightRail = ViewportBody.cylinder(id: "rightRail", radius: 0.05, height: 5,
-                                              color: SIMD4<Float>(0.5, 0.5, 0.5, 1))
-        rotateVerticesX(&rightRail, angle: .pi / 2)
-        offsetVertices(&rightRail, dx: 0.5, dy: 0.25, dz: 0)
-        result.append(rightRail)
-
-        // Sleepers
+        // Sleepers on the bed, spaced along the track.
         let sleeperColor = SIMD4<Float>(0.4, 0.3, 0.2, 1)
         var sleeperIndex = 0
         for i in stride(from: -2.0, through: 2.0, by: 0.5) {
             var sleeper = ViewportBody.box(id: "sleeper\(sleeperIndex)", width: 1.5, height: 0.1, depth: 0.15,
-                                           color: sleeperColor)
-            offsetVertices(&sleeper, dx: 0, dy: 0.05, dz: Float(i))
+                                           color: sleeperColor, up: .z)
+            offsetVertices(&sleeper, dx: 0, dy: Float(i), dz: 0.25)
             result.append(sleeper)
             sleeperIndex += 1
+        }
+
+        // Rails on the sleepers: cylinders whose axis runs along the track (Y).
+        for (id, x) in [("leftRail", Float(-0.5)), ("rightRail", Float(0.5))] {
+            var rail = ViewportBody.cylinder(id: id, radius: 0.05, height: 5,
+                                             color: SIMD4<Float>(0.5, 0.5, 0.5, 1), up: .y)
+            offsetVertices(&rail, dx: x, dy: 0, dz: 0.35)
+            result.append(rail)
         }
 
         return result
@@ -121,30 +117,6 @@ public struct CADSampleView: View {
         }
         body.edges = body.edges.map { polyline in
             polyline.map { p in SIMD3<Float>(p.x + dx, p.y + dy, p.z + dz) }
-        }
-    }
-
-    /// Rotates all vertex positions, normals, and edge polylines around the X axis.
-    private static func rotateVerticesX(_ body: inout ViewportBody, angle: Float) {
-        let c = cos(angle)
-        let s = sin(angle)
-        let stride = 6
-        for i in Swift.stride(from: 0, to: body.vertexData.count, by: stride) {
-            // Position
-            let py = body.vertexData[i + 1]
-            let pz = body.vertexData[i + 2]
-            body.vertexData[i + 1] = py * c - pz * s
-            body.vertexData[i + 2] = py * s + pz * c
-            // Normal
-            let ny = body.vertexData[i + 4]
-            let nz = body.vertexData[i + 5]
-            body.vertexData[i + 4] = ny * c - nz * s
-            body.vertexData[i + 5] = ny * s + nz * c
-        }
-        body.edges = body.edges.map { polyline in
-            polyline.map { p in
-                SIMD3<Float>(p.x, p.y * c - p.z * s, p.y * s + p.z * c)
-            }
         }
     }
 

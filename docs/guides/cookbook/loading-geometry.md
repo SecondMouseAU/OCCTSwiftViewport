@@ -85,33 +85,38 @@ All `ViewportBody.init` parameters after `edges` have defaults, so passing only 
 Three convenience factories are available for quick prototyping:
 
 ```swift
-// Axis-aligned box (default 1×1×1, grey).
+// Axis-aligned box (default 1×1×1, grey), 0.5 tall along Z.
 let box = ViewportBody.box(
     id: "box",
     width: 2.0,
     height: 0.5,
     depth: 1.0,
-    color: SIMD4<Float>(0.8, 0.5, 0.2, 1.0)
+    color: SIMD4<Float>(0.8, 0.5, 0.2, 1.0),
+    up: .z
 )
 
-// Cylinder along the Y axis (default radius 0.5, height 1, 64 segments).
+// Upright cylinder along Z (default radius 0.5, height 1, 64 segments).
 let cyl = ViewportBody.cylinder(
     id: "cyl",
     radius: 0.3,
     height: 2.0,
     segments: 64,
-    color: SIMD4<Float>(0.6, 0.6, 0.9, 1.0)
+    color: SIMD4<Float>(0.6, 0.6, 0.9, 1.0),
+    up: .z
 )
 
-// UV sphere (default radius 0.5, 48 segments, 32 rings).
+// UV sphere with its poles on Z (default radius 0.5, 48 segments, 32 rings).
 let sphere = ViewportBody.sphere(
     id: "sphere",
     radius: 1.0,
     segments: 48,
     rings: 32,
-    color: SIMD4<Float>(0.9, 0.3, 0.3, 1.0)
+    color: SIMD4<Float>(0.9, 0.3, 0.3, 1.0),
+    up: .z
 )
 ```
+
+The viewport is Z-up, but the factories default to `up: .y` so that code written before the parameter existed keeps its geometry. Pass `up: .z`, as above, to have `height` (and a cylinder's axis or a sphere's poles) run along Z. See [`PrimitiveUpAxis`](../../reference/ViewportBody.md#primitiveupaxis).
 
 All three factories populate `faceIndices` so sub-body face selection works out of the box.
 
@@ -122,12 +127,12 @@ All three factories populate `faceIndices` so sub-body face selection works out 
 Pre-sampled polylines in `edges` facet circles at a fixed density. For round features that must stay smooth at any zoom level, use `arcs` instead. The renderer samples each `ViewportArc` to line segments **adaptively per frame** based on its projected size.
 
 ```swift
-// A full horizontal circle of radius 1 in the XZ plane.
+// A full horizontal circle of radius 1 in the XY plane (the viewport is Z-up).
 let circle = ViewportArc.circle(
     center: SIMD3<Float>(0, 0, 0),
     radius: 1.0,
     xAxis: SIMD3<Float>(1, 0, 0),
-    yAxis: SIMD3<Float>(0, 0, 1)
+    yAxis: SIMD3<Float>(0, 1, 0)
 )
 
 // A 90° arc (quarter circle).
@@ -135,7 +140,7 @@ let arc = ViewportArc(
     center: SIMD3<Float>(0, 0, 0),
     radius: 0.5,
     xAxis: SIMD3<Float>(1, 0, 0),
-    yAxis: SIMD3<Float>(0, 0, 1),
+    yAxis: SIMD3<Float>(0, 1, 0),
     startAngle: 0,
     endAngle: .pi / 2
 )
@@ -256,7 +261,7 @@ Setting `isPickable = false` is useful for datum planes or reference overlays th
 
 ```swift
 var ground = ViewportBody.box(id: "ground", width: 20, height: 0.01, depth: 20,
-                              color: SIMD4<Float>(0.5, 0.5, 0.5, 0.3))
+                              color: SIMD4<Float>(0.5, 0.5, 0.5, 0.3), up: .z)
 ground.isPickable = false
 ground.material = PBRMaterial(baseColor: SIMD3(0.5, 0.5, 0.5), opacity: 0.3)
 ```

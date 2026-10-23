@@ -49,7 +49,7 @@ parent: API Reference
 | Page | Types |
 |------|-------|
 | [Camera](Camera.md) | `CameraController`, `CameraState`, `PivotStrategy`, `DynamicPivotConfiguration`, `RotationStyle`, `StandardView` |
-| [Viewport Body & Geometry](ViewportBody.md) | `ViewportBody`, `ViewportBody.directMesh(…)` / `usesDirectMesh`, `ViewportArc`, `ArcSampling`, `BodyPrimitiveKind`, primitive factories |
+| [Viewport Body & Geometry](ViewportBody.md) | `ViewportBody`, `ViewportBody.directMesh(…)` / `usesDirectMesh`, `ViewportArc`, `ArcSampling`, `BodyPrimitiveKind`, primitive factories, `PrimitiveUpAxis` |
 | [Configuration](Configuration.md) | `ViewportConfiguration`, `RenderingQuality`, `RenderLayer`, `PickingConfiguration`, `ClipPlane` |
 | [Display & Lighting](Display-Lighting.md) | `DisplayMode`, `LightingConfiguration`, `LightSettings` |
 | [Materials](Materials.md) | `PBRMaterial`, `MaterialLibrary`, `NamedMaterial`, `HDRLoader` |

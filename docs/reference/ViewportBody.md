@@ -11,7 +11,7 @@ All types are `Sendable` and value types (structs or enums), safe to pass across
 
 ## Topics
 
-- [ViewportBody](#viewportbody) · [Vertex data layout](#vertex-data-layout) · [Primitive factories](#primitive-factories)
+- [ViewportBody](#viewportbody) · [Vertex data layout](#vertex-data-layout) · [Primitive factories](#primitive-factories) · [PrimitiveUpAxis](#primitiveupaxis)
 - [ViewportArc](#viewportarc) · [ArcSampling](#arcsampling)
 - [PBRMaterial](#pbrmaterial)
 - [TriangleStyle](#trianglestyle)
@@ -355,11 +355,19 @@ if result.kind == .face, result.isPrimitiveIndexAmbiguous,
 
 ## Primitive factories
 
-Convenience static methods on `ViewportBody` that generate common CAD primitives with interleaved vertex/normal data, triangle indices, closed polyline edges, and `faceIndices`. All are defined in `Primitives.swift`.
+Convenience static methods on `ViewportBody` that generate common CAD primitives with interleaved vertex/normal data, triangle indices, closed polyline edges, and `faceIndices`. All are defined in `Primitives.swift`. Triangles wind counter-clockwise seen from outside, the same convention as OCCT meshes.
+
+**Orientation.** The viewport's world is Z-up, but the factories default to Y-up (`up: .y`) for source compatibility with code written before the `up:` parameter existed. Pass `up: .z` to build a primitive that stands on the Z-up grid; see [`PrimitiveUpAxis`](#primitiveupaxis).
+
+```swift
+// Upright in the Z-up world: the cylinder's axis is +Z, the box is 0.5 tall along Z.
+let post = ViewportBody.cylinder(id: "post", radius: 0.1, height: 2, up: .z)
+let slab = ViewportBody.box(id: "slab", width: 2, height: 0.5, depth: 1, up: .z)
+```
 
 ---
 
-### `box(id:width:height:depth:color:)`
+### `box(id:width:height:depth:color:up:)`
 
 ```swift
 public static func box(
@@ -367,22 +375,23 @@ public static func box(
     width: Float = 1,
     height: Float = 1,
     depth: Float = 1,
-    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+    up: PrimitiveUpAxis = .y
 ) -> ViewportBody
 ```
 
-Creates a flat-shaded box centered at the origin. Six faces, four vertices each (24 vertices total, unique per face for flat normals). Twelve polyline edges (four per axis-aligned loop plus four connecting edges). `faceIndices` maps each triangle pair to its face (0 = front +Z, 1 = back −Z, 2 = right +X, 3 = left −X, 4 = top +Y, 5 = bottom −Y).
+Creates a flat-shaded box centered at the origin. `height` runs along `up`: with the default `.y`, `width`/`height`/`depth` are the X/Y/Z extents; with `.z` they are the X/Z/Y extents. Six faces, four vertices each (24 vertices total, unique per face for flat normals). Twelve polyline edges (four per axis-aligned loop plus four connecting edges). `faceIndices` maps each triangle pair to its face: 0 = front, 1 = back, 2 = right +X, 3 = left −X, 4 = top, 5 = bottom. With `up: .y` front/back are ±Z and top/bottom ±Y; with `up: .z` front is −Y (toward a viewer at the front standard view), back +Y, top +Z and bottom −Z.
 
 **Example:**
 
 ```swift
 let crate = ViewportBody.box(id: "crate", width: 2, height: 1, depth: 1.5,
-                              color: SIMD4<Float>(0.6, 0.4, 0.2, 1))
+                              color: SIMD4<Float>(0.6, 0.4, 0.2, 1), up: .z)
 ```
 
 ---
 
-### `cylinder(id:radius:height:segments:color:)`
+### `cylinder(id:radius:height:segments:color:up:)`
 
 ```swift
 public static func cylinder(
@@ -390,21 +399,22 @@ public static func cylinder(
     radius: Float = 0.5,
     height: Float = 1,
     segments: Int = 64,
-    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+    up: PrimitiveUpAxis = .y
 ) -> ViewportBody
 ```
 
-Creates a cylinder aligned along the Y axis, centered at the origin. Side, top cap, and bottom cap are separate geometry regions with their own normals. Polyline edges: top ring, bottom ring, and up to eight evenly-spaced vertical lines. `faceIndices`: face 0 = side, face 1 = top cap, face 2 = bottom cap.
+Creates a cylinder centered at the origin whose axis runs along `up` (Y by default; pass `.z` for an upright cylinder in the Z-up world). Side, top cap, and bottom cap are separate geometry regions with their own normals. Polyline edges: top ring, bottom ring, and a vertical line every `segments / 8` segments (eight lines when `segments` is a multiple of 8). `faceIndices`: face 0 = side, face 1 = top cap (+`up`), face 2 = bottom cap (−`up`).
 
 **Example:**
 
 ```swift
-let pin = ViewportBody.cylinder(id: "pin", radius: 0.05, height: 0.8)
+let pin = ViewportBody.cylinder(id: "pin", radius: 0.05, height: 0.8, up: .z)
 ```
 
 ---
 
-### `sphere(id:radius:segments:rings:color:)`
+### `sphere(id:radius:segments:rings:color:up:)`
 
 ```swift
 public static func sphere(
@@ -412,17 +422,38 @@ public static func sphere(
     radius: Float = 0.5,
     segments: Int = 48,
     rings: Int = 32,
-    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+    color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+    up: PrimitiveUpAxis = .y
 ) -> ViewportBody
 ```
 
-Creates a UV sphere centered at the origin. Smooth per-vertex normals. Polyline edges: one equatorial ring plus four meridians (at 0°, 90°, 180°, 270°). All triangles belong to `faceIndices` face 0 (single continuous surface).
+Creates a UV sphere centered at the origin whose poles lie on `up`. Smooth per-vertex normals. Polyline edges: one equatorial ring (perpendicular to `up`) plus four meridians (at 0°, 90°, 180°, 270°). All triangles belong to `faceIndices` face 0 (single continuous surface).
 
 **Example:**
 
 ```swift
-let ball = ViewportBody.sphere(id: "ball", radius: 0.25, segments: 64, rings: 48)
+let ball = ViewportBody.sphere(id: "ball", radius: 0.25, segments: 64, rings: 48, up: .z)
 ```
+
+---
+
+### PrimitiveUpAxis
+
+```swift
+public enum PrimitiveUpAxis: Sendable, Hashable, CaseIterable {
+    case x, y, z
+}
+```
+
+The axis a primitive factory treats as up (its height, cylinder or pole axis). Each factory builds Y-up geometry and then applies a proper rotation (determinant +1, so triangle winding, outward normals, `faceIndices` and edge order are all preserved) that carries +Y onto the chosen axis.
+
+| `up` | +Y maps to | Box `width` / `height` / `depth` run along |
+|------|-----------|--------------------------------------------|
+| `.y` (default) | +Y (unchanged) | X / Y / Z |
+| `.z` | +Z | X / Z / Y |
+| `.x` | +X | Y / X / Z |
+
+`.y` is the default only for source compatibility. In the viewport's Z-up world (turntable orbit, standard views, lighting hemisphere, grid) `.z` is usually what you want.
 
 ---
 
@@ -482,12 +513,12 @@ public init(
 **Example — arc on a cylindrical hole edge:**
 
 ```swift
-// A 60° arc on a horizontal circle at y = 0.5, radius 0.3
+// A 60° arc on a horizontal circle (Z-up world) at z = 0.5, radius 0.3
 let arc = ViewportArc(
-    center: SIMD3<Float>(0, 0.5, 0),
+    center: SIMD3<Float>(0, 0, 0.5),
     radius: 0.3,
     xAxis: SIMD3<Float>(1, 0, 0),
-    yAxis: SIMD3<Float>(0, 0, 1),
+    yAxis: SIMD3<Float>(0, 1, 0),
     startAngle: 0,
     endAngle: .pi / 3
 )

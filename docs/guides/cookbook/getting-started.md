@@ -95,33 +95,39 @@ correct normals and edge polylines:
 ```swift
 import OCCTSwiftViewport
 
-// Box — flat-shaded faces, 12 edge polylines
+// Box — flat-shaded faces, 12 edge polylines; 1.0 tall along Z
 let box = ViewportBody.box(
     id: "myBox",
     width: 2.0,
     height: 1.0,
     depth: 0.5,
-    color: SIMD4<Float>(0.8, 0.6, 0.3, 1.0)
+    color: SIMD4<Float>(0.8, 0.6, 0.3, 1.0),
+    up: .z
 )
 
-// Cylinder — along the Y axis
+// Cylinder — upright, along the Z axis
 let cyl = ViewportBody.cylinder(
     id: "myCyl",
     radius: 0.5,
     height: 2.0,
     segments: 64,                              // radial facets
-    color: SIMD4<Float>(0.4, 0.8, 0.4, 1.0)
+    color: SIMD4<Float>(0.4, 0.8, 0.4, 1.0),
+    up: .z
 )
 
-// UV sphere
+// UV sphere, poles on Z
 let sphere = ViewportBody.sphere(
     id: "mySphere",
     radius: 1.0,
     segments: 48,                              // longitudinal
     rings: 32,                                 // latitudinal
-    color: SIMD4<Float>(0.9, 0.3, 0.3, 1.0)
+    color: SIMD4<Float>(0.9, 0.3, 0.3, 1.0),
+    up: .z
 )
 ```
+
+The viewport is Z-up. The factories default to `up: .y` only for source compatibility, so pass
+`up: .z` to have a primitive stand on the grid.
 
 All defaults are already set, so `.box(id: "b")` gives a 1×1×1 grey box if you just
 need something on screen fast.
