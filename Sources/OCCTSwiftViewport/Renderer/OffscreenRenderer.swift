@@ -306,6 +306,7 @@ public final class OffscreenRenderer: Sendable {
         ensureTextures(width: w, height: h, sampleCount: sampleCount)
         guard let depthTexture = msaaDepthTexture,
             let resolve = resolveTexture,
+            sampleCount == 1 || msaaColorTexture != nil,
             let pipelines = pipelines(forSampleCount: sampleCount)
         else { return nil }
 
@@ -805,9 +806,13 @@ public final class OffscreenRenderer: Sendable {
         resolveDesc.storageMode = .private
         resolveTexture = device.makeTexture(descriptor: resolveDesc)
 
-        cachedWidth = width
-        cachedHeight = height
-        cachedSampleCount = sampleCount
+        // Only cache a complete set, so a failed allocation is retried on the next render.
+        let complete =
+            msaaDepthTexture != nil && resolveTexture != nil
+            && (sampleCount == 1 || msaaColorTexture != nil)
+        cachedWidth = complete ? width : 0
+        cachedHeight = complete ? height : 0
+        cachedSampleCount = complete ? sampleCount : 0
     }
 
     /// Sample count `init` builds pipelines for, and the `OffscreenRenderOptions` default.
