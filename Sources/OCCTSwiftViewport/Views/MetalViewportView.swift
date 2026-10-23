@@ -231,7 +231,9 @@ public struct MetalViewportView: View {
                     ctrl.handleMeasurementPick(
                         result: result, ndc: ndc, bodies: snapshot, aspectRatio: aspect)
                 } else {
-                    ctrl.handlePick(result: result, ndc: ndc)
+                    let resolved = ctrl.resolveAmbiguousFacePick(
+                        result, ndc: ndc, bodies: snapshot, aspectRatio: aspect)
+                    ctrl.handlePick(result: resolved, ndc: ndc)
                 }
             }
         }

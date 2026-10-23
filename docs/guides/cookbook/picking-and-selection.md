@@ -65,6 +65,7 @@ MetalViewportView(controller: controller, bodies: bodies)
 | `triangleIndex` | `Int` | Primitive index within the body (triangle for face picks, segment for edge picks, point for vertex picks) |
 | `pickLayer` | `PickLayer` | `.userGeometry` or `.widget` |
 | `rawValue` | `UInt32` | Raw R32Uint value (bits 0–15: objectIndex; 16–29: primitiveID; 30–31: kind) |
+| `isPrimitiveIndexAmbiguous` | `Bool` | `true` when the body has more than 16,384 primitives of the picked kind, so `triangleIndex` may have wrapped (see [Pick limits](#pick-limits)) |
 
 `pickResult` carries `.userGeometry` picks. Widget-layer picks (manipulator handles, etc.) land separately in `widgetPickResult` and are never mixed into the selection stream.
 
@@ -321,3 +322,26 @@ controller.onPick = { result in
 ```
 
 `faceIndices` is optional (defaults to `[]`). When empty, `triangleIndex` is still valid as a raw triangle index within the body's `indices` buffer.
+
+`triangleIndex` is the input triangle index under every `renderingQuality`, including the tessellated (`.enhanced`) and mesh-shader (`.maximum`) pipelines, so this lookup works at any quality.
+
+## Pick limits
+
+The GPU pick value is a single 32-bit integer, which caps two things:
+
+- **65,536 visible bodies per frame** (`PickResult.maxPickableBodies`). Bodies after that in draw order still hide what is behind them, but tapping them returns `nil`.
+- **16,384 primitives per kind per body** (`PickResult.maxPrimitivesPerKind`). On a bigger body the GPU reports the index modulo 16,384 and `isPrimitiveIndexAmbiguous` is `true`.
+
+For face taps the built-in tap path resolves the wrapped index with a CPU ray test before it publishes `pickResult`, so `faceIndices[result.triangleIndex]` stays correct. Region picks, edge and vertex picks, and your own `performPick` calls are not resolved. Guard them:
+
+```swift
+if result.isPrimitiveIndexAmbiguous {
+    // Face picks: resolve against the tap ray.
+    if result.kind == .face,
+        let exact = body.resolveWrappedTriangleIndex(result.triangleIndex, ray: tapRay)
+    {
+        let faceID = body.faceIndices[exact]
+    }
+    // Edge and vertex picks cannot be resolved this way: split the body, or treat the pick as body-level.
+}
+```

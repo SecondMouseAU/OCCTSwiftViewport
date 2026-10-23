@@ -1553,7 +1553,7 @@ struct PNPatchData {
     packed_float3 b210, b120, b201, b102, b021, b012; // Edge control points
     packed_float3 b111;                        // Center control point
     packed_float3 n200, n020, n002;           // Corner normals
-    int32_t faceIndex;                         // For picking
+    int32_t faceIndex;                         // B-Rep face index (not read by the pick pass)
     float _pad;                                // Alignment to 168? No — 164 is 4-aligned
 };
 
@@ -1829,7 +1829,10 @@ vertex PickVertexOut tessellated_depth_vertex(
 
 struct TessPatchPickVertexOut {
     float4 clipPosition [[position]];
-    int32_t faceIndex;
+    // Input triangle index. Patches are built one per triangle (compute_pn_patches writes
+    // patches[gid] for triangle gid) and drawn with patchStart 0 and no patch index buffer, so
+    // [[patch_id]] is the triangle index PickResult.triangleIndex promises (issue #136, H7).
+    uint triangleIndex [[flat]];
 };
 
 [[patch(triangle, 3)]]
@@ -1852,18 +1855,19 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     TessPatchPickVertexOut out;
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-    out.faceIndex = p.faceIndex;
+    out.triangleIndex = patchID;
     return out;
 }
 
-// Pick fragment for tessellated patches — uses face index from patch, not primitive_id.
+// Pick fragment for tessellated patches — uses the patch (input triangle) index, not
+// primitive_id, which would count post-tessellation sub-triangles.
 // Kind tag stays 0 (face). primitiveID truncated to 14 bits to match decoder layout.
 fragment PickFragmentOut tessellated_pick_fragment(
     TessPatchPickVertexOut in [[stage_in]],
     constant BodyUniforms& bodyUniforms [[buffer(2)]]
 ) {
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((uint(in.faceIndex) & 0x3FFFu) << 16) | (0u << 30);
+    out.pickID = bodyUniforms.objectIndex | ((in.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
     return out;
 }
 
@@ -2080,7 +2084,14 @@ struct PickMeshVertex {
     float4 clipPosition [[position]];
 };
 
-using PickMeshOutput = mesh<PickMeshVertex, void, 64, 64, topology::triangle>;
+// In a mesh pipeline [[primitive_id]] is the meshlet-local primitive (0-63), so the global
+// triangle index travels as per-primitive data instead (issue #136, L10). MeshletBuilder keeps
+// triangles in input order, so the global index is triangleOffset + local index.
+struct PickMeshPrimitive {
+    uint triangleIndex [[flat]];
+};
+
+using PickMeshOutput = mesh<PickMeshVertex, PickMeshPrimitive, 64, 64, topology::triangle>;
 
 [[mesh, max_total_threads_per_threadgroup(64)]]
 void meshlet_pick_mesh(
@@ -2110,7 +2121,25 @@ void meshlet_pick_mesh(
         output.set_index(tid * 3, uint(triangleIndices[base]));
         output.set_index(tid * 3 + 1, uint(triangleIndices[base + 1]));
         output.set_index(tid * 3 + 2, uint(triangleIndices[base + 2]));
+        PickMeshPrimitive prim;
+        prim.triangleIndex = m.triangleOffset + tid;
+        output.set_primitive(tid, prim);
     }
+}
+
+struct PickMeshFragmentIn {
+    PickMeshVertex vert;
+    PickMeshPrimitive prim;
+};
+
+// Face pick for the mesh-shader path — kind=0, global triangle index from the primitive data.
+fragment PickFragmentOut meshlet_pick_fragment(
+    PickMeshFragmentIn in [[stage_in]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    PickFragmentOut out;
+    out.pickID = bodyUniforms.objectIndex | ((in.prim.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
+    return out;
 }
 
 #endif // __METAL_VERSION__ >= 310
