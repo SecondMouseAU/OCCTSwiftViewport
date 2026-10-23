@@ -13,7 +13,8 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   texture, and unsupported counts round down to one the device supports.
 - **Edges no longer disappear when they lie in front of the mesh** (issue #135). `ViewportBody.boundingBox`
   only covered mesh positions, but both renderers fit the near clip plane to it (since #116), so an
-  edge nearer the camera than its body's mesh was clipped. It now includes every `edges` point as well.
+  edge nearer the camera than its body's mesh was clipped. It now includes every `edges` point and the
+  full circle of every `arcs` entry (conservative for partial arcs).
   The same box also drives frustum culling, shadow framing and `CameraState.fit(to:)`. Edge-only
   bodies (wires, sketches) used to have no bounds, so they were never culled and fit-to-view ignored
   them; both now work for them.
@@ -29,9 +30,10 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 ### Tests
 - `OffscreenSampleCountTests` (new): sample-count mapping, and a render at 1, 2, 4 and 8 samples on one
   renderer (#134).
-- `BoundingBoxTests`: four cases for #135 (edge-only bounds, edges extending a mesh, direct-mesh
-  bounds, and the near plane covering an edge in front of the mesh). `EdgeDashRenderingTests` now puts
-  its line in front of the mesh, with a solid-edge case that rendered nothing before the fix.
+- `BoundingBoxTests`: six cases for #135 (edge-only bounds, edges extending a mesh, arc-only and tilted
+  arc bounds, direct-mesh bounds, and the near plane covering an edge in front of the mesh).
+  `EdgeDashRenderingTests` now puts its line in front of the mesh, with a solid-edge case that rendered
+  nothing before the fix.
 - `NeighborhoodPickTests` (new, 14 cases): clamping at texture edges, and best-hit selection (vertex over
   edge over face, nearest of the same kind, 2D distance, ties, unknown bodies, layer map).
 - `EdgeDashRenderingTests` (new, 3 cases): headless renders counting dashes along a line, for an

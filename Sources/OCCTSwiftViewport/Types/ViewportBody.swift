@@ -361,7 +361,8 @@ extension ViewportBody {
     /// Computes the axis-aligned bounding box of everything the body draws.
     ///
     /// Covers the mesh positions in `vertexData`, or `vertices` when `vertexData` is empty (point
-    /// clouds and direct-mesh bodies), plus every point of every `edges` polyline. Edges count
+    /// clouds and direct-mesh bodies), plus every point of every `edges` polyline and the full
+    /// circle of every `arc` (conservative for partial arcs). Edges and arcs count
     /// because they are drawn too: leaving them out let the near clip plane, fitted to these
     /// bounds, cut off edges lying in front of the mesh, and gave edge-only bodies no bounds at
     /// all (issue #135). Used for clip-plane fitting, frustum culling, shadow framing, picking
@@ -388,6 +389,14 @@ extension ViewportBody {
         }
         for polyline in edges {
             polyline.forEach(include)
+        }
+        for arc in arcs {
+            // Conservative: the full circle's box, whose half-extent on each axis is
+            // radius * sqrt(xAxis[i]^2 + yAxis[i]^2). A partial arc gets the same box.
+            let axisSpread = arc.xAxis * arc.xAxis + arc.yAxis * arc.yAxis
+            let halfExtent = arc.radius * axisSpread.squareRoot()
+            include(arc.center - halfExtent)
+            include(arc.center + halfExtent)
         }
 
         return hasPoint ? BoundingBox(min: bbMin, max: bbMax) : nil

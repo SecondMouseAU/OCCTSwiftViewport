@@ -91,6 +91,35 @@ struct BoundingBoxTests {
         #expect(bb?.max == SIMD3<Float>(1, 1, 5))
     }
 
+    @Test("An arc-only body's bounds cover the arc's full circle")
+    func arcBodyHasBounds() {
+        var body = ViewportBody(
+            id: "arc", vertexData: [], indices: [], edges: [], color: SIMD4<Float>(1, 1, 1, 1))
+        // Circle of radius 2 at (1, 0, 0) in the XZ plane.
+        body.arcs = [
+            .circle(center: SIMD3(1, 0, 0), radius: 2, xAxis: SIMD3(1, 0, 0), yAxis: SIMD3(0, 0, 1))
+        ]
+        let bb = body.boundingBox
+        #expect(bb?.min == SIMD3<Float>(-1, 0, -2))
+        #expect(bb?.max == SIMD3<Float>(3, 0, 2))
+    }
+
+    @Test("A tilted arc's bounds contain every point on it")
+    func tiltedArcContainsSamples() {
+        let s = Float(0.5).squareRoot()
+        let arc = ViewportArc(
+            center: SIMD3(0, 1, 0), radius: 3, xAxis: SIMD3(s, s, 0), yAxis: SIMD3(0, 0, 1),
+            startAngle: 0.3, endAngle: 2.1)
+        var body = ViewportBody(
+            id: "arc", vertexData: [], indices: [], edges: [], color: SIMD4<Float>(1, 1, 1, 1))
+        body.arcs = [arc]
+        let bb = try? #require(body.boundingBox)
+        for i in 0...32 {
+            let p = arc.point(at: Float(i) / 32)
+            #expect(bb.map { all(p .>= $0.min - 1e-5) && all(p .<= $0.max + 1e-5) } == true)
+        }
+    }
+
     @Test("A direct-mesh body's bounds still come from its positions")
     func directMeshBounds() {
         let body = ViewportBody.directMesh(
