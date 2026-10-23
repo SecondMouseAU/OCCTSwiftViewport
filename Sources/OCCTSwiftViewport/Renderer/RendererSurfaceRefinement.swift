@@ -301,7 +301,8 @@ extension RendererSharedBuffers {
     ///
     /// Direct-mesh bodies and edge-only bodies get neither: both builders consume the interleaved
     /// stride-6 buffer. `faceIndices` plays no part, so STL/OBJ imports and primitives without it
-    /// are refined too (#161). Patches are read from `vertexBuffer` (so they see the smoothed normals) and
+    /// are refined too (#161). Patches are read from `vertexBuffer` (so they see the smoothed
+    /// normals) and
     /// meshlets from `smoothedVertexData` when smoothing ran, so both describe the same mesh.
     ///
     /// - Parameters:

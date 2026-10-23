@@ -3154,7 +3154,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Tessellation patches and meshlets, shared with OffscreenRenderer (#165). Direct-mesh
         // bodies get neither: both builders consume an interleaved stride-6 buffer, and a direct
-        // body brings its own normals. `faceIndices` plays no part (#161). Patches read the uploaded (possibly smoothed)
+        // body brings its own normals. `faceIndices` plays no part (#161). Patches read the
+        // uploaded (possibly smoothed)
         // vertex buffer and meshlets the same smoothed data, so both see the smoothed normals.
         let refinement = RendererSharedBuffers.makeRefinementBuffers(
             for: body, smoothedVertexData: smoothedVertexData, mesh: mesh,

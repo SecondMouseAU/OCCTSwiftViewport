@@ -855,7 +855,8 @@ enum RendererSharedSetup {
     /// the fitted range and was clipped away, though it is drawn on top of everything (#170).
     /// Overlays stay out of `sceneBounds(of:localBounds:)`, which also frames the grid, the axes
     /// and the shadow map. Only overlays inside `view` count, so one parked off-screen doesn't
-    /// stretch the depth range of everything that is visible.
+    /// stretch the depth range of everything that is visible, and each overlay counts only up to
+    /// four model diagonals past the model.
     ///
     /// - Parameters:
     ///   - bounds: The clip-fit bounds so far (model, grid and axes).
@@ -870,11 +871,23 @@ enum RendererSharedSetup {
         in view: Frustum,
         localBounds: (ViewportBody) -> BoundingBox? = { $0.boundingBox }
     ) -> BoundingBox? {
+        // An overlay may reach at most a few model sizes past the model, so a huge widget (an
+        // axis line 1e5 long) can't push `far`, and with it the `far * 1e-4` floor under `near`,
+        // out until the model itself is clipped.
+        let limit: BoundingBox? = bounds.map { model in
+            let pad = SIMD3<Float>(repeating: max(model.diagonalLength, 1e-3) * 4)
+            return BoundingBox(min: model.min - pad, max: model.max + pad)
+        }
         var result = bounds
         for body in bodies where body.isVisible && body.renderLayer == .overlay {
-            guard let box = localBounds(body)?.transformed(by: body.transform),
+            guard var box = localBounds(body)?.transformed(by: body.transform),
                 view.intersects(box)
             else { continue }
+            if let limit {
+                box = BoundingBox(
+                    min: simd_clamp(box.min, limit.min, limit.max),
+                    max: simd_clamp(box.max, limit.min, limit.max))
+            }
             result = result.map { $0.union(box) } ?? box
         }
         return result

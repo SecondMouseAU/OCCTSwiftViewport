@@ -487,6 +487,18 @@ Flips `showGrid`.
 
 ---
 
+### Rendering quality
+
+#### `effectiveRenderingQuality`
+
+```swift
+public var effectiveRenderingQuality: RenderingQuality? { get }
+```
+
+The [`RenderingQuality`](Configuration.md#renderingquality) the attached renderer actually draws with, or `nil` before a renderer is attached. Lower than `configuration.renderingQuality` when the device can't run it (`.maximum` without mesh shaders runs `.enhanced`); the renderer also logs the fallback once (#161).
+
+---
+
 ### Selection & Picking
 
 #### `pickResult`

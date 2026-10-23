@@ -203,6 +203,16 @@ struct OverlayLayerTests {
             model, includingOverlaysOf: [offScreen], in: view)
         #expect(widened?.max.z == 4, "an in-view gizmo in front of the model must widen the fit")
         #expect(untouched == model, "an off-screen gizmo must not stretch the fit")
+        // A huge in-view widget counts only a few model sizes past the model.
+        let axis = ViewportBody(
+            id: "axis", vertexData: [], indices: [],
+            edges: [[SIMD3(0, 0, -1e5), SIMD3(0, 0, 1e5)]], color: SIMD4(1, 0, 0, 1),
+            renderLayer: .overlay)
+        let capped = RendererSharedSetup.clipFitBounds(
+            model, includingOverlaysOf: [axis], in: view)
+        let reach = model.diagonalLength * 4
+        #expect((capped?.max.z ?? .infinity) <= model.max.z + reach + 1e-3)
+        #expect((capped?.min.z ?? -.infinity) >= model.min.z - reach - 1e-3)
     }
 
     @Test("Scene geometry casts no shadow onto an overlay surface, in both renderers")
@@ -454,7 +464,10 @@ struct RenderingQualityFallbackTests {
         let body = sphereWithoutFaceIndices()
         guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([body])),
             renderer.tessellationEnabled
-        else { return }
+        else {
+            Issue.record("Metal device or tessellation unavailable")
+            return
+        }
         _ = renderer.renderHeadlessBGRA(width: 64, height: 64, backgroundColor: SIMD4(0, 0, 0, 1))
         let (batch, untessellated) = renderer.tessellationFactorBatch(for: [body])
         #expect(batch.count == 1, "the body got no PN patches")
@@ -463,7 +476,10 @@ struct RenderingQualityFallbackTests {
 
     @Test("Meshlets are built for a body without faceIndices")
     func meshletsNeedNoFaceIndices() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            Issue.record("Metal device unavailable")
+            return
+        }
         let body = sphereWithoutFaceIndices()
         let meshlets = MeshletBuilder.build(
             vertexData: body.vertexData, indices: body.indices, device: device)
@@ -479,7 +495,10 @@ struct RenderingQualityFallbackTests {
     @Test(
         "effectiveRenderingQuality reports what the renderer runs, and the controller forwards it")
     func effectiveQualityIsQueryable() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            Issue.record("Metal device unavailable")
+            return
+        }
         for requested in [RenderingQuality.standard, .enhanced, .maximum] {
             var config = ViewportConfiguration()
             config.renderingQuality = requested

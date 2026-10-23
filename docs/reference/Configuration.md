@@ -718,7 +718,7 @@ Controls the tessellation tier used by `ViewportRenderer` and, through `Offscree
 
 **Which bodies take which path.** Every body with an interleaved mesh (`vertexData` + `indices`) is tessellated at `.enhanced` and drawn through meshlets at `.maximum`, whether or not it carries `faceIndices`. Before #161 both paths required `faceIndices`, so STL/OBJ imports and the `Primitives` factories silently stayed on the standard path. Bodies built with `ViewportBody.directMesh(...)` always take the standard direct-mesh path: they bring their own normals and get no PN refinement or meshlets. Overlay-layer bodies always draw through the standard pipelines.
 
-**Fallbacks are explicit.** When the requested quality can't run, the renderer logs one line saying why when it is created (no mesh shaders on this GPU, or the pipeline that failed and Metal's error), and reports what it actually runs:
+**Fallbacks are explicit.** When the requested quality can't run, the renderer logs one line saying why when it is created (no mesh shaders on this GPU, a failed mesh-shader pipeline with Metal's error, or failed tessellation pipelines; Metal's error for a tessellation pipeline is logged in debug builds only), and reports what it actually runs:
 
 ```swift
 controller.effectiveRenderingQuality  // RenderingQuality?, nil until a renderer is attached
