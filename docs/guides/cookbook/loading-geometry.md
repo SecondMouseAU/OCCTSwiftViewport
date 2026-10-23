@@ -313,7 +313,7 @@ It also skips `NormalSmoothing` entirely, which is the *right* thing when your n
 - **It is opt-in and additive.** Bodies built with `init(vertexData:)` are untouched; both kinds can coexist in one scene.
 - **Your normals are used verbatim.** `ViewportConfiguration.autoSmoothNormals` does **not** apply to direct bodies. If your source normals are flat/faceted and you were relying on auto-smoothing to round them, stay on the interleaved path (or smooth them yourself before handing them over).
 - **Tessellation is skipped** for direct bodies — `renderingQuality = .enhanced` has no effect on them.
-- **Everything else works:** bounding box, `CameraState.fit(to:)`, CPU raycasting, shadows, SSAO, silhouettes, the overlay layer, transparency, and GPU picking all support direct bodies, in both `ViewportRenderer` and `OffscreenRenderer`.
+- **Everything else works:** bounding box, `CameraState.fit(to:)`, CPU raycasting, shadows, SSAO, silhouettes, the overlay layer, transparency, and GPU picking all support direct bodies, in both `ViewportRenderer` and `OffscreenRenderer`. The selection/hover outline and `triangleStyles` highlights work on direct bodies in `ViewportRenderer`.
 - **Pick caveat:** a direct body's `vertices` holds its *mesh* vertices, so it does not additionally carry B-Rep corner-vertex or per-segment edge pick indices. Face picking, CPU raycast, and edge display are unaffected.
 
 `usesDirectMesh` tells you which path a body will take:

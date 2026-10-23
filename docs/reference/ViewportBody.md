@@ -165,7 +165,7 @@ let body = ViewportBody.directMesh(
 - **Tessellation and mesh shaders are skipped** for direct bodies (`renderingQuality = .enhanced` has no effect on them).
 - **Pick caveat:** because `vertices` holds *mesh* vertices, a direct body does not carry separate B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast, and edge *display* all work.
 
-All render passes support direct bodies: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the overlay layer, and the GPU pick pass — in both `ViewportRenderer` and `OffscreenRenderer`.
+All render passes support direct bodies: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the overlay layer, and the GPU pick pass — in both `ViewportRenderer` and `OffscreenRenderer` — plus the selection/hover outline and per-triangle `triangleStyles` highlight in `ViewportRenderer` (`OffscreenRenderer` draws neither pass for any body).
 
 #### `usesDirectMesh: Bool`
 

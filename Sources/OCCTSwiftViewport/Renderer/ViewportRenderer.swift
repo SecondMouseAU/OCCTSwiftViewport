@@ -304,11 +304,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let shadowMapManager: ShadowMapManager
     // Selection outline
     private let outlinePipeline: MTLRenderPipelineState
+    /// Direct-mesh selection outline pipeline.
+    ///
+    /// `selection_outline_vertex` with the two-buffer descriptor (position@0 / normal@2). The
+    /// outline expands along the normal, so the normal binding is read, not just satisfied.
+    private let outlineDirectPipeline: MTLRenderPipelineState
 
     // Per-triangle highlight overlay (issue #25).
     // Drawn with the same vertex pipeline as shaded — so identical positions —
     // but composites per-triangle style color over the existing fragment.
     private let highlightPipeline: MTLRenderPipelineState
+    /// Direct-mesh per-triangle highlight pipeline (two-buffer descriptor, position@0 /
+    /// normal@2), so `triangleStyles` overlay `ViewportBody.directMesh(...)` bodies correctly.
+    private let highlightDirectPipeline: MTLRenderPipelineState
     private let stencilWriteState: MTLDepthStencilState
     private let stencilTestState: MTLDepthStencilState
     private let depthState: MTLDepthStencilState
@@ -627,6 +635,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.outlinePipeline = outlinePipeline
 
+        guard
+            let outlineDirectPipeline = RendererSharedSetup.makePipelineState(
+                device: device, label: "selection_outline_direct", library: library,
+                vertexFunction: "selection_outline_vertex",
+                fragmentFunction: "selection_outline_fragment",
+                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
+                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
+                blending: .sourceAlphaColorOnly, vertexDescriptor: directVertexDesc)
+        else {
+            return nil
+        }
+        self.outlineDirectPipeline = outlineDirectPipeline
+
         // Highlight pipeline (per-triangle style buffer; alpha-composite over base shading)
         guard
             let highlightPipeline = RendererSharedSetup.makePipelineState(
@@ -639,6 +660,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.highlightPipeline = highlightPipeline
+
+        guard
+            let highlightDirectPipeline = RendererSharedSetup.makePipelineState(
+                device: device, label: "triangle_highlight_direct", library: library,
+                vertexFunction: "highlight_vertex", fragmentFunction: "highlight_fragment",
+                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
+                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
+                blending: .sourceAlpha, vertexDescriptor: directVertexDesc)
+        else {
+            return nil
+        }
+        self.highlightDirectPipeline = highlightDirectPipeline
 
         // --- Hardware tessellation pipelines (PN triangles) ---
         let quality = controller.configuration.renderingQuality
@@ -1892,7 +1925,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 && bodyBufferCache[body.id]?.triangleStyleBuffer != nil
         }
         if hasHighlightBodies, displayMode.showsSurfaces {
-            mainEncoder.setRenderPipelineState(highlightPipeline)
             mainEncoder.setDepthStencilState(highlightDepthState)
             for body in bodies where body.isVisible && body.renderLayer == .geometry {
                 guard let buffers = bodyBufferCache[body.id],
@@ -1905,6 +1937,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
 
+                if let nb = buffers.normalBuffer {
+                    // Direct-mesh body: position@0 + normal@2.
+                    mainEncoder.setRenderPipelineState(highlightDirectPipeline)
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                } else {
+                    mainEncoder.setRenderPipelineState(highlightPipeline)
+                }
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
@@ -1925,7 +1964,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // 4. Selection outline pass (stencil test: draw only where stencil != 1)
         let allSelectedIDs = selectedIDs.union(hoveredID.map { [$0] } ?? [])
         if !allSelectedIDs.isEmpty {
-            mainEncoder.setRenderPipelineState(outlinePipeline)
             mainEncoder.setDepthStencilState(stencilTestState)
             mainEncoder.setStencilReferenceValue(1)
 
@@ -1949,6 +1987,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     outlineScale: 0.015
                 )
 
+                if let nb = buffers.normalBuffer {
+                    // Direct-mesh body: position@0 + normal@2 (the outline expands along it).
+                    mainEncoder.setRenderPipelineState(outlineDirectPipeline)
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                } else {
+                    mainEncoder.setRenderPipelineState(outlinePipeline)
+                }
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(
                     &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
