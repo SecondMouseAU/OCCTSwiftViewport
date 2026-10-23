@@ -333,7 +333,7 @@ controller.selectionFilter = PickResultFilter { result in
 public struct RaycastHit: Sendable
 ```
 
-The result of a successful CPU raycast. Returned by `SceneRaycast.cast(ray:bodies:boundingBoxCache:clipPlanes:)` and `SceneRaycast.cast(ray:bodies:clipPlanes:)`.
+The result of a successful CPU raycast. Returned by `SceneRaycast.cast(ray:bodies:boundingBoxCache:clipPlanes:includeWidgets:includeNonPickable:)` and `SceneRaycast.cast(ray:bodies:clipPlanes:includeWidgets:includeNonPickable:)`.
 
 ### Properties
 
@@ -364,18 +364,24 @@ CPU-side raycasting against an array of `ViewportBody` instances. Uses a two-pha
 
 The result is the nearest hit across all bodies.
 
-### `static func cast(ray:bodies:boundingBoxCache:clipPlanes:) -> RaycastHit?`
+### `static func cast(ray:bodies:boundingBoxCache:clipPlanes:includeWidgets:includeNonPickable:) -> RaycastHit?`
 
 ```swift
 public static func cast(
     ray: Ray,
     bodies: [ViewportBody],
     boundingBoxCache: [String: BoundingBox],
-    clipPlanes: [ClipPlane] = []
+    clipPlanes: [ClipPlane] = [],
+    includeWidgets: Bool = false,
+    includeNonPickable: Bool = false
 ) -> RaycastHit?
 ```
 
-Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `nil` on a complete miss. Non-visible bodies (`body.isVisible == false`) and bodies absent from `boundingBoxCache` are skipped. Each body is tested in its own local space: the ray is mapped through the inverse of `body.transform`, and `RaycastHit.point` / `distance` are returned in world space, so moved, rotated and scaled bodies are hit where they are drawn. Bodies with a non-invertible transform are skipped.
+Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `nil` on a complete miss. Non-visible bodies (`body.isVisible == false`) and bodies absent from `boundingBoxCache` are skipped.
+
+**Widgets and non-pickable bodies.** By default the cast also skips widgets, meaning bodies on the `RenderLayer.overlay` render layer or the `PickLayer.widget` pick layer (gizmos, datum planes), and bodies with `isPickable == false`, which the GPU pick pass never reports. The dynamic pivot and double-tap/double-click focus-on-point use these defaults, so they never land on a widget. Focus-on-point shares the dynamic pivot's bounding-box cache, so it does not rescan geometry on each tap. Pass `includeWidgets: true` or `includeNonPickable: true` to test those bodies as well.
+
+Each body is tested in its own local space: the ray is mapped through the inverse of `body.transform`, and `RaycastHit.point` / `distance` are returned in world space, so moved, rotated and scaled bodies are hit where they are drawn. Bodies with a non-invertible transform are skipped.
 
 Triangles are read from the same positions the renderer draws: `meshPositions` for a direct-mesh body (`usesDirectMesh`), `vertexData` otherwise. Triangles with out-of-range indices, and a trailing partial triple, are skipped rather than trapping.
 
@@ -389,18 +395,22 @@ Triangles are read from the same positions the renderer draws: `meshPositions` f
 | `bodies` | `[ViewportBody]` | Scene bodies to test |
 | `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed **local-space** bounding boxes keyed by body ID (`ViewportBody.boundingBox`, before `transform`). Build it yourself and keep it while the bodies' `generation` values are unchanged; `ViewportController` does not expose one. |
 | `clipPlanes` | `[ClipPlane]` | Section planes to honour. Default `[]` |
+| `includeWidgets` | `Bool` | Also test `.overlay` render-layer and `.widget` pick-layer bodies. Default `false` |
+| `includeNonPickable` | `Bool` | Also test bodies with `isPickable == false`. Default `false` |
 
-### `static func cast(ray:bodies:clipPlanes:) -> RaycastHit?`
+### `static func cast(ray:bodies:clipPlanes:includeWidgets:includeNonPickable:) -> RaycastHit?`
 
 ```swift
 public static func cast(
     ray: Ray,
     bodies: [ViewportBody],
-    clipPlanes: [ClipPlane] = []
+    clipPlanes: [ClipPlane] = [],
+    includeWidgets: Bool = false,
+    includeNonPickable: Bool = false
 ) -> RaycastHit?
 ```
 
-Convenience for one-off casts: builds the bounding-box cache from `ViewportBody.boundingBox` for every visible body, then calls the overload above. It walks each body's geometry to do so, so code that casts repeatedly against the same bodies should keep its own cache.
+Convenience for one-off casts: builds the bounding-box cache from `ViewportBody.boundingBox` for every body the cast will test (skipping the same hidden, widget and non-pickable bodies), then calls the overload above. It walks each body's geometry to do so, so code that casts repeatedly against the same bodies should keep its own cache.
 
 **Example: cast a ray through a screen tap**
 

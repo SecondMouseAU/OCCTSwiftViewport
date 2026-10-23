@@ -177,7 +177,7 @@ struct RendererSharedSetupTests {
 
     // MARK: - Shadow frustum
 
-    @Test("Scene bounds union visible bodies, in local or world space")
+    @Test("Scene bounds union visible geometry bodies in world space")
     func sceneBoundsHonoursVisibilityAndTransforms() {
         let a = ViewportBody.box(id: "a", width: 2, height: 2, depth: 2, color: .zero)
         let b = translated(
@@ -188,19 +188,45 @@ struct RendererSharedSetupTests {
             by: SIMD3<Float>(0, 100, 0))
         hidden.isVisible = false
 
-        let local = RendererSharedSetup.sceneBounds(of: [a, b, hidden], applyingTransforms: false)
-        let world = RendererSharedSetup.sceneBounds(of: [a, b, hidden], applyingTransforms: true)
-        #expect(local != nil)
+        let world = RendererSharedSetup.sceneBounds(of: [a, b, hidden])
         #expect(world != nil)
-        // Local space: both boxes sit on the origin, so the union is one box.
-        #expect(abs((local?.max.x ?? 0) - 1) < 1e-4)
         // World space: the second box's translation widens the union.
         #expect(abs((world?.max.x ?? 0) - 11) < 1e-4)
         // The invisible body never contributes.
         #expect((world?.max.y ?? 0) < 50)
 
-        #expect(RendererSharedSetup.sceneBounds(of: [], applyingTransforms: true) == nil)
-        #expect(RendererSharedSetup.sceneBounds(of: [hidden], applyingTransforms: true) == nil)
+        #expect(RendererSharedSetup.sceneBounds(of: []) == nil)
+        #expect(RendererSharedSetup.sceneBounds(of: [hidden]) == nil)
+    }
+
+    @Test("Scene bounds skip overlay bodies, which would otherwise enlarge the shadow frustum")
+    func sceneBoundsSkipOverlays() throws {
+        let model = ViewportBody.box(id: "model", width: 2, height: 2, depth: 2, color: .zero)
+        var gizmo = translated(
+            ViewportBody.box(id: "gizmo", width: 2, height: 2, depth: 2, color: .zero),
+            by: SIMD3<Float>(500, 0, 0))
+        gizmo.renderLayer = .overlay
+        let bounds = try #require(RendererSharedSetup.sceneBounds(of: [model, gizmo]))
+        #expect(abs(bounds.max.x - 1) < 1e-4, "overlay widened the bounds to \(bounds.max.x)")
+        #expect(RendererSharedSetup.sceneBounds(of: [gizmo]) == nil)
+    }
+
+    @Test("Scene bounds read the supplied local boxes instead of rescanning geometry")
+    func sceneBoundsUseSuppliedLocalBounds() throws {
+        let body = translated(
+            ViewportBody.box(id: "a", width: 2, height: 2, depth: 2, color: .zero),
+            by: SIMD3<Float>(10, 0, 0))
+        let cached = BoundingBox(min: SIMD3<Float>(-3, -3, -3), max: SIMD3<Float>(3, 3, 3))
+        var asked: [String] = []
+        let bounds = try #require(
+            RendererSharedSetup.sceneBounds(of: [body]) { b in
+                asked.append(b.id)
+                return cached
+            })
+        #expect(asked == ["a"])
+        // The supplied local box, moved by the body's transform.
+        #expect(abs(bounds.max.x - 13) < 1e-4)
+        #expect(abs(bounds.min.x - 7) < 1e-4)
     }
 
     @Test("Light view-projection matches the implementation both renderers duplicated")
@@ -213,15 +239,11 @@ struct RendererSharedSetupTests {
         ]
         let lightDir = SIMD3<Float>(-0.4, -0.8, -0.45)
 
-        for applyingTransforms in [false, true] {
-            let shared = RendererSharedSetup.lightViewProjection(
-                lightDirection: lightDir,
-                sceneBounds: RendererSharedSetup.sceneBounds(
-                    of: bodies, applyingTransforms: applyingTransforms))
-            let legacy = legacyLightViewProjection(
-                lightDir: lightDir, bodies: bodies, applyingTransforms: applyingTransforms)
-            #expect(maxDelta(shared, legacy) < 1e-5)
-        }
+        let shared = RendererSharedSetup.lightViewProjection(
+            lightDirection: lightDir, sceneBounds: RendererSharedSetup.sceneBounds(of: bodies))
+        let legacy = legacyLightViewProjection(
+            lightDir: lightDir, bodies: bodies, applyingTransforms: true)
+        #expect(maxDelta(shared, legacy) < 1e-5)
     }
 
     @Test("Light view-projection falls back to a fixed box when nothing is visible")

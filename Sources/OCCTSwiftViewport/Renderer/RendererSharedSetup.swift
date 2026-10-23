@@ -840,21 +840,27 @@ enum RendererSharedSetup {
 
     // MARK: - Shadow Frustum
 
-    /// Unions the bounds of every visible body, optionally in world space.
+    /// World-space union of the bounds of every visible `.geometry`-layer body.
+    ///
+    /// Both renderers fit their near/far clip planes and the shadow frustum to this one box.
+    /// `.overlay` bodies (gizmos, widgets) are left out, so one can neither stretch the depth
+    /// range nor enlarge the shadow frustum and lower shadow resolution (issue #183).
     ///
     /// - Parameters:
-    ///   - bodies: Scene bodies; invisible bodies and bodies without bounds are skipped.
-    ///   - applyingTransforms: `true` unions world-space bounds (each body's local box transformed by
-    ///     its `transform`), `false` unions the raw local boxes. `OffscreenRenderer` passes `true`;
-    ///     `ViewportRenderer`'s shadow pass has always passed `false`, so it keeps doing so here
-    ///     rather than silently changing what the live viewport renders.
-    /// - Returns: The unioned bounds, or `nil` when no visible body has any.
-    static func sceneBounds(of bodies: [ViewportBody], applyingTransforms: Bool) -> BoundingBox? {
+    ///   - bodies: Scene bodies; invisible bodies, overlay bodies and bodies without bounds are
+    ///     skipped.
+    ///   - localBounds: A body's **local-space** box, before `transform`. Defaults to
+    ///     `ViewportBody.boundingBox`, which scans the body's geometry; `ViewportRenderer` passes
+    ///     its per-generation cache so a frame does not rescan every vertex.
+    /// - Returns: The unioned bounds, or `nil` when no included body has any.
+    static func sceneBounds(
+        of bodies: [ViewportBody],
+        localBounds: (ViewportBody) -> BoundingBox? = { $0.boundingBox }
+    ) -> BoundingBox? {
         var bounds: BoundingBox?
-        for body in bodies where body.isVisible {
-            guard let box = body.boundingBox else { continue }
-            let candidate = applyingTransforms ? box.transformed(by: body.transform) : box
-            bounds = bounds.map { $0.union(candidate) } ?? candidate
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
+            guard let box = localBounds(body)?.transformed(by: body.transform) else { continue }
+            bounds = bounds.map { $0.union(box) } ?? box
         }
         return bounds
     }

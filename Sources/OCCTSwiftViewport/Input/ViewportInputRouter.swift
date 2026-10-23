@@ -178,11 +178,12 @@ extension ViewportController {
     ///
     /// Does nothing when the ray misses, since there is then no point to focus on. Geometry
     /// removed by `clipPlanes` is skipped, so a sectioned model focuses on the visible cut
-    /// (issue #163).
+    /// (issue #163). Widgets and non-pickable bodies are skipped, and the bounding boxes come
+    /// from the dynamic pivot's per-generation cache rather than a rescan per tap (issue #180).
     private func focus(atNDC ndc: SIMD2<Float>) {
         let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio)
         guard
-            let hit = SceneRaycast.cast(
+            let hit = pivotStrategy.raycast(
                 ray: ray, bodies: inputSceneBodies, clipPlanes: clipPlanes)
         else { return }
         focusOn(point: hit.point, animated: true)

@@ -192,7 +192,9 @@ public final class ViewportController: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     /// Dynamic pivot strategy for automatic orbit center adjustment.
-    private lazy var pivotStrategy = PivotStrategy()
+    ///
+    /// Internal so the input router's focus-on-point raycast shares its bounding-box cache.
+    lazy var pivotStrategy = PivotStrategy()
 
     /// Current aspect ratio (updated by MetalViewportView).
     public internal(set) var lastAspectRatio: Float = 1.0
