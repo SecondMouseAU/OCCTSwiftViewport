@@ -2941,17 +2941,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         texture: MTLTexture,
         completion: @escaping @Sendable (PickResult?) -> Void
     ) {
-        let startX = max(0, pixel.x - radius)
-        let startY = max(0, pixel.y - radius)
-        let endX = min(pickTextureManager.width - 1, pixel.x + radius)
-        let endY = min(pickTextureManager.height - 1, pixel.y + radius)
-        let actualWidth = endX - startX + 1
-        let actualHeight = endY - startY + 1
-
-        guard actualWidth > 0, actualHeight > 0 else {
+        guard
+            let region = Self.clampPickNeighborhood(
+                around: pixel, radius: radius,
+                textureWidth: pickTextureManager.width, textureHeight: pickTextureManager.height)
+        else {
             completion(nil)
             return
         }
+        let (startX, startY, actualWidth, actualHeight) = region
 
         let bytesPerRow = Self.alignedBytesPerRow(forWidth: actualWidth)
         let totalBytes = bytesPerRow * actualHeight
@@ -2985,43 +2983,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let centerY = pixel.y - startY
 
         commandBuffer.addCompletedHandler { @Sendable _ in
+            // De-stride into one flat row-major array, as performRegionPick does.
             let base = readbackBuffer.contents()
-            var bestResult: PickResult? = nil
-            var bestPriority = -1
-            var bestDistSq = Int.max
-
+            var rawValues: [UInt32] = []
+            rawValues.reserveCapacity(actualWidth * actualHeight)
             for row in 0..<actualHeight {
                 let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
-                for col in 0..<actualWidth {
-                    let rawValue = rowValues[col]
-                    guard
-                        let result = PickResult(
-                            rawValue: rawValue,
-                            indexMap: indexMap,
-                            layerMap: layerMap
-                        )
-                    else {
-                        continue
-                    }
-
-                    let priority: Int
-                    switch result.kind {
-                    case .vertex: priority = 2
-                    case .edge: priority = 1
-                    case .face: priority = 0
-                    }
-
-                    let dx = col - centerX
-                    let dy = row - centerY
-                    let distSq = dx * dx + dy * dy
-                    let isCloser = priority == bestPriority && distSq < bestDistSq
-                    if priority > bestPriority || isCloser {
-                        bestPriority = priority
-                        bestDistSq = distSq
-                        bestResult = result
-                    }
-                }
+                rawValues.append(
+                    contentsOf: UnsafeBufferPointer(start: rowValues, count: actualWidth))
             }
+            let bestResult = Self.bestNeighborhoodPickResult(
+                rawValues, width: actualWidth, center: SIMD2(centerX, centerY),
+                indexMap: indexMap, layerMap: layerMap)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3167,6 +3140,69 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let h = min(textureHeight - y, max(1, Int(clipped.height.rounded(.up))))
         guard w > 0, h > 0 else { return nil }
         return (x, y, w, h)
+    }
+
+    /// Clamps the `(2 * radius + 1)²` square around `pixel` to the pick texture's bounds.
+    ///
+    /// Returns the origin/size to blit, or `nil` when the square misses the texture entirely or
+    /// the texture has zero size (no frame drawn yet).
+    nonisolated static func clampPickNeighborhood(
+        around pixel: SIMD2<Int>, radius: Int, textureWidth: Int, textureHeight: Int
+    ) -> (x: Int, y: Int, width: Int, height: Int)? {
+        let startX = max(0, pixel.x - radius)
+        let startY = max(0, pixel.y - radius)
+        let endX = min(textureWidth - 1, pixel.x + radius)
+        let endY = min(textureHeight - 1, pixel.y + radius)
+        let width = endX - startX + 1
+        let height = endY - startY + 1
+        guard width > 0, height > 0 else { return nil }
+        return (startX, startY, width, height)
+    }
+
+    /// Picks the best hit from a neighborhood of raw R32Uint pick values (issue #118).
+    ///
+    /// A vertex beats an edge, an edge beats a face; among hits of the same kind the one nearest
+    /// `center` wins, and on an exact tie the first in row-major order is kept. Background and
+    /// undecodable pixels are skipped. `rawValues` is flat and row-major, `width` values per row;
+    /// `center` is the cursor's position within that region. Pulled out of the GPU readback path
+    /// as a pure function, like `decodeRegionPickResults`, so it is testable without a live draw.
+    nonisolated static func bestNeighborhoodPickResult(
+        _ rawValues: [UInt32],
+        width: Int,
+        center: SIMD2<Int>,
+        indexMap: [Int: String],
+        layerMap: [String: PickLayer]
+    ) -> PickResult? {
+        guard width > 0 else { return nil }
+        var bestResult: PickResult? = nil
+        var bestPriority = -1
+        var bestDistSq = Int.max
+
+        for (index, rawValue) in rawValues.enumerated() {
+            guard
+                let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
+            else {
+                continue
+            }
+
+            let priority: Int
+            switch result.kind {
+            case .vertex: priority = 2
+            case .edge: priority = 1
+            case .face: priority = 0
+            }
+
+            let dx = index % width - center.x
+            let dy = index / width - center.y
+            let distSq = dx * dx + dy * dy
+            let isCloser = priority == bestPriority && distSq < bestDistSq
+            if priority > bestPriority || isCloser {
+                bestPriority = priority
+                bestDistSq = distSq
+                bestResult = result
+            }
+        }
+        return bestResult
     }
 
     /// Decodes raw R32Uint pick values into the de-duplicated primitives they represent.
