@@ -35,10 +35,13 @@ struct EdgeDashRenderingTests {
             color: SIMD4<Float>(1, 1, 1, 1))
     }
 
-    /// A small dark quad well away from the line, so the body has a mesh but the line row is
-    /// background everywhere except where the edge is drawn.
+    /// A meshed body whose edge lies in front of its mesh.
+    ///
+    /// The small dark quad sits well away from the line, so the line's row is background except
+    /// where the edge is drawn, and at z = -1, behind the line. Before issue #135 the near plane
+    /// was fitted to the mesh alone and clipped the edge.
     private func meshedBody() -> ViewportBody {
-        func v(_ x: Float, _ y: Float) -> [Float] { [x, y, 1, 0, 0, 1] }
+        func v(_ x: Float, _ y: Float) -> [Float] { [x, y, -1, 0, 0, 1] }
         let verts = v(-1, 3) + v(1, 3) + v(1, 4) + v(-1, 4)
         return ViewportBody(
             id: "meshed", vertexData: verts, indices: [0, 1, 2, 0, 2, 3], edges: [line],
@@ -56,6 +59,12 @@ struct EdgeDashRenderingTests {
         // 8 world units of line at 1 on / 1 off is four dashes.
         let runs = try litRuns(body: wire(), pattern: dashes)
         #expect(runs >= 3, "expected several dashes on an edge-only body, got \(runs) run(s)")
+    }
+
+    @Test("A solid edge in front of its body's mesh is drawn, not near-clipped (#135)")
+    func edgeInFrontOfMeshIsDrawn() throws {
+        let runs = try litRuns(body: meshedBody(), pattern: .solid)
+        #expect(runs == 1, "expected one run, got \(runs)")
     }
 
     @Test("A dashed pattern breaks the edges of a meshed body into dashes")

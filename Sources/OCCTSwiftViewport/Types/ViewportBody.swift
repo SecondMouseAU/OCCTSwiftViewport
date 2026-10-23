@@ -358,34 +358,47 @@ extension ViewportBody {
 
 extension ViewportBody {
 
-    /// Computes the axis-aligned bounding box from vertex positions.
+    /// Computes the axis-aligned bounding box of everything the body draws.
     ///
-    /// Falls back to `vertices` when `vertexData` is empty, so point-cloud
-    /// bodies (`primitiveKind == .point`) report a usable extent for
-    /// shadow-pass framing, picking, and `CameraState.fit(to:)`.
-    /// Returns `nil` if neither source has any points.
+    /// Covers the mesh positions in `vertexData`, or `vertices` when `vertexData` is empty (point
+    /// clouds and direct-mesh bodies), plus every point of every `edges` polyline and the full
+    /// circle of every `arc` (conservative for partial arcs). Edges and arcs count
+    /// because they are drawn too: leaving them out let the near clip plane, fitted to these
+    /// bounds, cut off edges lying in front of the mesh, and gave edge-only bodies no bounds at
+    /// all (issue #135). Used for clip-plane fitting, frustum culling, shadow framing, picking
+    /// and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
     public var boundingBox: BoundingBox? {
+        var bbMin = SIMD3<Float>(repeating: .infinity)
+        var bbMax = SIMD3<Float>(repeating: -.infinity)
+        var hasPoint = false
+        func include(_ p: SIMD3<Float>) {
+            bbMin = simd_min(bbMin, p)
+            bbMax = simd_max(bbMax, p)
+            hasPoint = true
+        }
+
         let stride = 6
         let vertexCount = vertexData.count / stride
         if vertexCount > 0 {
-            var bbMin = SIMD3<Float>(vertexData[0], vertexData[1], vertexData[2])
-            var bbMax = bbMin
-            for i in 1..<vertexCount {
+            for i in 0..<vertexCount {
                 let base = i * stride
-                let p = SIMD3<Float>(vertexData[base], vertexData[base + 1], vertexData[base + 2])
-                bbMin = simd_min(bbMin, p)
-                bbMax = simd_max(bbMax, p)
+                include(SIMD3<Float>(vertexData[base], vertexData[base + 1], vertexData[base + 2]))
             }
-            return BoundingBox(min: bbMin, max: bbMax)
+        } else {
+            vertices.forEach(include)
+        }
+        for polyline in edges {
+            polyline.forEach(include)
+        }
+        for arc in arcs {
+            // Conservative: the full circle's box, whose half-extent on each axis is
+            // radius * sqrt(xAxis[i]^2 + yAxis[i]^2). A partial arc gets the same box.
+            let axisSpread = arc.xAxis * arc.xAxis + arc.yAxis * arc.yAxis
+            let halfExtent = arc.radius * axisSpread.squareRoot()
+            include(arc.center - halfExtent)
+            include(arc.center + halfExtent)
         }
 
-        guard let first = vertices.first else { return nil }
-        var bbMin = first
-        var bbMax = first
-        for i in 1..<vertices.count {
-            bbMin = simd_min(bbMin, vertices[i])
-            bbMax = simd_max(bbMax, vertices[i])
-        }
-        return BoundingBox(min: bbMin, max: bbMax)
+        return hasPoint ? BoundingBox(min: bbMin, max: bbMax) : nil
     }
 }
