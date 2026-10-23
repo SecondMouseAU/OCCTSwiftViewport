@@ -740,7 +740,7 @@ struct MetalViewRepresentable: UIViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.clearColor = MTLClearColor(...)
-        view.preferredFramesPerSecond = 60
+        view.preferredFramesPerSecond = configuration.preferredFramesPerSecond  // default 120
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         return view

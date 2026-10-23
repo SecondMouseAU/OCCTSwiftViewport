@@ -44,20 +44,28 @@ public final class CameraController: ObservableObject {
     /// Rotation behavior style.
     public var rotationStyle: RotationStyle = .turntable
 
+    // The sensitivity, inertia and damping defaults below come from `GestureConfiguration.default`, so
+    // a standalone controller feels the same as one that `ViewportController` configured.
+
     /// Orbit sensitivity (radians per point of drag).
-    public var orbitSensitivity: Float = 0.005
+    public var orbitSensitivity: Float = GestureConfiguration.default.orbitSensitivity
 
     /// Pan sensitivity (world units per point of drag, scaled by distance).
-    public var panSensitivity: Float = 0.002
+    public var panSensitivity: Float = GestureConfiguration.default.panSensitivity
 
-    /// Zoom sensitivity for pinch gestures.
-    public var zoomSensitivity: Float = 1.0
+    /// Zoom sensitivity for pinch and drag zoom.
+    ///
+    /// `pinchZoom(magnification:cursorNormalized:aspectRatio:)` raises the gesture's magnification
+    /// to this power, so `1` applies the gesture as is, `2` zooms twice as fast (in log terms) and
+    /// `0.5` half as fast. `zoom(factor:)` and `zoomToward(factor:cursorNormalized:aspectRatio:)`
+    /// are the raw primitives and do not apply it.
+    public var zoomSensitivity: Float = GestureConfiguration.default.zoomSensitivity
 
     /// Scroll wheel zoom sensitivity.
-    public var scrollZoomSensitivity: Float = 0.1
+    public var scrollZoomSensitivity: Float = GestureConfiguration.default.scrollZoomSensitivity
 
     /// Minimum pan speed (prevents pan from becoming imperceptibly slow when zoomed in close).
-    public var minPanSpeed: Float = 0.001
+    public var minPanSpeed: Float = GestureConfiguration.default.minPanSpeed
 
     /// Minimum distance from pivot.
     public var minDistance: Float = 0.1
@@ -65,17 +73,38 @@ public final class CameraController: ObservableObject {
     /// Maximum distance from pivot.
     public var maxDistance: Float = 10000
 
-    /// Minimum vertical angle for turntable mode (radians from vertical).
+    /// Minimum vertical angle for turntable mode (ignored).
+    ///
+    /// Turntable tilt is deliberately unclamped, so the camera can tilt over the pole for a full
+    /// 360° vertical orbit. Nothing reads this property.
+    @available(*, deprecated, message: "Ignored: turntable tilt is unclamped by design.")
     public var minPhi: Float = 0.01
 
-    /// Maximum vertical angle for turntable mode (radians from vertical).
+    /// Maximum vertical angle for turntable mode (ignored; see `minPhi`).
+    @available(*, deprecated, message: "Ignored: turntable tilt is unclamped by design.")
     public var maxPhi: Float = .pi - 0.01
 
     /// Damping factor for inertia (0 = no damping, 1 = instant stop).
-    public var dampingFactor: Float = 0.1
+    ///
+    /// This is the fraction of velocity lost per 1/60 s. The decay is scaled by elapsed time, so
+    /// momentum coasts for the same time and distance whatever the tick rate.
+    public var dampingFactor: Float = GestureConfiguration.default.dampingFactor
 
     /// Whether inertia is enabled.
-    public var enableInertia: Bool = true
+    public var enableInertia: Bool = GestureConfiguration.default.enableInertia
+
+    /// Rate of the animation and inertia timer, in frames per second.
+    ///
+    /// `ViewportController` sets this from `ViewportConfiguration.preferredFramesPerSecond`, so
+    /// camera updates keep pace with the display. The motion itself is time-based, so this changes
+    /// only how smooth it looks, not how fast it goes. Values below 1 are treated as 1.
+    public var preferredFramesPerSecond: Int = 120
+
+    /// The state `reset(animated:)` returns to.
+    ///
+    /// Defaults to the controller's initial state, which for a `ViewportController` is
+    /// `ViewportConfiguration.initialCameraState`.
+    public var homeCameraState: CameraState
 
     /// Whether `zoomToward` should shift the pivot toward the cursor.
     ///
@@ -87,11 +116,11 @@ public final class CameraController: ObservableObject {
 
     // MARK: - Internal State
 
-    /// Velocity for inertia (radians per second).
-    private var angularVelocity: SIMD2<Float> = .zero
+    /// Velocity for inertia (drag points per 1/60 s).
+    private(set) var angularVelocity: SIMD2<Float> = .zero
 
-    /// Pan velocity for inertia.
-    private var panVelocity: SIMD2<Float> = .zero
+    /// Pan velocity for inertia (drag points per 1/60 s).
+    private(set) var panVelocity: SIMD2<Float> = .zero
 
     /// Arcball virtual sphere radius (in screen coordinates).
     private var arcballRadius: Float = 300
@@ -130,6 +159,7 @@ public final class CameraController: ObservableObject {
     /// Creates a camera controller with the specified initial state.
     public init(initialState: CameraState = CameraState()) {
         self.cameraState = initialState
+        self.homeCameraState = initialState
 
         // Extract spherical coordinates from initial rotation
         updateSphericalFromRotation()
@@ -267,6 +297,26 @@ public final class CameraController: ObservableObject {
         }
 
         cameraState = newState
+    }
+
+    /// Zooms by a pinch or drag-zoom magnification, scaled by `zoomSensitivity`.
+    ///
+    /// The applied factor is `magnification` raised to `zoomSensitivity`, so the default
+    /// sensitivity of 1 applies the gesture unchanged.
+    ///
+    /// - Parameters:
+    ///   - magnification: Incremental gesture scale (>1 zooms in, <1 zooms out, 1 = no change).
+    ///     Non-positive values are ignored.
+    ///   - cursorNormalized: Gesture centre in normalized coordinates (−1…+1), or `nil` for
+    ///     centre zoom
+    ///   - aspectRatio: View aspect ratio (width / height)
+    public func pinchZoom(
+        magnification: Float, cursorNormalized: SIMD2<Float>? = nil, aspectRatio: Float = 1.0
+    ) {
+        guard magnification > 0 else { return }
+        zoomToward(
+            factor: pow(magnification, zoomSensitivity), cursorNormalized: cursorNormalized,
+            aspectRatio: aspectRatio)
     }
 
     /// Zooms using scroll wheel delta, optionally shifting the pivot toward the cursor.
@@ -408,9 +458,9 @@ public final class CameraController: ObservableObject {
         }
     }
 
-    /// Resets the camera to the default view.
+    /// Resets the camera to `homeCameraState`.
     public func reset(animated: Bool = true) {
-        let target = CameraState()
+        let target = homeCameraState
         rollAngle = 0
 
         if animated {
@@ -483,20 +533,23 @@ public final class CameraController: ObservableObject {
 
     /// Updates spherical coordinates from current rotation.
     private func updateSphericalFromRotation() {
-        // Extract theta and phi from rotation quaternion
-        let forward = cameraState.rotation.act(SIMD3<Float>(0, 0, 1))
-
-        // Phi is angle from Z axis (acos gives [0, pi])
-        // We accept the [0, pi] range here, since continuous dragging maintains
-        // the full phi via incremental updates in orbitTurntable.
-        phi = acos(simd_clamp(forward.z, -1, 1))
-
-        // Theta is angle in XY plane
-        theta = atan2(forward.y, forward.x)
-
-        // Reset roll: standard views have no roll, and extracting roll
-        // from an arbitrary quaternion is fragile.
-        rollAngle = 0
+        // Invert updateRotationFromSpherical exactly: R = Rz(theta) · Rx(beta) · Rz(roll) with
+        // beta = phi − π/2 (a Z-X-Z Euler decomposition). The previous acos/atan2 of the back
+        // vector did not match that parametrization, so the first turntable orbit after init,
+        // reset or any animation snapped the camera to a different orientation.
+        let m = simd_float3x3(simd_normalize(cameraState.rotation))
+        // m.columns.c[r] is R[r][c].
+        let beta = acos(simd_clamp(m.columns.2.z, -1, 1))
+        if sin(beta) > 1e-5 {
+            theta = atan2(m.columns.2.x, -m.columns.2.y)
+            rollAngle = atan2(m.columns.0.z, m.columns.1.z)
+        } else {
+            // Looking straight along ±Z: theta and roll turn about the same axis, so fold it all
+            // into theta.
+            theta = atan2(m.columns.0.y, m.columns.0.x)
+            rollAngle = 0
+        }
+        phi = beta + .pi / 2
     }
 
     /// Updates rotation quaternion from spherical coordinates.
@@ -518,7 +571,8 @@ public final class CameraController: ObservableObject {
         guard animationTimer == nil else { return }
 
         lastUpdateTime = Date.timeIntervalSinceReferenceDate
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) {
+        let interval = 1.0 / Double(max(1, preferredFramesPerSecond))
+        animationTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) {
             [weak self] _ in
             Task { @MainActor in
                 self?.updateAnimation()
@@ -536,7 +590,23 @@ public final class CameraController: ObservableObject {
         let deltaTime = Float(currentTime - lastUpdateTime)
         lastUpdateTime = currentTime
 
+        if !advance(by: deltaTime) {
+            stopAnimationTimer()
+        }
+    }
+
+    /// Advances animation and inertia by `deltaTime` seconds.
+    ///
+    /// Velocities are in drag points per 1/60 s, so each tick moves `velocity * deltaTime * 60`
+    /// and keeps `(1 - dampingFactor)^(deltaTime * 60)` of its velocity. At 60 Hz that is the
+    /// historical per-frame step; at any other rate, or when timer ticks coalesce, the motion
+    /// stays the same over time.
+    ///
+    /// - Returns: `true` while there is still motion to animate.
+    func advance(by deltaTime: Float) -> Bool {
         var needsContinue = false
+        let frames = deltaTime * 60
+        let decay = pow(max(0, 1.0 - dampingFactor), frames)
 
         // Animation update
         if isAnimating, let start = animationStart, let target = animationTarget {
@@ -558,24 +628,22 @@ public final class CameraController: ObservableObject {
         // Inertia update
         if simd_length(angularVelocity) > 0.001 {
             orbit(
-                deltaX: angularVelocity.x * deltaTime * 60,
-                deltaY: angularVelocity.y * deltaTime * 60)
-            angularVelocity *= (1.0 - dampingFactor)
+                deltaX: angularVelocity.x * frames,
+                deltaY: angularVelocity.y * frames)
+            angularVelocity *= decay
             needsContinue = true
         } else {
             angularVelocity = .zero
         }
 
         if simd_length(panVelocity) > 0.001 {
-            pan(deltaX: panVelocity.x * deltaTime * 60, deltaY: panVelocity.y * deltaTime * 60)
-            panVelocity *= (1.0 - dampingFactor)
+            pan(deltaX: panVelocity.x * frames, deltaY: panVelocity.y * frames)
+            panVelocity *= decay
             needsContinue = true
         } else {
             panVelocity = .zero
         }
 
-        if !needsContinue {
-            stopAnimationTimer()
-        }
+        return needsContinue
     }
 }

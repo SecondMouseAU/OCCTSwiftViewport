@@ -267,6 +267,24 @@ Requested Metal MSAA sample count for the main color/depth attachments: `1` for 
 
 ---
 
+#### `preferredFramesPerSecond`
+
+```swift
+public var preferredFramesPerSecond: Int  // default: 120
+```
+
+Frame rate the viewport asks for. `MTKView` picks the supported display rate closest to it, so the default runs at 120 Hz on ProMotion displays and 60 Hz on 60 Hz ones. The camera's animation and inertia timer runs at the same rate. Set `60` to cap the rate and save power. It is not an `init` parameter; set it on the value before creating the `ViewportController`. On iPhone, rates above 60 also need `CADisableMinimumFrameDurationOnPhone` set to `YES` in the app's Info.plist.
+
+```swift
+var config = ViewportConfiguration.cad
+config.preferredFramesPerSecond = 60
+let controller = ViewportController(configuration: config)
+```
+
+Earlier releases hard-coded 60 FPS for both the view and the camera timer.
+
+---
+
 #### `enableTAA`
 
 ```swift

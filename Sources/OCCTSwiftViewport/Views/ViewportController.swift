@@ -219,6 +219,7 @@ public final class ViewportController: ObservableObject {
         cameraController.minPanSpeed = gc.minPanSpeed
         cameraController.enableInertia = gc.enableInertia
         cameraController.dampingFactor = gc.dampingFactor
+        cameraController.preferredFramesPerSecond = configuration.preferredFramesPerSecond
 
         // Sync zoom-toward-cursor pivot shift with dynamic pivot config
         cameraController.zoomTowardShiftsPivot = configuration.dynamicPivotConfiguration.isEnabled
@@ -310,17 +311,19 @@ public final class ViewportController: ObservableObject {
             ))
     }
 
-    /// Handles zoom gesture input.
+    /// Handles zoom gesture input, scaled by `GestureConfiguration.zoomSensitivity`.
     public func handleZoom(magnification: CGFloat) {
-        cameraController.zoom(factor: Float(magnification))
+        cameraController.pinchZoom(magnification: Float(magnification))
     }
 
     /// Pinch zoom toward the gesture centre (NDC), so fingers stay over the same world point.
+    ///
+    /// The magnification is scaled by `GestureConfiguration.zoomSensitivity`.
     public func handleZoom(
         magnification: CGFloat, centerNormalized: SIMD2<Float>, aspectRatio: Float
     ) {
-        cameraController.zoomToward(
-            factor: Float(magnification), cursorNormalized: centerNormalized,
+        cameraController.pinchZoom(
+            magnification: Float(magnification), cursorNormalized: centerNormalized,
             aspectRatio: aspectRatio)
     }
 
@@ -346,7 +349,7 @@ public final class ViewportController: ObservableObject {
         cameraController.focusOn(point: point, distance: distance, animated: animated)
     }
 
-    /// Resets the camera to the default view.
+    /// Resets the camera to `configuration.initialCameraState`.
     public func reset(animated: Bool = true) {
         cameraController.reset(animated: animated)
     }
@@ -408,6 +411,12 @@ public final class ViewportController: ObservableObject {
     /// Internal, used by the input router (`dispatch(_:)`).
     enum InputDragMode { case orbit, pan, zoom }
     var activeInputDragMode: InputDragMode = .orbit
+
+    /// Scene bodies that a `.focusOnPoint` double-tap or double-click raycasts against.
+    ///
+    /// `MetalViewportView` refreshes this before it dispatches a tap. Internal, used by the
+    /// input router (`dispatch(_:)`).
+    var inputSceneBodies: [ViewportBody] = []
 
     /// Optional filter constraining what the user-geometry pick stream accepts.
     ///

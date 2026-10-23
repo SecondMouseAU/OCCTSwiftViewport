@@ -19,7 +19,8 @@ public struct GestureConfiguration: Sendable {
     /// Pan sensitivity multiplier.
     public var panSensitivity: Float
 
-    /// Pinch zoom sensitivity.
+    /// Pinch and drag-zoom sensitivity: the exponent applied to the gesture's magnification
+    /// (`1` = unchanged, `2` = twice as fast, `0.5` = half as fast).
     public var zoomSensitivity: Float
 
     /// Scroll wheel zoom sensitivity.
@@ -49,17 +50,19 @@ public struct GestureConfiguration: Sendable {
     public var dampingFactor: Float
 
     // MARK: - iOS Gesture Mapping
+    //
+    // These also apply on visionOS, which uses the touch-style gesture path.
 
-    /// Action for single-finger drag on iOS.
+    /// Action for single-finger drag on iOS: `.orbit`, `.pan` or `.zoom`; anything else ignores it.
     public var singleFingerDrag: GestureAction
 
-    /// Action for two-finger drag on iOS.
+    /// Action for two-finger drag on iOS: `.orbit`, `.pan` or `.zoom`; anything else ignores it.
     public var twoFingerDrag: GestureAction
 
-    /// Action for pinch gesture on iOS.
+    /// Action for pinch gesture on iOS: `.zoom`; anything else ignores the pinch.
     public var pinchGesture: GestureAction
 
-    /// Action for double-tap on iOS.
+    /// Action for double-tap on iOS: `.resetView` or `.focusOnPoint`; anything else ignores it.
     public var doubleTap: GestureAction
 
     // MARK: - macOS Gesture Mapping
@@ -76,13 +79,13 @@ public struct GestureConfiguration: Sendable {
     /// Action for command+drag.
     public var commandDrag: GestureAction
 
-    /// Action for scroll wheel.
+    /// Action for scroll wheel: `.zoom`; anything else ignores scrolling.
     public var scrollWheel: GestureAction
 
-    /// Action for trackpad pinch.
+    /// Action for trackpad pinch: `.zoom`; anything else ignores the pinch.
     public var trackpadPinch: GestureAction
 
-    /// Action for double-click.
+    /// Action for double-click: `.resetView` or `.focusOnPoint`; anything else ignores it.
     public var doubleClick: GestureAction
 
     // MARK: - Initialization
@@ -101,14 +104,14 @@ public struct GestureConfiguration: Sendable {
         singleFingerDrag: GestureAction = .orbit,
         twoFingerDrag: GestureAction = .pan,
         pinchGesture: GestureAction = .zoom,
-        doubleTap: GestureAction = .focusOnPoint,
+        doubleTap: GestureAction = .resetView,
         mouseDrag: GestureAction = .orbit,
         shiftDrag: GestureAction = .pan,
         optionDrag: GestureAction = .zoom,
         commandDrag: GestureAction = .select,
         scrollWheel: GestureAction = .zoom,
         trackpadPinch: GestureAction = .zoom,
-        doubleClick: GestureAction = .focusOnPoint
+        doubleClick: GestureAction = .resetView
     ) {
         self.orbitSensitivity = orbitSensitivity
         self.panSensitivity = panSensitivity

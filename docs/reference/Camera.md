@@ -220,7 +220,7 @@ Convenience constants backed by the corresponding `StandardView` case.
 
 ## CameraController
 
-`CameraController` is a `@MainActor` `ObservableObject` that owns a `CameraState` and handles interactive orbit, pan, zoom, roll, focus, and animated transitions. It drives a 60 Hz timer for inertia decay and state-interpolation animations.
+`CameraController` is a `@MainActor` `ObservableObject` that owns a `CameraState` and handles interactive orbit, pan, zoom, roll, focus, and animated transitions. It drives a timer for inertia decay and state-interpolation animations, running at `preferredFramesPerSecond` (default 120; `ViewportController` sets it from `ViewportConfiguration.preferredFramesPerSecond`). Inertia and animation are time-based, so the tick rate changes only smoothness, not speed.
 
 Obtain it from `ViewportController.cameraController`, or create a standalone instance for headless use.
 
@@ -270,17 +270,23 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 |---|---|---|---|
 | `rotationStyle` | `RotationStyle` | `.turntable` | Drag rotation model |
 | `orbitSensitivity` | `Float` | `0.005` | Radians per point of drag |
-| `panSensitivity` | `Float` | `0.002` | World units per point (scaled by distance) |
-| `zoomSensitivity` | `Float` | `1.0` | Pinch zoom multiplier |
-| `scrollZoomSensitivity` | `Float` | `0.1` | Scroll wheel exponent factor |
+| `panSensitivity` | `Float` | `0.005` | World units per point (scaled by distance) |
+| `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch / drag-zoom magnification by `pinchZoom` |
+| `scrollZoomSensitivity` | `Float` | `0.25` | Scroll wheel exponent factor |
 | `minPanSpeed` | `Float` | `0.001` | Floor on pan speed when very close to pivot |
 | `minDistance` | `Float` | `0.1` | Minimum pivot distance |
 | `maxDistance` | `Float` | `10000` | Maximum pivot distance |
-| `minPhi` | `Float` | `0.01` | Min vertical angle (turntable, radians from vertical) |
-| `maxPhi` | `Float` | `π − 0.01` | Max vertical angle (turntable) |
-| `dampingFactor` | `Float` | `0.1` | Inertia decay per frame (0 = coast forever) |
+| `minPhi` | `Float` | `0.01` | **Deprecated, ignored.** Turntable tilt is unclamped by design |
+| `maxPhi` | `Float` | `π − 0.01` | **Deprecated, ignored.** See `minPhi` |
+| `dampingFactor` | `Float` | `0.1` | Inertia velocity lost per 1/60 s, scaled by elapsed time (0 = coast forever) |
 | `enableInertia` | `Bool` | `true` | Whether inertia is applied after gestures end |
+| `preferredFramesPerSecond` | `Int` | `120` | Rate of the animation / inertia timer |
+| `homeCameraState` | `CameraState` | the initial state | State that `reset(animated:)` returns to |
 | `zoomTowardShiftsPivot` | `Bool` | `true` | Whether `zoomToward` shifts the pivot toward the cursor |
+
+The sensitivity, inertia and damping defaults are read from `GestureConfiguration.default`, so a standalone controller feels the same as one that `ViewportController` configured. Previously a standalone controller used `panSensitivity` 0.002 and `scrollZoomSensitivity` 0.1, while `ViewportController` always overwrote them with 0.005 and 0.25.
+
+The turntable tilt is deliberately unclamped: the camera can tilt over the pole for a full 360° vertical orbit. `minPhi` and `maxPhi` were documented as clamps but never read, and are now deprecated.
 
 ---
 
@@ -310,7 +316,21 @@ Shifts the pivot in the camera's local XY plane. Speed scales with `distance * p
 public func zoom(factor: Float)
 ```
 
-Multiplies distance by `1 / factor` (factor > 1 zooms in). Clamps to `[minDistance, maxDistance]`. Also scales `orthographicScale` in orthographic mode.
+Multiplies distance by `1 / factor` (factor > 1 zooms in). Clamps to `[minDistance, maxDistance]`. Also scales `orthographicScale` in orthographic mode. This is the raw primitive: it does not apply `zoomSensitivity`.
+
+---
+
+### `func pinchZoom(magnification:cursorNormalized:aspectRatio:)`
+
+```swift
+public func pinchZoom(
+    magnification: Float,
+    cursorNormalized: SIMD2<Float>? = nil,
+    aspectRatio: Float = 1.0
+)
+```
+
+Zooms by a pinch or drag-zoom magnification raised to `zoomSensitivity`, then passes through to `zoomToward`. Non-positive magnifications are ignored. `ViewportController.handleZoom` and the input router's pinch and drag-zoom paths go through this method.
 
 ---
 
@@ -396,7 +416,7 @@ Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDi
 public func reset(animated: Bool = true)
 ```
 
-Resets to the default `CameraState()` (Z-up, distance 10, perspective 45°). Animated by default (0.5 s). Also clears any accumulated roll.
+Resets to `homeCameraState`, which defaults to the controller's initial state; for a `ViewportController` that is `ViewportConfiguration.initialCameraState`. Animated by default (0.5 s). Also clears any accumulated roll. Previously this always went to `CameraState()`, whatever the configuration said.
 
 ---
 
@@ -416,7 +436,7 @@ Silently shifts the orbit pivot if the new position differs by more than 0.001 w
 public func setAngularVelocity(_ velocity: SIMD2<Float>)
 ```
 
-Seeds inertia with an angular velocity (radians per second, X = horizontal, Y = vertical). No-op when `enableInertia` is `false`. Call at gesture end to enable coasting.
+Seeds inertia with an angular velocity, in drag points per 1/60 s (X = horizontal, Y = vertical); each tick orbits by `velocity × elapsed × 60` points. No-op when `enableInertia` is `false`. Call at gesture end to enable coasting.
 
 ---
 

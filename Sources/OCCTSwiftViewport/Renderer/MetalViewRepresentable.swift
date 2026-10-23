@@ -14,6 +14,7 @@ import SwiftUI
         let renderer: ViewportRenderer
         let backgroundColor: SIMD4<Float>
         var sampleCount: Int = 4
+        var preferredFramesPerSecond: Int = 120
 
         func makeUIView(context: Context) -> MTKView {
             let view = MTKView()
@@ -23,7 +24,7 @@ import SwiftUI
             view.depthStencilPixelFormat = .depth32Float_stencil8
             view.sampleCount = sampleCount
             view.clearColor = mtlClearColor(from: backgroundColor)
-            view.preferredFramesPerSecond = 60
+            view.preferredFramesPerSecond = preferredFramesPerSecond
             view.isMultipleTouchEnabled = true
             return view
         }
@@ -38,7 +39,9 @@ import SwiftUI
     /// MTKView subclass that captures scroll wheel and mouse-down events on macOS.
     class ScrollCaptureMTKView: MTKView {
         var onScrollWheel: ((CGFloat, CGPoint, CGSize) -> Void)?
-        var onMouseDown: ((CGPoint, CGSize) -> Void)?
+        /// Mouse down: location in view coords, view size, and `NSEvent.clickCount`
+        /// (2 for the second click of a double-click).
+        var onMouseDown: ((CGPoint, CGSize, Int) -> Void)?
         /// Incremental drag delta in points (y down) since the previous event.
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         /// Drag finished; velocity in points/second (y down).
@@ -73,7 +76,7 @@ import SwiftUI
         override func mouseDown(with event: NSEvent) {
             let locationInView = convert(event.locationInWindow, from: nil)
             let viewSize = bounds.size
-            onMouseDown?(locationInView, viewSize)
+            onMouseDown?(locationInView, viewSize, event.clickCount)
             // Do NOT call super: it starts an NSView mouse-tracking loop.
             // Drags are handled natively below (SwiftUI gestures stopped firing over
             // this view on macOS 27, issue #127).
@@ -165,8 +168,9 @@ import SwiftUI
         let renderer: ViewportRenderer
         let backgroundColor: SIMD4<Float>
         var sampleCount: Int = 4
+        var preferredFramesPerSecond: Int = 120
         var onScrollWheel: ((CGFloat, CGPoint, CGSize) -> Void)?
-        var onMouseDown: ((CGPoint, CGSize) -> Void)?
+        var onMouseDown: ((CGPoint, CGSize, Int) -> Void)?
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onDragEnd: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onMagnify: ((CGFloat, CGPoint, CGSize) -> Void)?
@@ -182,7 +186,7 @@ import SwiftUI
             view.depthStencilPixelFormat = .depth32Float_stencil8
             view.sampleCount = sampleCount
             view.clearColor = mtlClearColor(from: backgroundColor)
-            view.preferredFramesPerSecond = 60
+            view.preferredFramesPerSecond = preferredFramesPerSecond
             view.onScrollWheel = onScrollWheel
             view.onMouseDown = onMouseDown
             install(on: view)

@@ -55,7 +55,7 @@ Primary pointer drag ended. `velocity` is the release velocity in points per sec
 case twoFingerPanChanged(translation: SIMD2<Float>)
 ```
 
-Two-finger pan (iOS) changed. `translation` is the accumulated translation of the gesture in points since it began, matching the coordinate convention of `UIPanGestureRecognizer.translation(in:)`.
+Two-finger drag (iOS / visionOS) changed. `translation` is the incremental translation in points since the previous event (the recognizer's translation is reset after each event). The router applies it as `GestureConfiguration.twoFingerDrag`: `.pan` (default), `.orbit` or `.zoom`; any other action ignores the gesture.
 
 ---
 
@@ -65,7 +65,7 @@ Two-finger pan (iOS) changed. `translation` is the accumulated translation of th
 case twoFingerPanEnded(velocity: SIMD2<Float>)
 ```
 
-Two-finger pan ended. `velocity` seeds pan inertia.
+Two-finger drag ended. `velocity` seeds pan or orbit inertia, matching `twoFingerDrag`.
 
 ---
 
@@ -75,7 +75,7 @@ Two-finger pan ended. `velocity` seeds pan inertia.
 case pinchChanged(scale: Float)
 ```
 
-Pinch changed. `scale` is an incremental scale ratio relative to the previous event — `1.0` means no change. Zoom is applied toward the view centre.
+Pinch changed. `scale` is an incremental scale ratio relative to the previous event — `1.0` means no change. Zoom is applied toward the view centre, with the scale raised to `GestureConfiguration.zoomSensitivity`. The router zooms only while the platform's pinch mapping (`pinchGesture`, or `trackpadPinch` on macOS) is `.zoom`; any other action ignores the pinch.
 
 ---
 
@@ -85,7 +85,7 @@ Pinch changed. `scale` is an incremental scale ratio relative to the previous ev
 case pinchAtChanged(scale: Float, centerNDC: SIMD2<Float>, aspectRatio: Float)
 ```
 
-Pinch changed with a known gesture centre in normalized-device coordinates (NDC, −1…+1 on each axis). Zoom is applied toward `centerNDC` rather than the view centre, matching the behaviour of mainstream CAD and map applications. `aspectRatio` is `viewWidth / viewHeight` and is required to convert the NDC position into world space correctly.
+Pinch changed with a known gesture centre in normalized-device coordinates (NDC, −1…+1 on each axis). Zoom is applied toward `centerNDC` rather than the view centre, matching the behaviour of mainstream CAD and map applications. `aspectRatio` is `viewWidth / viewHeight` and is required to convert the NDC position into world space correctly. `zoomSensitivity` and the `pinchGesture` / `trackpadPinch` mapping apply as for `.pinchChanged`.
 
 ```swift
 // Zoom toward the mid-point between two fingers
@@ -131,7 +131,7 @@ Two-finger rotation gesture ended.
 case scroll(delta: Float, cursorNDC: SIMD2<Float>, aspectRatio: Float)
 ```
 
-Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive values zoom in. Zoom is applied toward `cursorNDC` so that the point under the cursor stays fixed, matching the behaviour of `.pinchAtChanged`. `aspectRatio` serves the same purpose as in that case.
+Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive values zoom in. Zoom is applied toward `cursorNDC` so that the point under the cursor stays fixed, matching the behaviour of `.pinchAtChanged`. `aspectRatio` serves the same purpose as in that case. The router zooms only while `GestureConfiguration.scrollWheel` is `.zoom`; any other action ignores scrolling.
 
 ---
 
@@ -141,7 +141,13 @@ Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive val
 case tap(ndc: SIMD2<Float>, count: Int)
 ```
 
-A tap or click at `ndc` (normalized-device coordinates). When `count >= 2` the router calls `reset(animated: true)` to return the camera to its default view. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
+A tap or click at `ndc` (normalized-device coordinates). When `count >= 2` the router runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS):
+
+- `.resetView` (the default) calls `reset(animated: true)`, which animates back to `ViewportConfiguration.initialCameraState`.
+- `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit. A miss does nothing.
+- Any other action ignores the double-tap.
+
+`MetalViewportView` dispatches the real tap location for double-taps on iOS / visionOS and forwards the click count on macOS, so a double-click arrives as `count: 2`. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
 
 ---
 
@@ -233,7 +239,7 @@ Configuration for gesture handling in the viewport. Controls sensitivity, orbit-
 public static let `default` = GestureConfiguration()
 ```
 
-Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch zooms; double-tap/click resets.
+Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch and scroll zoom; double-tap/click resets the view.
 
 #### `.blender`
 
@@ -279,7 +285,7 @@ Starting point for visionOS spatial (indirect pinch + look) input in a window or
 |---|---|---|---|
 | `orbitSensitivity` | `Float` | `0.005` | Orbit turn rate in radians per drag point. |
 | `panSensitivity` | `Float` | `0.005` | Pan speed multiplier. |
-| `zoomSensitivity` | `Float` | `1.0` | Pinch/drag-zoom multiplier. |
+| `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch and drag-zoom magnification: `2` zooms twice as fast (in log terms), `0.5` half as fast. |
 | `scrollZoomSensitivity` | `Float` | `0.25` | Scroll-wheel zoom multiplier. |
 | `minPanSpeed` | `Float` | `0.001` | Minimum pan speed floor; prevents stalling when zoomed very close. |
 
@@ -303,7 +309,7 @@ public var enableInertia: Bool    // default true
 public var dampingFactor: Float   // default 0.1
 ```
 
-`enableInertia` enables post-gesture momentum. `dampingFactor` controls how quickly momentum decays: `0` means no damping (perpetual spin); `1` means instant stop. The `.visionOS` preset uses `0.15`.
+`enableInertia` enables post-gesture momentum. `dampingFactor` controls how quickly momentum decays: `0` means no damping (perpetual spin); `1` means instant stop. It is the fraction of velocity lost per 1/60 s, applied in proportion to elapsed time, so momentum coasts the same at 60 Hz, at 120 Hz, or when timer ticks coalesce. The `.visionOS` preset uses `0.15`.
 
 ---
 
@@ -313,8 +319,16 @@ public var dampingFactor: Float   // default 0.1
 public var singleFingerDrag: GestureAction  // default .orbit
 public var twoFingerDrag:    GestureAction  // default .pan
 public var pinchGesture:     GestureAction  // default .zoom
-public var doubleTap:        GestureAction  // default .focusOnPoint
+public var doubleTap:        GestureAction  // default .resetView
 ```
+
+These also apply on visionOS. Each field supports a subset of `GestureAction`; any other value makes the router ignore that gesture, so `.none` disables it:
+
+| Field | Supported actions |
+|---|---|
+| `singleFingerDrag`, `twoFingerDrag` | `.orbit`, `.pan`, `.zoom` |
+| `pinchGesture` | `.zoom` |
+| `doubleTap` | `.resetView`, `.focusOnPoint` |
 
 ---
 
@@ -327,8 +341,16 @@ public var optionDrag:    GestureAction  // default .zoom
 public var commandDrag:   GestureAction  // default .select
 public var scrollWheel:   GestureAction  // default .zoom
 public var trackpadPinch: GestureAction  // default .zoom
-public var doubleClick:   GestureAction  // default .focusOnPoint
+public var doubleClick:   GestureAction  // default .resetView
 ```
+
+| Field | Supported actions |
+|---|---|
+| `mouseDrag`, `shiftDrag`, `optionDrag`, `commandDrag` | `.orbit`, `.pan`, `.zoom` (`.select` leaves the drag to the app) |
+| `scrollWheel`, `trackpadPinch` | `.zoom` |
+| `doubleClick` | `.resetView`, `.focusOnPoint` |
+
+`doubleTap` and `doubleClick` defaulted to `.focusOnPoint` in earlier releases, but nothing read them and a double-tap always reset the view. The defaults are now `.resetView`, the behaviour the router always had and the presets document. Set `.focusOnPoint` to re-centre the orbit on the surface under the tap instead.
 
 ---
 
@@ -348,14 +370,14 @@ public init(
     singleFingerDrag:     GestureAction = .orbit,
     twoFingerDrag:        GestureAction = .pan,
     pinchGesture:         GestureAction = .zoom,
-    doubleTap:            GestureAction = .focusOnPoint,
+    doubleTap:            GestureAction = .resetView,
     mouseDrag:            GestureAction = .orbit,
     shiftDrag:            GestureAction = .pan,
     optionDrag:           GestureAction = .zoom,
     commandDrag:          GestureAction = .select,
     scrollWheel:          GestureAction = .zoom,
     trackpadPinch:        GestureAction = .zoom,
-    doubleClick:          GestureAction = .focusOnPoint
+    doubleClick:          GestureAction = .resetView
 )
 ```
 

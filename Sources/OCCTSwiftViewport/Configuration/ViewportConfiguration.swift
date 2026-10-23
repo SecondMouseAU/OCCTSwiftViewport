@@ -264,6 +264,17 @@ public struct ViewportConfiguration: Sendable {
     /// applies to `OffscreenRenderOptions.msaaSampleCount`.
     public var msaaSampleCount: Int
 
+    // MARK: - Frame Rate
+
+    /// Frame rate the viewport asks for, in frames per second (default 120).
+    ///
+    /// `MTKView` picks the supported display rate closest to this, so the default runs at 120 Hz
+    /// on ProMotion displays and at 60 Hz on 60 Hz ones. Set 60 to cap the frame rate and save
+    /// power. The camera's animation and inertia timer runs at the same rate. On iPhone, rates
+    /// above 60 also need `CADisableMinimumFrameDurationOnPhone` set to `YES` in the app's
+    /// Info.plist.
+    public var preferredFramesPerSecond: Int = 120
+
     // MARK: - Edge Silhouettes
 
     /// Whether screen-space edge silhouettes are enabled.
