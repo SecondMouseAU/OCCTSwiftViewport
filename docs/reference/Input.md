@@ -21,7 +21,7 @@ public enum ViewportInputEvent: Sendable, Equatable
 
 A platform-neutral viewport input event. Deltas and velocities are raw values in points / points-per-second; interpretation (which `GestureAction` applies, sign conventions, zoom curve) is applied centrally by `ViewportController.dispatch(_:)`, not by the platform translation layer.
 
-This is the seam that lets non-AppKit/UIKit sources — visionOS, Catalyst, scripting, tests — drive the camera through one entry point.
+This is the seam that lets non-AppKit/UIKit sources (visionOS, Catalyst, scripting, tests) drive the camera through one entry point.
 
 ---
 
@@ -37,7 +37,7 @@ Primary pointer drag changed. On macOS this is a mouse drag; on iOS a single-fin
 controller.dispatch(.dragChanged(delta: SIMD2(4, -2), modifiers: [.shift]))
 ```
 
-The first `.dragChanged` after a `.dragEnded` begins a new drag: it stops any orbit or pan momentum still coasting, rather than adding the new drag to it, and an orbit fixes its direction at that point (see `CameraController.beginOrbitDrag(at:signs:)`).
+The first `.dragChanged` after a `.dragEnded` begins a new drag: it stops any orbit or pan momentum still coasting, rather than adding the new drag to it, cancels any animation to a target view (which would otherwise overwrite the drag until it finished), and an orbit fixes its direction at that point (see `CameraController.beginOrbitDrag(at:signs:)`). The first `.twoFingerPanChanged` of a two-finger drag does the same.
 
 #### `setDragOrigin(offsetFromCenter:)`
 
@@ -71,7 +71,15 @@ Primary pointer drag ended. `velocity` is the release velocity in points per sec
 case twoFingerPanChanged(translation: SIMD2<Float>)
 ```
 
-Two-finger drag (iOS / visionOS) changed. `translation` is the incremental translation in points since the previous event (the recognizer's translation is reset after each event). The router applies it as `GestureConfiguration.twoFingerDrag`: `.pan` (default), `.orbit` or `.zoom`; any other action ignores the gesture.
+Two-finger drag (iOS / visionOS) changed. `translation` is the incremental translation in points since the previous event (the recognizer's translation is reset after each event). The router applies it as `GestureConfiguration.twoFingerDrag`: `.pan` (default), `.orbit` or `.zoom`; any other action ignores the gesture. A pan is 1:1 with the fingers (see `CameraController.pan(deltaX:deltaY:)`).
+
+#### `setTwoFingerDragOrigin(offsetFromCenter:)`
+
+```swift
+public func setTwoFingerDragOrigin(offsetFromCenter: SIMD2<Float>)   // on ViewportController
+```
+
+Optional: where the next two-finger drag starts, as the centroid of the two touches in points from the centre of the view (y down). It does for a two-finger drag what `setDragOrigin(offsetFromCenter:)` does for the primary drag: with `twoFingerDrag = .orbit` and the `.arcball` style, a drag that starts near the edge of the view and moves around the centre rolls the view. `MetalViewportView` calls it when the two-finger pan begins, with the centroid where the fingers went down. Without it the drag starts at the centre and can only tumble, which is how every two-finger arcball drag behaved before issue #200. It is a separate call rather than a field of the event so that `ViewportInputEvent` keeps its cases, and switches over it stay exhaustive.
 
 ---
 
@@ -91,7 +99,7 @@ Two-finger drag ended. `velocity` seeds pan or orbit inertia, matching `twoFinge
 case pinchChanged(scale: Float)
 ```
 
-Pinch changed. `scale` is an incremental scale ratio relative to the previous event — `1.0` means no change. Zoom is applied toward the view centre, with the scale raised to `GestureConfiguration.zoomSensitivity`. The router zooms only while the platform's pinch mapping (`pinchGesture`, or `trackpadPinch` on macOS) is `.zoom`; any other action ignores the pinch.
+Pinch changed. `scale` is an incremental scale ratio relative to the previous event: `1.0` means no change. Zoom is applied toward the view centre, with the scale raised to `GestureConfiguration.zoomSensitivity`. The router zooms only while the platform's pinch mapping (`pinchGesture`, or `trackpadPinch` on macOS) is `.zoom`; any other action ignores the pinch.
 
 ---
 
@@ -205,7 +213,7 @@ Memberwise initialiser required by `OptionSet`. Prefer the platform bridge overl
 
 ---
 
-### `init(_ flags: NSEvent.ModifierFlags)` — macOS
+### `init(_ flags: NSEvent.ModifierFlags)`: macOS
 
 ```swift
 // Available on macOS only (canImport(AppKit))
@@ -225,7 +233,7 @@ override func mouseDragged(with event: NSEvent) {
 
 ---
 
-### `init(_ flags: UIKeyModifierFlags)` — iOS
+### `init(_ flags: UIKeyModifierFlags)`: iOS
 
 ```swift
 // Available on iOS only (canImport(UIKit))
@@ -299,10 +307,12 @@ Starting point for visionOS spatial (indirect pinch + look) input in a window or
 | Property | Type | Default | Description |
 |---|---|---|---|
 | `orbitSensitivity` | `Float` | `0.005` | Orbit turn rate in radians per drag point. |
-| `panSensitivity` | `Float` | `0.005` | Pan speed multiplier. |
+| `panSensitivity` | `Float` | `1` | Pan speed as a multiple of the pointer's. `1` is 1:1: the point under the finger stays under it (at the pivot's depth in perspective). |
 | `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch and drag-zoom magnification: `2` zooms twice as fast (in log terms), `0.5` half as fast. |
 | `scrollZoomSensitivity` | `Float` | `0.25` | Scroll-wheel zoom multiplier. |
-| `minPanSpeed` | `Float` | `0.001` | Minimum pan speed floor; prevents stalling when zoomed very close. |
+| `minPanSpeed` | `Float` | `0` | Floor on pan speed, in world units per point. `0` keeps pan 1:1 at any distance. |
+
+**Behaviour change (issue #200): pan is 1:1 by default.** `panSensitivity` used to be world units per point scaled by the camera distance, default `0.005`, which panned about five times as far as the finger in an 800 pt tall view and ignored the field of view and the orthographic scale. It is now a multiplier of the 1:1 speed with a default of `1`, and `minPanSpeed` defaults to `0` (it was `0.001`, which broke 1:1 inside a distance of about 1). A configuration that set `panSensitivity: 0.005` explicitly pans 200 times slower than 1:1; change it to `1`, or to the multiplier you want. 1:1 needs the view's height: `MetalViewportView` passes it through `ViewportController.updateViewportSize(_:)`, and an app that drives the controller from its own view should call that too.
 
 ---
 
@@ -459,10 +469,10 @@ The helpers `GestureConfiguration.resetsView(onKey:modifiers:)`, `resetsView(onD
 ```swift
 public init(
     orbitSensitivity:     Float         = 0.005,
-    panSensitivity:       Float         = 0.005,
+    panSensitivity:       Float         = 1,
     zoomSensitivity:      Float         = 1.0,
     scrollZoomSensitivity: Float        = 0.25,
-    minPanSpeed:          Float         = 0.001,
+    minPanSpeed:          Float         = 0,
     dragRotation:         DragRotationConvention = .rotateObject,
     invertOrbitHorizontal: Bool         = false,
     invertOrbitVertical:   Bool         = false,
@@ -543,7 +553,7 @@ The set of named actions that a gesture or modifier-key combination can trigger.
 | `.select` | Select objects under the pointer (handled outside the camera router). |
 | `.focusOnPoint` | Focus the camera on the point under the cursor. |
 | `.resetView` | Reset the camera to `initialCameraState` (honoured by `doubleTap` / `doubleClick`; prefer `resetViewTriggers`). |
-| `.none` | No action — the gesture is ignored. |
+| `.none` | No action; the gesture is ignored. |
 
 `GestureAction` conforms to `CaseIterable`, so you can enumerate all cases to populate a preference UI.
 

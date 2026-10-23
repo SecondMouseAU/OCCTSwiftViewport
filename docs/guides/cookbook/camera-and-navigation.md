@@ -8,9 +8,9 @@ nav_order: 3
 
 The camera system is split across three types:
 
-- **`CameraState`** — immutable value type (`Hashable, Codable, Sendable`) capturing the full camera pose.
-- **`CameraController`** — `@MainActor` class that mutates state in response to gestures and drives animations.
-- **`ViewportController`** — the top-level observable hub; exposes the controller as `cameraController` and mirrors its `@Published cameraState` for observation.
+- **`CameraState`**: immutable value type (`Hashable, Codable, Sendable`) capturing the full camera pose.
+- **`CameraController`**: `@MainActor` class that mutates state in response to gestures and drives animations.
+- **`ViewportController`**: the top-level observable hub; exposes the controller as `cameraController` and mirrors its `@Published cameraState` for observation.
 
 ---
 
@@ -35,7 +35,7 @@ public struct CameraState: Hashable, Codable, Sendable {
 }
 ```
 
-`CameraState` is a plain value — capture it, persist it with `Codable`, diff it, or hand it to `animateTo(_:duration:)`.
+`CameraState` is a plain value: capture it, persist it with `Codable`, diff it, or hand it to `animateTo(_:duration:)`.
 
 ```swift
 // Snapshot and restore
@@ -238,12 +238,13 @@ viewport.handleRoll(angle: rotationGesture.rotation)
 ```swift
 let cam = viewport.cameraController
 cam.orbitSensitivity      = 0.005   // radians per point
-cam.panSensitivity        = 0.005   // world-units per point, scaled by distance
+cam.panSensitivity        = 1       // pan speed × the pointer's; 1 = 1:1
+cam.viewportHeight        = 600     // view height in points; MetalViewportView sets it
 cam.zoomSensitivity       = 1.0     // exponent on pinch / drag-zoom magnification
 cam.scrollZoomSensitivity = 0.25    // exponential scale for scroll delta
-cam.minPanSpeed           = 0.001   // floor preventing imperceptible pan when close
+cam.minPanSpeed           = 0       // optional floor, world units per point
 cam.minDistance           = 0.1
-cam.maxDistance           = 10_000
+cam.maxDistance           = 10_000  // also bounds orthographicScale (orthographicScaleRange)
 cam.enableInertia         = true
 cam.dampingFactor         = 0.1     // velocity lost per 1/60 s: 0 = no damping, 1 = instant stop
 ```
@@ -288,7 +289,7 @@ var custom = ViewportConfiguration.cad
 
 | Style | When to use |
 |---|---|
-| `.turntable` | CAD, architecture — "up is always up". Default. |
+| `.turntable` | CAD, architecture: "up is always up". Default. |
 | `.arcball` | Freeform 3D modeling, inspecting objects from any angle. |
 | `.firstPerson` | Walk-through, VR-style navigation. |
 
@@ -328,7 +329,9 @@ public struct DynamicPivotConfiguration: Sendable {
 }
 ```
 
-Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller schedules updates automatically with a 50 ms coalesce delay after each orbit/zoom event — no manual calls needed.
+Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller schedules updates automatically with a 50 ms coalesce delay after each orbit/zoom event; no manual calls needed.
+
+A pivot change never zooms: the camera keeps its depth and only the distance to the new pivot changes. When zoomed in, the pivot moves along the line of sight to the surface at the centre of the view, so the view does not move at all. Before issue #200 the distance was kept instead, and the camera slid toward or away from the model after each gesture. Only the move across the view, when zoomed out and the pivot goes to the scene centre, still slides the view sideways to centre it.
 
 To focus on a specific world point programmatically (bypassing the strategy):
 
@@ -336,6 +339,8 @@ To focus on a specific world point programmatically (bypassing the strategy):
 // Animate pivot to a pick result's world position
 viewport.focusOn(point: pickResult.worldPosition, distance: 5.0, animated: true)
 ```
+
+`focusOn` stops any momentum, animated or not, so the camera stays on the point.
 
 ---
 

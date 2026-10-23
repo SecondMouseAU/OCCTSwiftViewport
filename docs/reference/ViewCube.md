@@ -146,7 +146,7 @@ public struct NavigationCubeView: View
 
 Geometry and hit-testing are handled by `NavigationCube`; the view observes `ViewportController` for camera state changes. On macOS, hovering highlights the region under the cursor using `onContinuousHover`.
 
-**Orbit direction:** Dragging the cube turns the view the same way a drag in the viewport does, following `GestureConfiguration.dragRotation`. With the default `.rotateObject` the cube face under the finger, and the model with it, turns with the drag on both axes.
+**Orbit direction:** Dragging the cube turns the view the same way a drag in the viewport does, following `GestureConfiguration.dragRotation`. With the default `.rotateObject` the cube face under the finger, and the model with it, turns with the drag on both axes. A cube drag stops any momentum and any running view animation, as a viewport drag does, and in `.arcball` it starts at its offset from the cube's centre; that is well inside the viewport-sized virtual sphere, so a cube drag tumbles and cannot roll.
 
 ### `init(controller:)`
 
@@ -329,7 +329,7 @@ public enum ViewCubePosition: String, CaseIterable, Sendable {
 }
 ```
 
-`MetalViewportView` reads this property and places the `NavigationCubeView` in the matching corner automatically — no manual layout is required.
+`MetalViewportView` reads this property and places the `NavigationCubeView` in the matching corner automatically; no manual layout is required.
 
 ```swift
 var config = ViewportConfiguration()

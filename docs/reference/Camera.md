@@ -42,7 +42,7 @@ public init(
 )
 ```
 
-Designated initialiser. `rotation` is normalised on entry. All parameters are optional — the defaults produce a perspective view looking along +Y from 10 world units with a 45° vertical FoV.
+Designated initialiser. `rotation` is normalised on entry. All parameters are optional; the defaults produce a perspective view looking along +Y from 10 world units with a 45° vertical FoV.
 
 ---
 
@@ -84,7 +84,7 @@ Vertical world-unit extent of the orthographic frustum, used only when `isOrthog
 
 ### `var panOffset: SIMD2<Float>`
 
-Camera-relative pan offset for fine-tuning the view centre without moving the pivot. Usually managed by `CameraController.pan(deltaX:deltaY:)` rather than set directly.
+Camera-relative pan offset, stored, interpolated and encoded with the state. Nothing reads it: `viewMatrix` and `projectionMatrix` ignore it, and `CameraController.pan(deltaX:deltaY:)` moves the pivot instead, so setting it does not move the view. Earlier versions of this page said `pan` managed it; it never did.
 
 ---
 
@@ -276,12 +276,14 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 |---|---|---|---|
 | `rotationStyle` | `RotationStyle` | `.turntable` | Drag rotation model. Changing it ends any orbit drag and re-reads the turntable angles from the current rotation |
 | `orbitSensitivity` | `Float` | `0.005` | Radians per point of drag |
-| `panSensitivity` | `Float` | `0.005` | World units per point (scaled by distance) |
+| `panSensitivity` | `Float` | `1` | Pan speed as a multiple of the pointer's; `1` is 1:1 (see [`pan`](#func-pandeltaxdeltay)) |
+| `viewportHeight` | `Float` | `800` | Height of the view in points, which pan uses to stay 1:1. `MetalViewportView` keeps it current |
 | `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch / drag-zoom magnification by `pinchZoom` |
 | `scrollZoomSensitivity` | `Float` | `0.25` | Scroll wheel exponent factor |
-| `minPanSpeed` | `Float` | `0.001` | Floor on pan speed when very close to pivot |
+| `minPanSpeed` | `Float` | `0` | Floor on pan speed, in world units per point. `0` keeps pan 1:1 at any distance |
 | `minDistance` | `Float` | `0.1` | Minimum pivot distance |
 | `maxDistance` | `Float` | `10000` | Maximum pivot distance |
+| `orthographicScaleRange` | `ClosedRange<Float>` | read-only | The range zoom keeps `orthographicScale` in: the heights the field of view spans at `minDistance` and `maxDistance` |
 | `minPhi` | `Float` | `0.01` | **Deprecated, ignored.** Turntable tilt is unclamped by design |
 | `maxPhi` | `Float` | `π − 0.01` | **Deprecated, ignored.** See `minPhi` |
 | `dampingFactor` | `Float` | `0.1` | Inertia velocity lost per 1/60 s, scaled by elapsed time (0 = coast forever) |
@@ -349,7 +351,7 @@ Ends the orbit drag in progress. Momentum set by `setAngularVelocity(_:)` keeps 
 public func stopInertia()
 ```
 
-Stops orbit and pan momentum and forgets any orbit drag. `ViewportController` calls it when a new drag or two-finger gesture begins, so touching the view stops a coasting model instead of adding the new drag to its momentum.
+Stops orbit and pan momentum and forgets any orbit drag. When a new drag or two-finger gesture begins, `ViewportController` does this and also cancels any animation to a target view (a standard view, a reset, or the snap after a slow release), so touching the view stops a coasting model instead of adding the new drag to its momentum. Previously an animation still running replayed its path on every tick, so a drag or pan made during it was overwritten and then thrown away. The dynamic pivot's pivot-only animation keeps running, since it moves the pivot alongside the gesture.
 
 ---
 
@@ -359,7 +361,9 @@ Stops orbit and pan momentum and forgets any orbit drag. `ViewportController` ca
 public func pan(deltaX: Float, deltaY: Float)
 ```
 
-Shifts the pivot in the camera's local XY plane. Speed scales with `distance * panSensitivity`, floored at `minPanSpeed`.
+Shifts the pivot in the camera's local XY plane. At the default `panSensitivity` of `1` the pan is 1:1: the world point under the pointer when the drag starts is still under it when the drag ends. In perspective that holds for points at the pivot's depth; in orthographic it holds for every point. One point of drag moves the pivot by the height the view shows (`orthographicScale`, or the height the field of view spans at `distance`) divided by `viewportHeight`, times `panSensitivity`, floored at `minPanSpeed` world units. Pan momentum uses the same scale.
+
+**Behaviour change (issue #200).** Pan used to move `distance × panSensitivity` world units per point with a default of `0.005`, about five times as far as the finger in an 800 pt tall view, and it ignored the field of view and, in orthographic, the scale: once the distance reached its limit an orthographic pan no longer matched the zoom. `panSensitivity` is now a multiplier of the 1:1 speed with a default of `1`, and `minPanSpeed` defaults to `0`, since 1:1 already tracks the pointer however close the camera is (the old `0.001` floor broke 1:1 inside a distance of about 1). An app that set `panSensitivity` to `0.005` itself pans 200 times slower than 1:1 and should use `1`, or another multiplier.
 
 ---
 
@@ -369,7 +373,7 @@ Shifts the pivot in the camera's local XY plane. Speed scales with `distance * p
 public func zoom(factor: Float)
 ```
 
-Multiplies distance by `1 / factor` (factor > 1 zooms in). Clamps to `[minDistance, maxDistance]`. Also scales `orthographicScale` in orthographic mode. This is the raw primitive: it does not apply `zoomSensitivity`.
+Multiplies distance by `1 / factor` (factor > 1 zooms in). Clamps to `[minDistance, maxDistance]`. Also scales `orthographicScale` in orthographic mode, clamped to `orthographicScaleRange`, so an orthographic view zooms as far in and out as a perspective one. The scale used to be unbounded and could shrink toward zero or grow without limit. This is the raw primitive: it does not apply `zoomSensitivity`.
 
 ---
 
@@ -459,7 +463,7 @@ Stops any running animation immediately, leaving `cameraState` at its current in
 public func focusOn(point: SIMD3<Float>, distance: Float? = nil, animated: Bool = true)
 ```
 
-Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDistance, maxDistance]`). Animated by default (0.3 s).
+Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDistance, maxDistance]`). Animated by default (0.3 s). Animated or not, it stops orbit and pan momentum and cancels any animation in progress. Previously `animated: false` left momentum coasting, which carried the camera off the point straight away.
 
 ---
 
@@ -480,6 +484,8 @@ public func adjustPivot(to newPivot: SIMD3<Float>, duration: Float = 0.15)
 ```
 
 Silently shifts the orbit pivot if the new position differs by more than 0.001 world units and no animation is already running. Used by `PivotStrategy` to auto-adjust the orbit center. Only the pivot is animated, so orbit and pan momentum keep coasting while it moves. Previously the animation replayed the rotation it started from on every tick and, when it finished, threw away whatever the momentum had turned in the meantime, so the model jumped back. `ViewportController` skips the dynamic pivot in `.firstPerson`, where moving the pivot would move the camera.
+
+The camera keeps its place along the line of sight: `distance` changes by the pivot's change in depth (clamped to `[minDistance, maxDistance]`). A pivot that moves along the view axis, such as the dynamic pivot's view-centre raycast hit, leaves the view exactly as it was. Previously the distance was kept, so the camera slid toward or away from the model after each gesture when zoomed in, a visible zoom jump (issue #200). Only a move across the view, such as the zoomed-out jump to the scene centre, still moves the camera, sideways, as it must for the pivot to stay at the centre of the view.
 
 ---
 
@@ -562,10 +568,10 @@ public init(
 )
 ```
 
-- **`isEnabled`** — set to `false` to use a fixed pivot at all times.
-- **`animationDuration`** — how long the pivot glide animation takes (seconds).
-- **`zoomThreshold`** — `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (scene center) from "zoomed in" (raycast hit). Default `0.5`.
-- **`blendBand`** — fraction of `zoomThreshold` used as the width of the smoothstep blend zone between the two pivot strategies. Default `0.3`.
+- **`isEnabled`**: set to `false` to use a fixed pivot at all times.
+- **`animationDuration`**: how long the pivot glide animation takes (seconds).
+- **`zoomThreshold`**: `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (scene center) from "zoomed in" (raycast hit). Default `0.5`.
+- **`blendBand`**: fraction of `zoomThreshold` used as the width of the smoothstep blend zone between the two pivot strategies. Default `0.3`.
 
 ---
 
@@ -615,7 +621,7 @@ public enum RotationStyle: String, CaseIterable, Sendable
 
 Unrestricted 3D rotation using Ken Shoemake's arcball. The pointer is placed on a virtual sphere centred on the view, and the rotation is measured from where the drag began to where the pointer is now. Inside the sphere a drag tumbles the model about an axis perpendicular to the drag. Outside it the pointer is held to the sphere's rim, so moving around the centre rolls the view about the line of sight. Because the rotation depends only on the two pointer positions, a pointer that returns to where it began leaves the model as it found it. Best for freeform 3D modelling.
 
-The sphere's radius is `2 / orbitSensitivity` points (400 pt at the default 0.005), so a short drag near the centre turns the model `orbitSensitivity` radians per point, as in the other styles. A drag from the centre to the rim turns it 180°. `MetalViewportView` tells the viewport where each drag starts (`ViewportController.setDragOrigin(offsetFromCenter:)`), so a drag that starts near the edge of the view and moves around the centre rolls it. A drag with no known start, such as one from the navigation cube or a direct `orbit` call, starts at the centre.
+The sphere's radius is `2 / orbitSensitivity` points (400 pt at the default 0.005), so a short drag near the centre turns the model `orbitSensitivity` radians per point, as in the other styles. A drag from the centre to the rim turns it 180°. `MetalViewportView` tells the viewport where each drag starts (`ViewportController.setDragOrigin(offsetFromCenter:)`), so a drag that starts near the edge of the view and moves around the centre rolls it. A two-finger drag bound to `.orbit` starts at the touches' centroid (`ViewportController.setTwoFingerDragOrigin(offsetFromCenter:)`), so it can roll the view too; it used to start at the centre and could only tumble. A navigation cube drag starts at its offset from the cube's centre, which is well inside the sphere, so it tumbles. A drag with no known start, such as a direct `orbit` call, starts at the centre.
 
 The direction follows `GestureConfiguration.dragRotation`: with `.rotateObject` the model turns and rolls with the pointer, as if the pointer held the sphere; `.orbitCamera` reverses both. The invert flags reverse only the horizontal or vertical turn, not the roll.
 

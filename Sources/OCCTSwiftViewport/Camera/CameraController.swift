@@ -60,8 +60,23 @@ public final class CameraController: ObservableObject {
     /// Orbit sensitivity (radians per point of drag).
     public var orbitSensitivity: Float = GestureConfiguration.default.orbitSensitivity
 
-    /// Pan sensitivity (world units per point of drag, scaled by distance).
+    /// Pan speed as a multiple of the pointer's: `1` (the default) is 1:1.
+    ///
+    /// At `1` a pan keeps the point under the pointer under the pointer: the world point at the
+    /// pivot's depth in perspective, any point in orthographic. `2` moves the view twice as far
+    /// as the pointer, `0.5` half as far. Pan speed follows `viewportHeight`, the field of view,
+    /// `distance` and `orthographicScale`.
+    ///
+    /// Before issue #200 this was world units per point, scaled by distance, with a default of
+    /// 0.005: about five times the pointer in an 800 pt tall view.
     public var panSensitivity: Float = GestureConfiguration.default.panSensitivity
+
+    /// Height of the view the pointer moves over, in points.
+    ///
+    /// Pan uses it to turn points into world units, so the point under the pointer stays under
+    /// it. `MetalViewportView` keeps it up to date; set it yourself when you drive the controller
+    /// from another view. Values below 1 are treated as 1.
+    public var viewportHeight: Float = 800
 
     /// Zoom sensitivity for pinch and drag zoom.
     ///
@@ -74,7 +89,11 @@ public final class CameraController: ObservableObject {
     /// Scroll wheel zoom sensitivity.
     public var scrollZoomSensitivity: Float = GestureConfiguration.default.scrollZoomSensitivity
 
-    /// Minimum pan speed (prevents pan from becoming imperceptibly slow when zoomed in close).
+    /// Minimum pan speed, in world units per point of drag.
+    ///
+    /// A floor under the 1:1 pan speed, which already tracks the pointer at any distance. The
+    /// default, `0`, keeps pan 1:1 however close the camera is; a positive value speeds pan up
+    /// wherever 1:1 would move less than that per point.
     public var minPanSpeed: Float = GestureConfiguration.default.minPanSpeed
 
     /// Minimum distance from pivot.
@@ -82,6 +101,16 @@ public final class CameraController: ObservableObject {
 
     /// Maximum distance from pivot.
     public var maxDistance: Float = 10000
+
+    /// The range `zoom(factor:)` keeps `orthographicScale` in.
+    ///
+    /// The heights the field of view spans at `minDistance` and `maxDistance`, so an
+    /// orthographic view zooms as far in and out as a perspective one.
+    public var orthographicScaleRange: ClosedRange<Float> {
+        let span = 2 * tan(cameraState.fieldOfView * .pi / 360)
+        let lower = max(minDistance * span, .leastNormalMagnitude)
+        return lower...max(lower, maxDistance * span)
+    }
 
     /// Minimum vertical angle for turntable mode (ignored).
     ///
@@ -281,6 +310,26 @@ public final class CameraController: ObservableObject {
         orbitDrag = nil
     }
 
+    /// Hands the camera to a gesture that is beginning: stops momentum (`stopInertia()`) and any
+    /// animation to a target view.
+    ///
+    /// The animation replays its path on every tick, so a drag, pan or pinch made while it ran
+    /// was overwritten until it finished, then thrown away; a slow release near an axis view
+    /// starts one (the snap). A pivot-only animation from the dynamic pivot is kept: it moves
+    /// the pivot by increments and works alongside the gesture.
+    func yieldToGesture() {
+        stopInertia()
+        cancelViewAnimation()
+    }
+
+    /// Cancels an animation to a target view, keeping a pivot-only one.
+    ///
+    /// The animation would overwrite a pinch, scroll or roll on its next tick. Momentum is left
+    /// alone.
+    func cancelViewAnimation() {
+        if isAnimating, !animatesPivotOnly { cancelAnimation() }
+    }
+
     /// Performs orbit rotation based on drag delta.
     ///
     /// The deltas are screen points with y down, and the model turns with them in every
@@ -426,13 +475,29 @@ public final class CameraController: ObservableObject {
 
     // MARK: - Pan
 
+    /// World units one point of drag pans: 1:1 times `panSensitivity`, floored at `minPanSpeed`.
+    ///
+    /// 1:1 is the height the view shows divided by `viewportHeight`: `orthographicScale` in
+    /// orthographic, the height the field of view spans at the pivot's depth in perspective.
+    var panWorldUnitsPerPoint: Float {
+        let visibleHeight =
+            cameraState.isOrthographic
+            ? cameraState.orthographicScale
+            : 2 * cameraState.distance * tan(cameraState.fieldOfView * .pi / 360)
+        return max(minPanSpeed, visibleHeight / max(viewportHeight, 1) * panSensitivity)
+    }
+
     /// Performs pan based on drag delta.
+    ///
+    /// At the default `panSensitivity` of 1 the scene follows the pointer 1:1: the world point at
+    /// the pivot's depth (any point, in orthographic) under the pointer when the drag starts is
+    /// still under it when the drag ends. That needs `viewportHeight` to be the view's height.
     ///
     /// - Parameters:
     ///   - deltaX: Horizontal drag in points
     ///   - deltaY: Vertical drag in points
     public func pan(deltaX: Float, deltaY: Float) {
-        let scaleFactor = max(minPanSpeed, cameraState.distance * panSensitivity)
+        let scaleFactor = panWorldUnitsPerPoint
 
         // Move in camera's local XY plane
         let right = cameraState.rightVector
@@ -448,6 +513,9 @@ public final class CameraController: ObservableObject {
 
     /// Zooms by changing distance from pivot.
     ///
+    /// The distance stays within `minDistance...maxDistance` and, in orthographic,
+    /// `orthographicScale` within `orthographicScaleRange`.
+    ///
     /// - Parameter factor: Zoom factor (>1 zooms in, <1 zooms out)
     public func zoom(factor: Float) {
         var newState = cameraState
@@ -455,7 +523,9 @@ public final class CameraController: ObservableObject {
         newState.distance = max(minDistance, min(maxDistance, newDistance))
 
         if cameraState.isOrthographic {
-            newState.orthographicScale = newState.orthographicScale / factor
+            let range = orthographicScaleRange
+            newState.orthographicScale = min(
+                range.upperBound, max(range.lowerBound, newState.orthographicScale / factor))
         }
 
         cameraState = newState
@@ -626,6 +696,8 @@ public final class CameraController: ObservableObject {
 
     /// Focuses on a point, optionally adjusting distance.
     ///
+    /// Stops any orbit or pan momentum, animated or not, so the camera stays on the point.
+    ///
     /// - Parameters:
     ///   - point: World point to focus on
     ///   - distance: Optional new distance
@@ -637,11 +709,7 @@ public final class CameraController: ObservableObject {
             target.distance = max(minDistance, min(maxDistance, d))
         }
 
-        if animated {
-            animateTo(target, duration: 0.3)
-        } else {
-            cameraState = target
-        }
+        animateTo(target, duration: animated ? 0.3 : 0)
     }
 
     /// Resets the camera to `homeCameraState`.
@@ -665,20 +733,39 @@ public final class CameraController: ObservableObject {
     /// animation replayed the rotation it started from on every tick and, when it finished,
     /// threw away whatever the momentum had turned in the meantime.
     ///
+    /// The camera stays where it is along the line of sight: `distance` changes by the pivot's
+    /// change in depth, so a pivot that moves along the view axis (the dynamic pivot's raycast
+    /// hit) leaves the view as it was. Previously the distance was kept and the camera slid
+    /// toward or away from the model after each gesture, a visible zoom jump. Only a move
+    /// across the view still moves the camera, as it must for the pivot to stay at the centre
+    /// of the view. The distance stays within `minDistance...maxDistance`.
+    ///
     /// - Parameters:
     ///   - newPivot: Target pivot position.
     ///   - duration: Animation duration in seconds.
     public func adjustPivot(to newPivot: SIMD3<Float>, duration: Float = 0.15) {
         let delta = simd_length(newPivot - cameraState.pivot)
         guard delta > 0.001, !isAnimating else { return }
-        var target = cameraState
-        target.pivot = newPivot
         guard duration > 0 else {
-            cameraState = target
+            movePivotKeepingDepth(by: newPivot - cameraState.pivot)
             return
         }
+        var target = cameraState
+        target.pivot = newPivot
         animatesPivotOnly = true
         startAnimation(to: target, duration: duration)
+    }
+
+    /// Moves the pivot by `delta`, changing `distance` by the move's depth along the line of
+    /// sight, so the camera does not move along it.
+    private func movePivotKeepingDepth(by delta: SIMD3<Float>) {
+        var newState = cameraState
+        newState.pivot += delta
+        // position = pivot − viewDirection × distance, so growing distance by the move's
+        // component along viewDirection leaves the camera's depth unchanged.
+        let depth = cameraState.distance + simd_dot(delta, cameraState.viewDirection)
+        newState.distance = max(minDistance, min(maxDistance, depth))
+        cameraState = newState
     }
 
     // MARK: - Inertia
@@ -834,10 +921,8 @@ public final class CameraController: ObservableObject {
 
             if animatesPivotOnly {
                 // Move the pivot by this tick's share of the way, so pan momentum that moves it
-                // too is kept, and leave the rotation and distance alone.
-                var newState = cameraState
-                newState.pivot += (target.pivot - start.pivot) * (t - previousT)
-                cameraState = newState
+                // too is kept, and leave the rotation alone.
+                movePivotKeepingDepth(by: (target.pivot - start.pivot) * (t - previousT))
             } else if finished {
                 cameraState = target
                 updateSphericalFromRotation()
