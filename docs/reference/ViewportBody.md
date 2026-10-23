@@ -209,11 +209,11 @@ Analytic arc/circle feature edges in body-local space. Renderer samples these to
 
 #### `faceIndices: [Int32]`
 
-Per-triangle source face index, parallel to `indices.count / 3`. Maps GPU face picks back to B-Rep face IDs for sub-body selection. Empty if not applicable.
+Per-triangle source face index, parallel to `indices.count / 3`. Maps GPU face picks back to B-Rep face IDs for sub-body selection. Empty if not applicable. Rendering never needs it: `.enhanced` tessellation and `.maximum` mesh shading apply to bodies without it too (#161).
 
 #### `edgeIndices: [Int32]`
 
-Per-segment source-edge index, parallel to the flattened segments across all `edges` polylines. Empty if not applicable — in which case the body is not edge-pickable.
+Per-segment source-edge index, parallel to the flattened segments across all `edges` polylines. Empty if not applicable — in which case the body is not edge-pickable. Overlay-layer bodies are the exception: their drawn edges are always pickable (#170).
 
 #### `vertices: [SIMD3<Float>]`
 
@@ -237,7 +237,7 @@ Selects the render pass: `.mesh` (shaded + wireframe), `.point` (point-cloud spr
 
 #### `triangleStyles: [TriangleStyle]`
 
-Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles over the shaded pass with `.lessEqual` depth, preventing silhouette flicker. Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
+Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles straight after the surface they style, with `.lessEqual` depth, preventing silhouette flicker. On a translucent body (opacity below 1, or any body in `.xray`) they are drawn inside the sorted translucent pass, the far-facing half before the camera-facing half, so a highlight is seen through the surfaces in front of it rather than painted over them (#171). Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
 
 #### `color: SIMD4<Float>`
 

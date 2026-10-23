@@ -44,29 +44,26 @@ final class TessellationManager {
     /// Builds the PN-triangle control points a mesh needs before it can be tessellated.
     ///
     /// Runs once per geometry change, not per frame: the patch data depends only on the mesh,
-    /// while the per-frame work is `updateTessFactors`. Returns `nil` when there are no
-    /// triangles, when `faceIndices` is shorter than `triangleCount`, or when any buffer
+    /// while the per-frame work is `updateTessFactors`. Needs only the mesh: B-Rep face indices
+    /// play no part, so bodies without `faceIndices` (STL/OBJ imports, `Primitives`) are
+    /// tessellated too (#161). Returns `nil` when there are no triangles or when any buffer
     /// allocation fails.
     ///
     /// - Parameters:
     ///   - vertexBuffer: Interleaved vertex buffer (stride 6 floats)
     ///   - indexBuffer: Triangle index buffer (UInt32)
-    ///   - faceIndices: Per-triangle face index array
     ///   - triangleCount: Number of triangles
     ///   - commandQueue: Command queue for synchronous dispatch
     /// - Returns: TessellationBuffers with patch data and pre-allocated factor buffer
     func buildPatches(
         vertexBuffer: MTLBuffer,
         indexBuffer: MTLBuffer,
-        faceIndices: [Int32],
         triangleCount: Int,
         commandQueue: MTLCommandQueue
     ) -> TessellationBuffers? {
-        guard triangleCount > 0, faceIndices.count >= triangleCount else { return nil }
+        guard triangleCount > 0 else { return nil }
 
-        // PNPatchData struct size with packed_float3: 13 * 12 + 4 + 4 = 164 bytes
-        let patchStride = 164
-        let patchBufferSize = triangleCount * patchStride
+        let patchBufferSize = triangleCount * Self.patchStride
 
         guard
             let patchBuffer = device.makeBuffer(
@@ -74,15 +71,6 @@ final class TessellationManager {
         else {
             return nil
         }
-
-        // Face indices buffer
-        guard
-            let faceIdxBuffer = device.makeBuffer(
-                bytes: faceIndices,
-                length: faceIndices.count * MemoryLayout<Int32>.size,
-                options: .storageModeShared
-            )
-        else { return nil }
 
         // Tessellation factor buffer (pre-allocated, updated per-frame)
         // MTLTriangleTessellationFactorsHalf: 3 half edges + 1 half inside = 8 bytes.
@@ -103,10 +91,9 @@ final class TessellationManager {
         encoder.setBuffer(vertexBuffer, offset: 0, index: 0)
         encoder.setBuffer(indexBuffer, offset: 0, index: 1)
         encoder.setBuffer(patchBuffer, offset: 0, index: 2)
-        encoder.setBuffer(faceIdxBuffer, offset: 0, index: 3)
 
         var triCount = UInt32(triangleCount)
-        encoder.setBytes(&triCount, length: MemoryLayout<UInt32>.size, index: 4)
+        encoder.setBytes(&triCount, length: MemoryLayout<UInt32>.size, index: 3)
 
         let threadsPerGroup = min(pnPatchPipeline.maxTotalThreadsPerThreadgroup, 256)
         let threadgroups = (triangleCount + threadsPerGroup - 1) / threadsPerGroup
@@ -124,6 +111,11 @@ final class TessellationManager {
             patchCount: triangleCount
         )
     }
+
+    /// Byte stride of one `PNPatchData` in Shaders.metal.
+    ///
+    /// 13 `packed_float3` control points and normals, 13 × 12 bytes. Must match the Metal struct.
+    nonisolated static let patchStride = 156
 
     /// Clamps a requested tessellation factor to what a tessellated pipeline accepts.
     ///

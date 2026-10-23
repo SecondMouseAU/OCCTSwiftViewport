@@ -564,11 +564,9 @@ public final class OffscreenRenderer: Sendable {
     private let shadowMapManager: ShadowMapManager
     private let depthState: MTLDepthStencilState
     private let transparentDepthState: MTLDepthStencilState
-    /// Marks selected bodies in the stencil buffer for the outline pass.
-    private let stencilWriteState: MTLDepthStencilState
     /// Draws the outline only where the stencil is unmarked.
     private let stencilTestState: MTLDepthStencilState
-    /// Marks the stencil without writing depth, for selected bodies the opaque pass did not mark.
+    /// Marks a selected body's whole silhouette in the stencil, ignoring depth (#177).
     private let stencilMarkState: MTLDepthStencilState
     /// `.lessEqual`, no depth write: highlight triangles win ties with the shaded surface.
     private let highlightDepthState: MTLDepthStencilState
@@ -674,15 +672,13 @@ public final class OffscreenRenderer: Sendable {
         else { return nil }
         self.transparentDepthState = transparentDepthState
 
-        guard let stencilWriteState = RendererSharedSetup.makeStencilWriteState(device: device),
-            let stencilTestState = RendererSharedSetup.makeStencilTestState(device: device),
+        guard let stencilTestState = RendererSharedSetup.makeStencilTestState(device: device),
             let stencilMarkState = RendererSharedSetup.makeStencilMarkState(device: device),
             let highlightDepthState = RendererSharedSetup.makeDepthStencilState(
                 device: device, compareFunction: .lessEqual, isDepthWriteEnabled: false),
             let overlayDepthState = RendererSharedSetup.makeDepthStencilState(
                 device: device, compareFunction: .always, isDepthWriteEnabled: false)
         else { return nil }
-        self.stencilWriteState = stencilWriteState
         self.stencilTestState = stencilTestState
         self.stencilMarkState = stencilMarkState
         self.highlightDepthState = highlightDepthState
@@ -754,7 +750,11 @@ public final class OffscreenRenderer: Sendable {
             showGrid: options.showGrid,
             showAxes: options.showAxes
         )
-        let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
+        let clip = cameraState.clipPlanes(
+            sceneBounds: RendererSharedSetup.clipBounds(
+                sceneBounds, includingOverlaysOf: bodies,
+                in: RendererSharedSetup.wideViewFrustum(
+                    cameraState: cameraState, aspectRatio: aspectRatio)))
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
 
@@ -1140,13 +1140,39 @@ public final class OffscreenRenderer: Sendable {
                 type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
         }
 
+        /// Composites a body's `triangleStyles` over its shaded surface (issue #25), with
+        /// `.lessEqual` and no depth writes so it wins the tie with the surface underneath. The
+        /// style buffer is built per render rather than cached, so mutating `triangleStyles` on an
+        /// existing body (which keeps its `generation`) is always picked up. Leaves
+        /// `highlightDepthState` set.
+        func encodeHighlight(
+            _ body: ViewportBody, _ buffers: BodyBuffersOffscreen, uniforms: inout Uniforms
+        ) {
+            guard !body.triangleStyles.isEmpty,
+                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0,
+                let styleBuffer = RendererSharedBuffers.makeTriangleStyleBuffer(
+                    device: device, body: body, triangleCount: buffers.indexCount / 3),
+                let pipeline = buffers.normalBuffer != nil
+                    ? pipelines.highlightDirectPipeline : pipelines.highlightPipeline
+            else { return }
+            mainEncoder.setRenderPipelineState(pipeline)
+            mainEncoder.setDepthStencilState(highlightDepthState)
+            mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+            if let nb = buffers.normalBuffer {
+                mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+            }
+            mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
+            mainEncoder.drawIndexedPrimitives(
+                type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                indexBuffer: ib, indexBufferOffset: 0)
+        }
+
         // Bodies. Overlay-layer bodies are drawn last, on top (see the overlay pass below).
         // Translucent bodies (issue #53) are deferred to a sorted back-to-front pass.
         var transparentBodies: [(body: ViewportBody, buffers: BodyBuffersOffscreen)] = []
-        // Bodies whose opaque surface marked the stencil buffer, so the outline can ring them.
-        // Translucent, edge-only and wireframe-mode bodies never mark it, and an outline drawn
-        // for them would cover the whole expanded body instead of a ring.
-        var outlinedBodyIDs: Set<String> = []
         for body in bodies where body.isVisible && body.renderLayer == .geometry {
             guard let buffers = bodyBufferCache[body.id] else { continue }
             // Point-cloud bodies are drawn in the dedicated pass below — skip
@@ -1174,14 +1200,12 @@ public final class OffscreenRenderer: Sendable {
             var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: selState)
 
             if displayMode.showsSurfaces, hasMesh, !defersSurface {
-                if selState > 0 {
-                    mainEncoder.setDepthStencilState(stencilWriteState)
-                    mainEncoder.setStencilReferenceValue(1)
-                    outlinedBodyIDs.insert(body.id)
-                } else {
-                    mainEncoder.setDepthStencilState(depthState)
-                }
+                mainEncoder.setDepthStencilState(depthState)
                 encodeSurface(buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                // Per-triangle highlights straight over the surface they style, so they composite
+                // before the translucent pass rather than over it (#171).
+                encodeHighlight(body, buffers, uniforms: &uniforms)
+                mainEncoder.setDepthStencilState(depthState)
             }
             encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
@@ -1205,17 +1229,16 @@ public final class OffscreenRenderer: Sendable {
                 var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: selState)
                 bodyUniforms.color.w = displayMode.surfaceOpacity(
                     forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
-                // Selected/hovered bodies mark the stencil, as in the opaque pass, so the
-                // selection outline draws a ring around them, as live.
-                if selState > 0 {
-                    mainEncoder.setDepthStencilState(stencilMarkState)
-                    mainEncoder.setStencilReferenceValue(1)
-                    outlinedBodyIDs.insert(t.body.id)
-                } else {
+                // Far-facing triangles first, then camera-facing ones, each half followed by its
+                // per-triangle highlights, as live (#171).
+                for culled in ViewportRenderer.translucentCullOrder {
+                    mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentDepthState)
+                    encodeSurface(t.buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                    encodeHighlight(t.body, t.buffers, uniforms: &uniforms)
                 }
-                encodeSurface(t.buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
             }
+            mainEncoder.setCullMode(.none)
             mainEncoder.setDepthStencilState(transparentDepthState)
         }
 
@@ -1263,43 +1286,48 @@ public final class OffscreenRenderer: Sendable {
             useQuadArcs
             ? RendererSharedBuffers.makeEdgeBuffer(device: device, edgeVertices: arcQuadVertices)
             : nil
-        if let arcBuffer = RendererSharedBuffers.makeEdgeBuffer(
+        let arcBuffer = RendererSharedBuffers.makeEdgeBuffer(
             device: device, edgeVertices: arcVertices)
-        {
-            mainEncoder.setDepthStencilState(depthState)
+
+        /// Draws one body's arcs; the caller sets the depth-stencil state.
+        func encodeArcs(
+            _ draw: (
+                body: ViewportBody, hasMesh: Bool, start: Int, count: Int, quadStart: Int,
+                quadCount: Int
+            )
+        ) {
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = draw.body.transform
+            var arcBodyUniforms = BodyUniforms(body: draw.body, objectIndex: 0, isSelected: 0)
+            if !draw.hasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
+            mainEncoder.setFragmentBytes(
+                &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
             if let arcQuadBuffer, let quadPipeline = pipelines.quadEdgePipeline {
+                var edgeUniforms = EdgeUniforms(
+                    uniforms: uniforms, configuration: edgeConfig, viewportSize: arcViewport)
                 mainEncoder.setRenderPipelineState(quadPipeline)
                 mainEncoder.setVertexBuffer(arcQuadBuffer, offset: 0, index: 0)
-            } else {
+                mainEncoder.setVertexBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.drawPrimitives(
+                    type: .triangleStrip, vertexStart: draw.quadStart, vertexCount: draw.quadCount)
+            } else if let arcBuffer {
                 mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
                 mainEncoder.setVertexBuffer(arcBuffer, offset: 0, index: 0)
-            }
-            for draw in arcDraws {
-                var uniforms = makeUniforms()
-                uniforms.modelMatrix = draw.body.transform
-                var arcBodyUniforms = BodyUniforms(body: draw.body, objectIndex: 0, isSelected: 0)
-                if !draw.hasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
-                    &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                if arcQuadBuffer != nil {
-                    var edgeUniforms = EdgeUniforms(
-                        uniforms: uniforms, configuration: edgeConfig, viewportSize: arcViewport)
-                    mainEncoder.setVertexBytes(
-                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                    mainEncoder.drawPrimitives(
-                        type: .triangleStrip, vertexStart: draw.quadStart,
-                        vertexCount: draw.quadCount)
-                } else {
-                    mainEncoder.setVertexBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: draw.start, vertexCount: draw.count)
-                }
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.drawPrimitives(
+                    type: .line, vertexStart: draw.start, vertexCount: draw.count)
             }
+        }
+
+        // Overlay-layer arcs are drawn in the overlay pass, on top of everything (#170).
+        mainEncoder.setDepthStencilState(depthState)
+        for draw in arcDraws where draw.body.renderLayer == .geometry {
+            encodeArcs(draw)
         }
 
         // Point-cloud pass (issue #28): geometry-layer `.point` bodies.
@@ -1310,71 +1338,36 @@ public final class OffscreenRenderer: Sendable {
             encodePoints(body, buffers)
         }
 
-        // Per-triangle highlight pass (issue #25): composites `triangleStyles` over the shaded
-        // surface. `.lessEqual` without depth writes wins the tie with the surface underneath.
-        // The style buffer is built per render rather than cached, so mutating `triangleStyles`
-        // on an existing body (which keeps its `generation`) is always picked up.
-        if displayMode.showsSurfaces {
-            for body in bodies
-            where body.isVisible && body.renderLayer == .geometry && !body.triangleStyles.isEmpty {
-                guard let buffers = bodyBufferCache[body.id],
-                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
-                    buffers.indexCount > 0,
-                    let styleBuffer = RendererSharedBuffers.makeTriangleStyleBuffer(
-                        device: device, body: body, triangleCount: buffers.indexCount / 3),
-                    let pipeline = buffers.normalBuffer != nil
-                        ? pipelines.highlightDirectPipeline : pipelines.highlightPipeline
-                else { continue }
-                var uniforms = makeUniforms()
-                uniforms.modelMatrix = body.transform
-                mainEncoder.setRenderPipelineState(pipeline)
-                mainEncoder.setDepthStencilState(highlightDepthState)
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                if let nb = buffers.normalBuffer {
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                }
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
-                    indexBuffer: ib, indexBufferOffset: 0)
+        // Selection mask: stencil-mark each selected or hovered geometry body's whole silhouette,
+        // without drawing colour or testing depth, so the outline below is the ring around it and
+        // never paints over nearer geometry (#177). Covers translucent bodies and display modes
+        // without surfaces alike. Per-triangle highlights were drawn with their surfaces (#171).
+        var outlinedBodyIDs: Set<String> = []
+        mainEncoder.setDepthStencilState(stencilMarkState)
+        mainEncoder.setStencilReferenceValue(1)
+        for body in bodies
+        where body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
+            && selectionState(of: body) > 0
+        {
+            guard let buffers = bodyBufferCache[body.id],
+                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0,
+                let pipeline = buffers.normalBuffer != nil
+                    ? pipelines.stencilMaskDirectPipeline : pipelines.stencilMaskPipeline
+            else { continue }
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = body.transform
+            mainEncoder.setRenderPipelineState(pipeline)
+            mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+            if let nb = buffers.normalBuffer {
+                mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
             }
-        }
-
-        // Stencil-mark selected meshed bodies no surface pass marked (every body when the display
-        // mode draws no surfaces) without drawing colour, so the outline below rings them too
-        // instead of skipping them.
-        let unmarkedSelected = bodies.filter { body in
-            body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
-                && selectionState(of: body) > 0 && !outlinedBodyIDs.contains(body.id)
-        }
-        if !unmarkedSelected.isEmpty {
-            mainEncoder.setDepthStencilState(stencilMarkState)
-            mainEncoder.setStencilReferenceValue(1)
-            for body in unmarkedSelected {
-                guard let buffers = bodyBufferCache[body.id],
-                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
-                    buffers.indexCount > 0,
-                    let pipeline = buffers.normalBuffer != nil
-                        ? pipelines.stencilMaskDirectPipeline : pipelines.stencilMaskPipeline
-                else { continue }
-                var uniforms = makeUniforms()
-                uniforms.modelMatrix = body.transform
-                mainEncoder.setRenderPipelineState(pipeline)
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                if let nb = buffers.normalBuffer {
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                }
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
-                    indexBuffer: ib, indexBufferOffset: 0)
-                outlinedBodyIDs.insert(body.id)
-            }
+            mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.drawIndexedPrimitives(
+                type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                indexBuffer: ib, indexBufferOffset: 0)
+            outlinedBodyIDs.insert(body.id)
         }
 
         // Selection outline pass: the body expanded in screen space, drawn only where the
@@ -1422,23 +1415,34 @@ public final class OffscreenRenderer: Sendable {
 
         // Overlay pass: `RenderLayer.overlay` bodies (manipulator widgets, markers), drawn last
         // with always-pass depth and no depth writes so they stay visible through any geometry.
+        // As live (#170): their surfaces draw in every display mode and receive no shadows, and
+        // their edges and arcs follow the display mode's edge rule, on top too.
         for body in bodies where body.isVisible && body.renderLayer == .overlay {
-            guard let buffers = bodyBufferCache[body.id] else { continue }
             mainEncoder.setDepthStencilState(overlayDepthState)
-            if body.primitiveKind == .point {
-                encodePoints(body, buffers)
-                continue
+            // An arc-only body has no cached buffers: its arcs live in this render's arc buffers.
+            if let buffers = bodyBufferCache[body.id] {
+                if body.primitiveKind == .point {
+                    encodePoints(body, buffers)
+                    continue
+                }
+                let hasMesh =
+                    buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                    && buffers.indexCount > 0
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                uniforms.shadowParams.z = 0
+                var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
+                if hasMesh {
+                    // Widgets draw their plain mesh, untessellated, as live.
+                    encodeSurface(
+                        buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms, refine: false)
+                }
+                encodeEdges(
+                    buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
             }
-            let hasMesh =
-                buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
-            var uniforms = makeUniforms()
-            uniforms.modelMatrix = body.transform
-            var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
-            if displayMode.showsSurfaces, hasMesh {
-                encodeSurface(
-                    buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms, refine: false)
+            for draw in arcDraws where draw.body.id == body.id {
+                encodeArcs(draw)
             }
-            encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
         mainEncoder.endEncoding()

@@ -18,14 +18,17 @@ enum RendererSharedSetup {
         /// No blending: the fragment replaces the destination.
         case disabled
 
-        /// Straight source-alpha blending on both the colour and alpha channels.
-        case sourceAlpha
-
-        /// Source-alpha colour blending with additive alpha accumulation (point sprites).
-        case sourceAlphaAccumulatingAlpha
-
-        /// Source-alpha colour blending only; the alpha channel keeps Metal's default factors.
-        case sourceAlphaColorOnly
+        /// Straight-alpha "over": colour is blended by the source alpha, and the target's alpha
+        /// accumulates coverage (`srcA + dstA × (1 − srcA)`), so a translucent draw over an opaque
+        /// background leaves it opaque.
+        ///
+        /// Every blended colour pipeline uses this. Blending the alpha channel by the source alpha
+        /// too (`srcA² + dstA × (1 − srcA)`), as the shaded, edge, highlight and outline
+        /// pipelines used to, lowered the target's alpha under every translucent surface. The
+        /// readback is a premultiplied-alpha image, so those pixels came out with colour above
+        /// their alpha and un-premultiplied to near-white: `PBRMaterial.glass` rendered as a flat
+        /// white disc (#187).
+        case sourceOver
     }
 
     // MARK: - Vertex Descriptors
@@ -131,29 +134,19 @@ enum RendererSharedSetup {
         return descriptor
     }
 
-    private static func apply(
+    static func apply(
         _ blending: ColorBlending,
         to attachment: MTLRenderPipelineColorAttachmentDescriptor
     ) {
         switch blending {
         case .disabled:
             return
-        case .sourceAlpha:
-            attachment.isBlendingEnabled = true
-            attachment.sourceRGBBlendFactor = .sourceAlpha
-            attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-            attachment.sourceAlphaBlendFactor = .sourceAlpha
-            attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        case .sourceAlphaAccumulatingAlpha:
+        case .sourceOver:
             attachment.isBlendingEnabled = true
             attachment.sourceRGBBlendFactor = .sourceAlpha
             attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
             attachment.sourceAlphaBlendFactor = .one
             attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        case .sourceAlphaColorOnly:
-            attachment.isBlendingEnabled = true
-            attachment.sourceRGBBlendFactor = .sourceAlpha
-            attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
         }
     }
 
@@ -210,7 +203,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlpha,
+            blending: .sourceOver,
             vertexDescriptor: vertexDescriptor
         )
     }
@@ -234,7 +227,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlpha,
+            blending: .sourceOver,
             vertexDescriptor: vertexDescriptor
         )
     }
@@ -261,7 +254,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlpha,
+            blending: .sourceOver,
             vertexDescriptor: vertexDescriptor
         )
     }
@@ -309,7 +302,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlphaAccumulatingAlpha,
+            blending: .sourceOver,
             vertexDescriptor: axisVertexDescriptor()
         )
     }
@@ -335,7 +328,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlphaAccumulatingAlpha
+            blending: .sourceOver
         )
     }
 
@@ -385,7 +378,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlphaColorOnly,
+            blending: .sourceOver,
             vertexDescriptor: vertexDescriptor
         )
     }
@@ -412,16 +405,16 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
-            blending: .sourceAlpha,
+            blending: .sourceOver,
             vertexDescriptor: vertexDescriptor
         )
     }
 
     /// Stencil-only mask pipeline: rasterises a body into the main pass without writing colour.
     ///
-    /// Paired with `makeStencilMarkState(device:)` it marks a selected body the opaque surface
-    /// pass did not mark (translucent bodies, and every body in a display mode without surfaces),
-    /// so the selection outline can ring it. Honours section planes; bind `Uniforms` at vertex and
+    /// Paired with `makeStencilMarkState(device:)` it marks each selected or hovered body's whole
+    /// silhouette, in every display mode and at any opacity, so the selection outline rings it.
+    /// Honours section planes; bind `Uniforms` at vertex and
     /// fragment buffer 1. Pass `directMeshVertexDescriptor()` for direct-mesh bodies.
     static func makeStencilMaskPipelineState(
         device: MTLDevice,
@@ -548,22 +541,6 @@ enum RendererSharedSetup {
         return device.makeDepthStencilState(descriptor: descriptor)
     }
 
-    /// Depth test `.less` with writes, and stencil set to the reference value wherever a fragment
-    /// passes: marks selected bodies for the outline pass.
-    static func makeStencilWriteState(device: MTLDevice) -> MTLDepthStencilState? {
-        let descriptor = MTLDepthStencilDescriptor()
-        descriptor.depthCompareFunction = .less
-        descriptor.isDepthWriteEnabled = true
-        let stencil = MTLStencilDescriptor()
-        stencil.stencilCompareFunction = .always
-        stencil.depthStencilPassOperation = .replace
-        stencil.stencilFailureOperation = .keep
-        stencil.depthFailureOperation = .keep
-        descriptor.frontFaceStencil = stencil
-        descriptor.backFaceStencil = stencil
-        return device.makeDepthStencilState(descriptor: descriptor)
-    }
-
     /// Depth always-pass without writes, drawing only where stencil differs from the reference.
     ///
     /// That is the ring the selection outline occupies around a stencil-marked body.
@@ -581,11 +558,17 @@ enum RendererSharedSetup {
         return device.makeDepthStencilState(descriptor: descriptor)
     }
 
-    /// Depth test `.less` without depth writes, setting stencil to the reference value wherever a
-    /// fragment passes: marks a body's visible area for the outline without occluding anything.
+    /// Depth always-pass without writes, setting stencil to the reference value wherever a body
+    /// rasterises: marks a selected body's whole silhouette for the outline without occluding
+    /// anything.
+    ///
+    /// The mask ignores depth so it also covers the parts of the body hidden behind nearer
+    /// geometry (another body, grid dots). Depth-tested, it left those parts unmarked, and the
+    /// outline, which is drawn wherever the stencil is unmarked, painted over the occluder across
+    /// the whole hidden area instead of a ring (#177).
     static func makeStencilMarkState(device: MTLDevice) -> MTLDepthStencilState? {
         let descriptor = MTLDepthStencilDescriptor()
-        descriptor.depthCompareFunction = .less
+        descriptor.depthCompareFunction = .always
         descriptor.isDepthWriteEnabled = false
         let stencil = MTLStencilDescriptor()
         stencil.stencilCompareFunction = .always
@@ -863,6 +846,46 @@ enum RendererSharedSetup {
             bounds = bounds.map { $0.union(box) } ?? box
         }
         return bounds
+    }
+
+    /// Widens the camera clip-fit bounds by the visible overlay-layer bodies.
+    ///
+    /// The near and far planes are fitted to these bounds. Without the overlays, a widget lying
+    /// in front of or behind the model (a gizmo over a flat part, a ring behind it) fell outside
+    /// the fitted range and was clipped away, though it is drawn on top of everything (#170).
+    /// Overlays stay out of `sceneBounds(of:localBounds:)`, which also frames the grid, the axes
+    /// and the shadow map. Only overlays inside `view` count, so one parked off-screen doesn't
+    /// stretch the depth range of everything that is visible.
+    ///
+    /// - Parameters:
+    ///   - bounds: The clip-fit bounds so far (model, grid and axes).
+    ///   - bodies: Scene bodies; only visible overlay-layer ones are read.
+    ///   - view: The camera's frustum, with any near and far planes that enclose the scene (see
+    ///     `wideViewFrustum(cameraState:aspectRatio:)`); only its sides matter.
+    ///   - localBounds: A body's local-space box, before `transform`.
+    /// - Returns: `bounds` widened by every in-view overlay body.
+    static func clipBounds(
+        _ bounds: BoundingBox?,
+        includingOverlaysOf bodies: [ViewportBody],
+        in view: Frustum,
+        localBounds: (ViewportBody) -> BoundingBox? = { $0.boundingBox }
+    ) -> BoundingBox? {
+        var result = bounds
+        for body in bodies where body.isVisible && body.renderLayer == .overlay {
+            guard let box = localBounds(body)?.transformed(by: body.transform),
+                view.intersects(box)
+            else { continue }
+            result = result.map { $0.union(box) } ?? box
+        }
+        return result
+    }
+
+    /// The camera's view frustum with near and far planes far enough apart to hold any scene,
+    /// for deciding what lies in view before the clip planes are fitted.
+    static func wideViewFrustum(cameraState: CameraState, aspectRatio: Float) -> Frustum {
+        Frustum(
+            viewProjection: cameraState.projectionMatrix(
+                aspectRatio: aspectRatio, near: 1e-3, far: 1e7) * cameraState.viewMatrix)
     }
 
     /// Computes an orthographic light view-projection matrix that encompasses the scene.

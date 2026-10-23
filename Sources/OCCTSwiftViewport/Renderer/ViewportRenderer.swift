@@ -299,6 +299,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Properties
 
+    /// One sampled arc of this frame: its vertex range in the frame's arc line buffer
+    /// (`start`/`count`) and in its quad-strip buffer (`quadStart`/`quadCount`).
+    private typealias FrameArcDraw = (
+        body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int,
+        quadStart: Int, quadCount: Int
+    )
+
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     // MSAA pipelines (sampleCount matches view — 4 or 1)
@@ -368,10 +375,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `selection_outline_vertex` with the two-buffer descriptor (position@0 / normal@2). The
     /// outline expands along the normal, so the normal binding is read, not just satisfied.
     private let outlineDirectPipeline: MTLRenderPipelineState
-    /// Colourless stencil masks for selected bodies no surface pass marked.
+    /// Colourless stencil masks marking each selected or hovered body's whole silhouette.
     ///
-    /// That is every body in a display mode without surfaces; marking them lets the outline ring
-    /// them. Drawn with `transparentStencilWriteState`.
+    /// The selection outline draws only where they left the stencil unmarked, which is the ring
+    /// around the body. Drawn with `selectionMaskState`.
     private let stencilMaskPipeline: MTLRenderPipelineState
     private let stencilMaskDirectPipeline: MTLRenderPipelineState
 
@@ -382,7 +389,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Direct-mesh per-triangle highlight pipeline (two-buffer descriptor, position@0 /
     /// normal@2), so `triangleStyles` overlay `ViewportBody.directMesh(...)` bodies correctly.
     private let highlightDirectPipeline: MTLRenderPipelineState
-    private let stencilWriteState: MTLDepthStencilState
     private let stencilTestState: MTLDepthStencilState
     private let depthState: MTLDepthStencilState
     /// Always-pass, no-write depth state for overlay-layer bodies such as manipulator widgets.
@@ -396,8 +402,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     // without depth-fighting; depth write off so later passes aren't disturbed.
     private let highlightDepthState: MTLDepthStencilState
     private let transparentSurfaceDepthState: MTLDepthStencilState
-    /// `transparentSurfaceDepthState` plus a stencil write, for selected translucent bodies.
-    private let transparentStencilWriteState: MTLDepthStencilState
+    /// Always-pass depth, no depth write, stencil set to the reference: marks a selected body's
+    /// whole silhouette for the outline pass, including where nearer geometry covers it (#177).
+    private let selectionMaskState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
     private let msaaSampleCount: Int
     // Skybox (HDR background draw — IBL cubemap as fullscreen background)
@@ -865,20 +872,40 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // --- Mesh shader pipelines (Apple9+ / M3+ / A17+) ---
+        let supportsMeshShaders = device.supportsFamily(.apple9)
+        // Mesh pipelines that failed to build, reported with the fallback below (#161).
+        var meshPipelineErrors: [String] = []
+        func meshPipeline(
+            _ make: () throws -> MTLRenderPipelineState
+        ) -> MTLRenderPipelineState? {
+            do {
+                return try make()
+            } catch {
+                meshPipelineErrors.append("\(error)")
+                return nil
+            }
+        }
         if RendererSharedSetup.wantsMeshShaders(quality, device: device) {
-            self.meshShaderShadedPipeline = RendererSharedSetup.makeMeshShaderShadedPipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat)
+            self.meshShaderShadedPipeline = meshPipeline {
+                try RendererSharedSetup.makeMeshShaderShadedPipelineState(
+                    device: device, library: library, sampleCount: sampleCount,
+                    depthFormat: depthFormat)
+            }
             // Both the shadow map (#162) and the SSAO/silhouette prepass honour section planes.
-            self.meshShaderShadowPipeline = RendererSharedSetup.makeMeshShaderShadowPipelineState(
-                device: device, library: library)
-            self.meshShaderDepthOnlyPipeline =
-                RendererSharedSetup.makeMeshShaderDepthOnlyPipelineState(
+            self.meshShaderShadowPipeline = meshPipeline {
+                try RendererSharedSetup.makeMeshShaderShadowPipelineState(
                     device: device, library: library)
-            self.meshShaderPickPipeline = RendererSharedSetup.makeMeshShaderPipelineState(
-                device: device, library: library, meshFunction: "meshlet_pick_mesh",
-                fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .r32Uint,
-                depthPixelFormat: .depth32Float, label: "mesh_pick")
+            }
+            self.meshShaderDepthOnlyPipeline = meshPipeline {
+                try RendererSharedSetup.makeMeshShaderDepthOnlyPipelineState(
+                    device: device, library: library)
+            }
+            self.meshShaderPickPipeline = meshPipeline {
+                try RendererSharedSetup.makeMeshShaderPipelineState(
+                    device: device, library: library, meshFunction: "meshlet_pick_mesh",
+                    fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .r32Uint,
+                    depthPixelFormat: .depth32Float, label: "mesh_pick")
+            }
             self.meshShadersEnabled = meshShaderShadedPipeline != nil
             #if DEBUG
                 NSLog(
@@ -896,6 +923,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     "[ViewportRenderer] Mesh shaders: skipped (supports=%d)",
                     device.supportsFamily(.apple9))
             #endif
+        }
+
+        // An explicit, one-time report when the requested quality can't run (#161): it used to
+        // drop silently to a lower path. `effectiveRenderingQuality` exposes the result.
+        if let reason = Self.renderingQualityFallbackReason(
+            requested: quality,
+            tessellationEnabled: tessellationEnabled,
+            meshShadersEnabled: meshShadersEnabled,
+            supportsMeshShaders: supportsMeshShaders,
+            pipelineErrors: meshPipelineErrors)
+        {
+            NSLog("[ViewportRenderer] %@", reason)
         }
 
         // SSAO post-process pipeline (1x, renders to drawable).
@@ -918,13 +957,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.depthState = depthState
-
-        // Stencil write state: write reference value to stencil for selected bodies
-        guard let stencilWriteState = RendererSharedSetup.makeStencilWriteState(device: device)
-        else {
-            return nil
-        }
-        self.stencilWriteState = stencilWriteState
 
         // Stencil test state: only draw where stencil != reference (the outline ring)
         guard let stencilTestState = RendererSharedSetup.makeStencilTestState(device: device)
@@ -976,15 +1008,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.transparentSurfaceDepthState = transparentSurfaceDepthState
 
-        // Same, but writing the stencil reference for selected translucent bodies (as
-        // `stencilWriteState` does for opaque ones) so the selection outline stays a ring.
-        guard
-            let transparentStencilWriteState = RendererSharedSetup.makeStencilMarkState(
-                device: device)
+        // Selection mask: the stencil reference over each selected body's whole silhouette, so
+        // the outline pass is left with only the ring around it (#177).
+        guard let selectionMaskState = RendererSharedSetup.makeStencilMarkState(device: device)
         else {
             return nil
         }
-        self.transparentStencilWriteState = transparentStencilWriteState
+        self.selectionMaskState = selectionMaskState
 
         // Axis cylinders + grid-line cache.
         guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
@@ -1219,7 +1249,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             showGrid: controller.showGrid,
             showAxes: controller.showAxes
         )
-        let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
+        let clip = cameraState.clipPlanes(
+            sceneBounds: RendererSharedSetup.clipBounds(
+                sceneBounds, includingOverlaysOf: bodiesBinding.wrappedValue,
+                in: RendererSharedSetup.wideViewFrustum(
+                    cameraState: cameraState, aspectRatio: aspectRatio)
+            ) { body in
+                let cached =
+                    self.bodyGeneration[body.id] == body.generation
+                    ? self.bodyBufferCache[body.id]?.localBoundingBox : nil
+                return cached ?? body.boundingBox
+            })
         lastFrameClipPlanes = clip
 
         var projMatrix = cameraState.projectionMatrix(
@@ -1580,11 +1620,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Transparent surfaces (issue #53) are deferred to a sorted back-to-front
         // pass after the opaque bodies, so they composite correctly.
         var transparentDraws: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
-        // Bodies whose opaque surface marked the stencil buffer, so the outline pass can ring
-        // them. Translucent, overlay, edge-only and wireframe-mode bodies never mark it, and an
-        // outline drawn for them covered the whole expanded body instead of a ring.
-        var outlinedBodyIDs: Set<String> = []
-
         for (body, buffers, bodyObjectIndex) in frameVisibleBodies {
             // Frustum-cull off-screen geometry inline using the cached local AABB.
             // Pick IDs stay stable: bodyObjectIndex was assigned over all visible
@@ -1633,14 +1668,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             // Shaded pass (mesh bodies only)
             if displayMode.showsSurfaces, hasMesh, !defersSurface {
-                // Write stencil=1 for selected bodies
-                if selState > 0 {
-                    mainEncoder.setDepthStencilState(stencilWriteState)
-                    mainEncoder.setStencilReferenceValue(1)
-                    outlinedBodyIDs.insert(body.id)
-                } else {
-                    mainEncoder.setDepthStencilState(depthState)
-                }
+                mainEncoder.setDepthStencilState(depthState)
 
                 // Set shared fragment state (same for tessellated and non-tessellated)
                 mainEncoder.setFragmentBytes(
@@ -1664,6 +1692,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 encodeShadedSurface(
                     mainEncoder, buffers: buffers, uniforms: &uniforms,
                     useMeshShaders: useMeshShaders, useTessellation: useTessellation)
+
+                // Per-triangle highlights (issue #25) straight over the surface they style, so
+                // they composite before the translucent pass rather than over it (#171).
+                if buffers.triangleStyleBuffer != nil {
+                    mainEncoder.setDepthStencilState(highlightDepthState)
+                    encodeTriangleHighlight(mainEncoder, buffers: buffers, uniforms: &uniforms)
+                    mainEncoder.setDepthStencilState(depthState)
+                }
             }
 
             // Wireframe/edge pass
@@ -1759,24 +1795,30 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     body: d.body, objectIndex: d.objectIndex, isSelected: selState)
                 bodyUniforms.color.w = displayMode.surfaceOpacity(
                     forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
-                // Selected/hovered bodies mark the stencil, as in the opaque pass, so the
-                // selection outline below draws a ring around them instead of a filled silhouette.
-                if selState > 0 {
-                    mainEncoder.setDepthStencilState(transparentStencilWriteState)
-                    mainEncoder.setStencilReferenceValue(1)
-                    outlinedBodyIDs.insert(d.body.id)
-                } else {
+                // The far-facing triangles first, then the camera-facing ones, so the body's near
+                // wall composites over its far wall. Each half carries its own per-triangle
+                // highlights, drawn straight after it in the same order: a highlight on the far
+                // wall is seen through the near wall, and one on a body behind is seen through
+                // the bodies in front (#171). Every triangle is drawn in exactly one half, so a
+                // mis-wound mesh only composites out of order; it never loses triangles.
+                for culled in Self.translucentCullOrder {
+                    mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    encodeShadedSurface(
+                        mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                        useMeshShaders: useMeshShaders, useTessellation: useTessellation)
+                    if d.buffers.triangleStyleBuffer != nil {
+                        mainEncoder.setDepthStencilState(highlightDepthState)
+                        encodeTriangleHighlight(
+                            mainEncoder, buffers: d.buffers, uniforms: &uniforms)
+                    }
                 }
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                encodeShadedSurface(
-                    mainEncoder, buffers: d.buffers, uniforms: &uniforms,
-                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
-            // Don't let a selected body's stencil-writing state leak into the passes below.
+            mainEncoder.setCullMode(.none)
             mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
         }
 
@@ -1789,15 +1831,45 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // With quad expansion on, the same samples are also expanded into quad strips (from
         // `frameArcQuadBuffer`, ranges `quadStart`/`quadCount`) so arcs get the configured width and
         // dash pattern like polyline edges, and their pick footprint matches.
-        var frameArcDraws:
-            [(
-                body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int,
-                quadStart: Int, quadCount: Int
-            )] = []
+        var frameArcDraws: [FrameArcDraw] = []
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
         let useQuadArcs = frameEdgeConfig.useQuadExpansion && quadEdgePipeline != nil
         var frameArcQuadBuffer: MTLBuffer?
         var frameArcLineBuffer: MTLBuffer?
+
+        /// Draws one of this frame's sampled arcs; the caller sets the depth-stencil state.
+        func encodeArc(_ d: FrameArcDraw) {
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = d.body.transform
+            var arcBodyUniforms = BodyUniforms(
+                body: d.body, objectIndex: d.objectIndex, isSelected: 0)
+            if (bodyBufferCache[d.body.id]?.indexCount ?? 0) == 0 {
+                arcBodyUniforms.metallic = -1.0  // edge-only body: use its colour directly
+            }
+            mainEncoder.setFragmentBytes(
+                &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+            if let quadBuf = frameArcQuadBuffer, let quadPipeline = quadEdgePipeline {
+                var edgeUniforms = EdgeUniforms(
+                    uniforms: uniforms, configuration: frameEdgeConfig,
+                    viewportSize: edgeViewportSize)
+                mainEncoder.setRenderPipelineState(quadPipeline)
+                mainEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
+                mainEncoder.setVertexBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.drawPrimitives(
+                    type: .triangleStrip, vertexStart: d.quadStart, vertexCount: d.quadCount)
+            } else if let arcBuf = frameArcLineBuffer {
+                mainEncoder.setRenderPipelineState(wireframePipeline)
+                mainEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.drawPrimitives(type: .line, vertexStart: d.start, vertexCount: d.count)
+            }
+        }
+
         if !arcBodies.isEmpty {
             let vpSize = SIMD2<Float>(Float(w), Float(h))
             var arcVerts: [Float] = []
@@ -1854,41 +1926,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     }
                     frameArcQuadBuffer = quadBuf
                 }
-                if let quadBuf = frameArcQuadBuffer, let quadPipeline = quadEdgePipeline {
-                    mainEncoder.setRenderPipelineState(quadPipeline)
-                    mainEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
-                } else {
-                    mainEncoder.setRenderPipelineState(wireframePipeline)
-                    mainEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
-                }
-                for d in frameArcDraws {
-                    let bodyHasMesh = (bodyBufferCache[d.body.id]?.indexCount ?? 0) > 0
-                    var uniforms = makeUniforms()
-                    uniforms.modelMatrix = d.body.transform
-                    var arcBodyUniforms = BodyUniforms(
-                        body: d.body, objectIndex: d.objectIndex, isSelected: 0)
-                    if !bodyHasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
-                    mainEncoder.setFragmentBytes(
-                        &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    if frameArcQuadBuffer != nil {
-                        var edgeUniforms = EdgeUniforms(
-                            uniforms: uniforms, configuration: frameEdgeConfig,
-                            viewportSize: edgeViewportSize)
-                        mainEncoder.setVertexBytes(
-                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                        mainEncoder.setFragmentBytes(
-                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                        mainEncoder.drawPrimitives(
-                            type: .triangleStrip, vertexStart: d.quadStart,
-                            vertexCount: d.quadCount)
-                    } else {
-                        mainEncoder.setVertexBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        mainEncoder.setFragmentBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        mainEncoder.drawPrimitives(
-                            type: .line, vertexStart: d.start, vertexCount: d.count)
-                    }
+                // Overlay-layer arcs are drawn in the overlay pass, on top of everything (#170).
+                mainEncoder.setDepthStencilState(depthState)
+                for d in frameArcDraws where d.body.renderLayer == .geometry {
+                    encodeArc(d)
                 }
             }
         }
@@ -1947,68 +1988,23 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
-        // 3.5 Per-triangle highlight pass (issue #25).
-        // For every visible body that has a triangleStyleBuffer, draw with the
-        // highlight pipeline. The shader discards triangles with alpha == 0,
-        // so this is cheap on bodies with sparse highlight maps.
-        // .lessEqual + depth-write-off keeps depth state untouched for outline.
-        let hasHighlightBodies = bodies.contains { body in
-            body.isVisible
-                && body.renderLayer == .geometry
-                && bodyBufferCache[body.id]?.triangleStyleBuffer != nil
-        }
-        if hasHighlightBodies, displayMode.showsSurfaces {
-            mainEncoder.setDepthStencilState(highlightDepthState)
-            for body in bodies where body.isVisible && body.renderLayer == .geometry {
-                guard let buffers = bodyBufferCache[body.id],
-                    let vb = buffers.vertexBuffer,
-                    let ib = buffers.indexBuffer,
-                    let styleBuf = buffers.triangleStyleBuffer,
-                    buffers.indexCount > 0
-                else { continue }
-
-                var uniforms = makeUniforms()
-                uniforms.modelMatrix = body.transform
-
-                if let nb = buffers.normalBuffer {
-                    // Direct-mesh body: position@0 + normal@2.
-                    mainEncoder.setRenderPipelineState(highlightDirectPipeline)
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                } else {
-                    mainEncoder.setRenderPipelineState(highlightPipeline)
-                }
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBuffer(styleBuf, offset: 0, index: 2)
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle,
-                    indexCount: buffers.indexCount,
-                    indexType: .uint32,
-                    indexBuffer: ib,
-                    indexBufferOffset: 0
-                )
-            }
-            // Restore the default depth state for the outline pass that follows.
-            mainEncoder.setDepthStencilState(stencilTestState)
-        }
-
-        // 3.9 Stencil-mark selected meshed bodies no surface pass marked (every body when the
-        // display mode draws no surfaces) without drawing colour, so the outline below rings
-        // them too.
-        for body in bodies
-        where body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
+        // 3.9 Selection mask: stencil-mark each selected or hovered geometry body's whole
+        // silhouette, without drawing colour or testing depth. Per-triangle highlights were drawn
+        // with the surfaces they style, above (#171). The mask covers the parts of the body
+        // hidden behind nearer geometry too, so the outline below is the ring around the body and
+        // never paints over an occluder (#177); it covers bodies drawn translucent or without
+        // surfaces (`.wireframe`) alike. Overlay bodies get no outline.
+        var outlinedBodyIDs: Set<String> = []
+        for (body, buffers, _) in frameVisibleBodies
+        where body.renderLayer == .geometry && body.primitiveKind != .point
             && (selectedIDs.contains(body.id) || hoveredID == body.id)
-            && !outlinedBodyIDs.contains(body.id)
         {
-            guard let buffers = bodyBufferCache[body.id],
-                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+            guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
                 buffers.indexCount > 0
             else { continue }
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
-            mainEncoder.setDepthStencilState(transparentStencilWriteState)
+            mainEncoder.setDepthStencilState(selectionMaskState)
             mainEncoder.setStencilReferenceValue(1)
             mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             if let nb = buffers.normalBuffer {
@@ -2085,23 +2081,33 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
-        // 5. Overlay pass — RenderLayer.overlay bodies, drawn after the selection
-        // outline with always-pass depth so they remain visible through any geometry.
-        // Uses the standard shaded + wireframe pipelines (no tessellation / mesh
-        // shader paths, since manipulator widgets are simple meshes).
-        let hasOverlayBodies = bodies.contains { $0.isVisible && $0.renderLayer == .overlay }
-        if hasOverlayBodies {
+        // 5. Overlay pass — RenderLayer.overlay bodies, drawn after the selection outline with
+        // always-pass depth so they remain visible through any geometry. Uses the standard
+        // shaded + wireframe pipelines (no tessellation / mesh shader paths, since manipulator
+        // widgets are simple meshes). Widgets aren't model geometry (#170): their surfaces draw
+        // in every display mode, `.wireframe` included, and receive no shadows (scene geometry
+        // must not shadow a gizmo). Their edges and arcs follow the display mode's edge rule like
+        // geometry edges, and are drawn on top too. The overlay pick pass stamps exactly this.
+        let overlayDraws = frameVisibleBodies.filter { $0.body.renderLayer == .overlay }
+        if !overlayDraws.isEmpty {
             mainEncoder.setDepthStencilState(overlayDepthState)
-            objectIndex = 0
-            for body in bodies where body.isVisible {
-                let bodyObjectIndex = objectIndex
-                objectIndex += 1
-                guard body.renderLayer == .overlay,
-                    let buffers = bodyBufferCache[body.id]
-                else { continue }
-
+            // The image-based-lighting maps shaded_fragment samples. The geometry passes bind them
+            // per draw, so with no geometry surface drawn this frame (`.wireframe`, a scene of
+            // widgets only) they were never bound for the widgets.
+            if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
+                if let spec = envMgr.prefilteredSpecularMap {
+                    mainEncoder.setFragmentTexture(spec, index: 2)
+                }
+                if let diff = envMgr.irradianceMap {
+                    mainEncoder.setFragmentTexture(diff, index: 3)
+                }
+                if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
+            }
+            for (body, buffers, bodyObjectIndex) in overlayDraws where body.primitiveKind != .point
+            {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
+                uniforms.shadowParams.z = 0
                 var bodyUniforms = BodyUniforms(
                     body: body, objectIndex: bodyObjectIndex, isSelected: 0)
 
@@ -2112,9 +2118,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     && buffers.indexCount > 0
                 let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
-                if displayMode.showsSurfaces, hasMesh,
-                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer
-                {
+                if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
                     if let nb = buffers.normalBuffer {
                         // Direct-mesh body (Option A): position@0 + normal@2, shared shaded shaders.
                         mainEncoder.setRenderPipelineState(directMeshPipeline)
@@ -2140,7 +2144,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     )
                 }
 
-                let shouldDrawEdges = hasEdges && (displayMode.showsEdges || !hasMesh)
+                let shouldDrawEdges = hasEdges && displayMode.drawsEdges(bodyHasMesh: hasMesh)
                 if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
                     var edgeBodyUniforms = bodyUniforms
                     if !hasMesh {
@@ -2176,17 +2180,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
                     }
                 }
+
+                // The body's arcs, sampled with the geometry arcs above but drawn here, on top.
+                for d in frameArcDraws where d.body.id == body.id {
+                    encodeArc(d)
+                }
             }
 
             // Overlay point bodies (snap markers and the like): the geometry point pass above
             // only takes `.geometry` bodies, so without this they were never drawn at all.
             if let pointPipeline = visiblePointPipeline {
                 let pxPerWorldFactor = Float(drawableSize.height) * projMatrix.columns.1.y * 0.5
-                for body in bodies
-                where body.isVisible && body.renderLayer == .overlay && body.primitiveKind == .point
-                {
-                    guard let buffers = bodyBufferCache[body.id],
-                        let positionBuf = buffers.pointPositionBuffer,
+                for (body, buffers, _) in overlayDraws where body.primitiveKind == .point {
+                    guard let positionBuf = buffers.pointPositionBuffer,
                         buffers.pointVertexCount > 0
                     else { continue }
                     var uniforms = makeUniforms()
@@ -2333,108 +2339,75 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         }
                     }
 
-                    // Edge pick pass: render line primitives for any body with
-                    // `edgeIndices` set. Uses `.lessEqual` so edges co-planar with
-                    // a face overwrite the face's pick ID. The fragment encodes
-                    // kind=1, primitiveID = line-segment index.
-                    // With quad expansion on, edges and arcs are picked as quads as wide as
-                    // the visible edge (at least 1 pt), not as 1 px lines.
+                    // Edge, arc and vertex stamps. Geometry bodies stamp them depth-tested
+                    // (`.lessEqual`, so edges co-planar with a face and vertices on an edge win
+                    // the tie); overlay bodies stamp them in the overlay pick pass below. With
+                    // quad expansion on, edges and arcs are picked as quads as wide as the visible
+                    // edge (at least 1 pt), not as 1 px lines. The fragments encode kind=1 with the
+                    // line-segment (or arc) index, and kind=2 with the vertex index.
                     let quadPickPipeline =
                         frameEdgeConfig.useQuadExpansion ? pickQuadEdgePipeline : nil
                     let pickEdgeWidth = max(frameEdgeConfig.width, pickContentScale)
-                    if let pickLinePipeline {
-                        let hasEdgePickable = bodies.contains {
-                            $0.isVisible && !$0.edgeIndices.isEmpty
-                        }
-                        if hasEdgePickable {
-                            pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                            objectIndex = 0
-                            for body in bodies where body.isVisible {
-                                let bodyObjectIndex = objectIndex
-                                objectIndex += 1
-                                if !body.isPickable { continue }  // issue #63
-                                guard !body.edgeIndices.isEmpty,
-                                    let buffers = bodyBufferCache[body.id],
-                                    let edgeVB = buffers.edgeVertexBuffer,
-                                    buffers.edgePrimitiveCount > 0,
-                                    // Same rule as the visible edge pass: edges hidden by the
-                                    // display mode (`.shaded`, ...) can't win a pick.
-                                    displayMode.drawsEdges(bodyHasMesh: buffers.indexCount > 0)
-                                else { continue }
 
-                                var uniforms = makeUniforms()
-                                uniforms.modelMatrix = body.transform
-                                var bodyUniforms = BodyUniforms(
-                                    body: body, objectIndex: bodyObjectIndex)
-
-                                if let quadPickPipeline,
-                                    let quadEdgeVB = buffers.quadEdgeVertexBuffer,
-                                    buffers.quadEdgeVertexCount > 0
-                                {
-                                    var edgeUniforms = EdgeUniforms(
-                                        uniforms: uniforms, configuration: frameEdgeConfig,
-                                        viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                                    var primSource = SIMD2<UInt32>(0, 0)  // segment = triangle / 6
-                                    pickEncoder.setRenderPipelineState(quadPickPipeline)
-                                    pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
-                                    pickEncoder.setVertexBytes(
-                                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size,
-                                        index: 1)
-                                    pickEncoder.setFragmentBytes(
-                                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size,
-                                        index: 1)
-                                    pickEncoder.setFragmentBytes(
-                                        &bodyUniforms, length: MemoryLayout<BodyUniforms>.size,
-                                        index: 2)
-                                    pickEncoder.setFragmentBytes(
-                                        &primSource, length: MemoryLayout<SIMD2<UInt32>>.size,
-                                        index: 3)
-                                    pickEncoder.drawPrimitives(
-                                        type: .triangleStrip, vertexStart: 0,
-                                        vertexCount: buffers.quadEdgeVertexCount)
-                                    continue
-                                }
-
-                                pickEncoder.setRenderPipelineState(pickLinePipeline)
-                                pickEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                pickEncoder.drawPrimitives(
-                                    type: .line,
-                                    vertexStart: 0,
-                                    vertexCount: buffers.edgeVertexCount
-                                )
-                            }
-                        }
-                    }
-
-                    // Arc pick pass (issue #48): re-draw this frame's adaptively
-                    // sampled arc segments (from `frameArcLineBuffer`, ranges in
-                    // `frameArcDraws`) to the pick texture. Each arc is drawn
-                    // separately so the fragment can stamp the ARC index (kind=1).
-                    if let quadPickPipeline, !frameArcDraws.isEmpty,
-                        let quadBuf = frameArcQuadBuffer
-                    {
-                        // Quad arcs: same footprint as the visible arc (the samples drawn above).
-                        pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                        pickEncoder.setRenderPipelineState(quadPickPipeline)
-                        pickEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
-                        for d in frameArcDraws {
-                            if !d.body.isPickable { continue }  // issue #63
-                            var uniforms = makeUniforms()
-                            uniforms.modelMatrix = d.body.transform
-                            var bodyUniforms = BodyUniforms(
-                                body: d.body, objectIndex: d.objectIndex)
+                    /// Stamps a body's edge polylines, as the visible edge pass draws them.
+                    func stampEdges(
+                        _ body: ViewportBody, _ buffers: BodyBuffers, objectIndex: UInt32
+                    ) {
+                        guard let edgeVB = buffers.edgeVertexBuffer, buffers.edgePrimitiveCount > 0
+                        else { return }
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = body.transform
+                        var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
+                        if let quadPickPipeline, let quadEdgeVB = buffers.quadEdgeVertexBuffer,
+                            buffers.quadEdgeVertexCount > 0
+                        {
                             var edgeUniforms = EdgeUniforms(
                                 uniforms: uniforms, configuration: frameEdgeConfig,
                                 viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                            var primSource = SIMD2<UInt32>(
-                                UInt32(truncatingIfNeeded: d.arcIndex), 1)  // fixed arc index
+                            var primSource = SIMD2<UInt32>(0, 0)  // segment = triangle / 6
+                            pickEncoder.setRenderPipelineState(quadPickPipeline)
+                            pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                            pickEncoder.setVertexBytes(
+                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                            pickEncoder.setFragmentBytes(
+                                &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+                            pickEncoder.drawPrimitives(
+                                type: .triangleStrip, vertexStart: 0,
+                                vertexCount: buffers.quadEdgeVertexCount)
+                            return
+                        }
+                        guard let pickLinePipeline else { return }
+                        pickEncoder.setRenderPipelineState(pickLinePipeline)
+                        pickEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                        pickEncoder.setVertexBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        pickEncoder.setFragmentBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        pickEncoder.setFragmentBytes(
+                            &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                        pickEncoder.drawPrimitives(
+                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    }
+
+                    /// Re-draws one of this frame's sampled arcs (from `frameArcQuadBuffer` or
+                    /// `frameArcLineBuffer`, ranges in `frameArcDraws`), stamping the ARC index.
+                    func stampArc(_ d: FrameArcDraw) {
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = d.body.transform
+                        var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex)
+                        let arcIndex = UInt32(truncatingIfNeeded: d.arcIndex)
+                        if let quadPickPipeline, let quadBuf = frameArcQuadBuffer {
+                            // Quad arcs: same footprint as the visible arc (the samples drawn above).
+                            var edgeUniforms = EdgeUniforms(
+                                uniforms: uniforms, configuration: frameEdgeConfig,
+                                viewportSize: edgeViewportSize, width: pickEdgeWidth)
+                            var primSource = SIMD2<UInt32>(arcIndex, 1)  // fixed arc index
+                            pickEncoder.setRenderPipelineState(quadPickPipeline)
+                            pickEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
                             pickEncoder.setVertexBytes(
                                 &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(
@@ -2446,20 +2419,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             pickEncoder.drawPrimitives(
                                 type: .triangleStrip, vertexStart: d.quadStart,
                                 vertexCount: d.quadCount)
-                        }
-                    } else if let pickArcPipeline, !frameArcDraws.isEmpty,
-                        let arcBuf = frameArcLineBuffer
-                    {
-                        pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                        pickEncoder.setRenderPipelineState(pickArcPipeline)
-                        pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
-                        for d in frameArcDraws {
-                            if !d.body.isPickable { continue }  // issue #63
-                            var uniforms = makeUniforms()
-                            uniforms.modelMatrix = d.body.transform
-                            var bodyUniforms = BodyUniforms(
-                                body: d.body, objectIndex: d.objectIndex)
-                            var arcPrimID = UInt32(truncatingIfNeeded: d.arcIndex)
+                        } else if let pickArcPipeline, let arcBuf = frameArcLineBuffer {
+                            var arcPrimID = arcIndex
+                            pickEncoder.setRenderPipelineState(pickArcPipeline)
+                            pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
                             pickEncoder.setVertexBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(
@@ -2473,86 +2436,85 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         }
                     }
 
-                    // Vertex pick pass: render point sprites for any body with
-                    // `vertices` set. Same `.lessEqual` policy as edges so vertices
-                    // sitting on edges win the tie.
-                    if let pickPointPipeline {
-                        let hasVertexPickable = bodies.contains {
-                            $0.isVisible && !$0.vertices.isEmpty
-                        }
-                        if hasVertexPickable {
-                            pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                            pickEncoder.setRenderPipelineState(pickPointPipeline)
-                            // 8 pt clickable footprint, in drawable pixels.
-                            var pointSpriteSize = 8 * pickContentScale
-                            objectIndex = 0
-                            for body in bodies where body.isVisible {
-                                let bodyObjectIndex = objectIndex
-                                objectIndex += 1
-                                if !body.isPickable { continue }  // issue #63
-                                guard !body.vertices.isEmpty,
-                                    let buffers = bodyBufferCache[body.id],
-                                    let pointVB = buffers.pointVertexBuffer,
-                                    buffers.pointVertexCount > 0
-                                else { continue }
-
-                                var uniforms = makeUniforms()
-                                uniforms.modelMatrix = body.transform
-                                var bodyUniforms = BodyUniforms(
-                                    body: body, objectIndex: bodyObjectIndex)
-
-                                pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setVertexBytes(
-                                    &pointSpriteSize, length: MemoryLayout<Float>.size, index: 2)
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                pickEncoder.drawPrimitives(
-                                    type: .point,
-                                    vertexStart: 0,
-                                    vertexCount: buffers.pointVertexCount
-                                )
-                            }
-                        }
+                    /// Stamps a body's `vertices` as point sprites with an 8 pt footprint.
+                    func stampVertices(
+                        _ body: ViewportBody, _ buffers: BodyBuffers, objectIndex: UInt32
+                    ) {
+                        guard let pickPointPipeline, let pointVB = buffers.pointVertexBuffer,
+                            buffers.pointVertexCount > 0
+                        else { return }
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = body.transform
+                        var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
+                        // 8 pt clickable footprint, in drawable pixels.
+                        var pointSpriteSize = 8 * pickContentScale
+                        pickEncoder.setRenderPipelineState(pickPointPipeline)
+                        pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
+                        pickEncoder.setVertexBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        pickEncoder.setVertexBytes(
+                            &pointSpriteSize, length: MemoryLayout<Float>.size, index: 2)
+                        pickEncoder.setFragmentBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        pickEncoder.setFragmentBytes(
+                            &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                        pickEncoder.drawPrimitives(
+                            type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
                     }
 
-                    // Overlay pick pass: draw RenderLayer.overlay bodies with
-                    // always-pass depth so they win the pick over occluding geometry.
-                    let hasOverlayBodies = bodies.contains {
-                        $0.isVisible && $0.renderLayer == .overlay
+                    // Geometry-layer edges: bodies with `edgeIndices` set, when the display mode
+                    // draws their edges (`.shaded` hides them, so they can't win a pick).
+                    pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
+                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
+                    where body.renderLayer == .geometry && body.isPickable
+                        && !body.edgeIndices.isEmpty
+                        && displayMode.drawsEdges(bodyHasMesh: buffers.indexCount > 0)
+                    {
+                        stampEdges(body, buffers, objectIndex: bodyObjectIndex)
                     }
-                    if hasOverlayBodies {
-                        pickEncoder.setDepthStencilState(overlayDepthState)
-                        objectIndex = 0
-                        for body in bodies where body.isVisible {
-                            let bodyObjectIndex = objectIndex
-                            objectIndex += 1
-                            if !body.isPickable { continue }  // issue #63
-                            guard body.renderLayer == .overlay,
-                                let buffers = bodyBufferCache[body.id],
-                                let vb = buffers.vertexBuffer,
-                                let ib = buffers.indexBuffer,
-                                buffers.indexCount > 0
-                            else { continue }
+                    // Geometry-layer arcs (issue #48), each drawn separately so the fragment
+                    // stamps its arc index.
+                    for d in frameArcDraws
+                    where d.body.renderLayer == .geometry && d.body.isPickable {
+                        stampArc(d)
+                    }
+                    // Geometry-layer vertices: bodies with `vertices` set.
+                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
+                    where body.renderLayer == .geometry && body.isPickable
+                        && !body.vertices.isEmpty
+                    {
+                        stampVertices(body, buffers, objectIndex: bodyObjectIndex)
+                    }
 
+                    // Overlay pick pass (#170): RenderLayer.overlay bodies stamp everything the
+                    // overlay pass draws (surfaces in every display mode, the edges and arcs the
+                    // mode shows, and vertices) with always-pass depth, so a widget wins the pick
+                    // over geometry in front of it, as it is drawn over it. Edges are stamped
+                    // whether or not `edgeIndices` is set: a gizmo ring drawn as a polyline is
+                    // grabbed by its edges. Within a body, edges and vertices are stamped after
+                    // its faces so they win; a later overlay body wins over an earlier one, as it
+                    // is drawn over it.
+                    pickEncoder.setDepthStencilState(overlayDepthState)
+                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
+                    where body.renderLayer == .overlay && body.isPickable {
+                        let hasMesh =
+                            buffers.vertexBuffer != nil && buffers.indexBuffer != nil
+                            && buffers.indexCount > 0
+                        if body.primitiveKind != .point, hasMesh, let vb = buffers.vertexBuffer,
+                            let ib = buffers.indexBuffer
+                        {
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = body.transform
                             var bodyUniforms = BodyUniforms(
                                 body: body, objectIndex: bodyObjectIndex)
-
                             if let nb = buffers.normalBuffer {
                                 // Direct-mesh overlay body (Option A): position@0 + normal@2.
                                 pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
-                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                                 pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                             } else {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
-                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             }
+                            pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             pickEncoder.setVertexBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(
@@ -2560,13 +2522,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             pickEncoder.setFragmentBytes(
                                 &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                             pickEncoder.drawIndexedPrimitives(
-                                type: .triangle,
-                                indexCount: buffers.indexCount,
-                                indexType: .uint32,
-                                indexBuffer: ib,
-                                indexBufferOffset: 0
-                            )
+                                type: .triangle, indexCount: buffers.indexCount,
+                                indexType: .uint32, indexBuffer: ib, indexBufferOffset: 0)
                         }
+                        if body.primitiveKind != .point,
+                            displayMode.drawsEdges(bodyHasMesh: hasMesh)
+                        {
+                            stampEdges(body, buffers, objectIndex: bodyObjectIndex)
+                        }
+                        for d in frameArcDraws where d.body.id == body.id {
+                            stampArc(d)
+                        }
+                        stampVertices(body, buffers, objectIndex: bodyObjectIndex)
                     }
 
                     pickEncoder.endEncoding()
@@ -2846,7 +2813,55 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             && body.effectiveMaterial.opacity >= 1.0
     }
 
+    // MARK: - Rendering quality
+
+    /// The ``RenderingQuality`` this renderer actually draws with.
+    ///
+    /// Equal to `ViewportConfiguration.renderingQuality` when the device supports it and its
+    /// pipelines built. Lower when they didn't: `.maximum` needs mesh shaders (Apple9 GPU family:
+    /// M3 / A17 Pro or later) and runs `.enhanced` without them, and `.enhanced` runs `.standard`
+    /// if its tessellation pipelines fail to build. The fallback is also logged once, when the
+    /// renderer is created. Fixed for the renderer's lifetime: the quality is read at creation.
+    public var effectiveRenderingQuality: RenderingQuality {
+        if meshShadersEnabled { return .maximum }
+        return tessellationEnabled ? .enhanced : .standard
+    }
+
+    /// The one-line explanation logged when `requested` can't run, or `nil` when it runs as asked.
+    nonisolated static func renderingQualityFallbackReason(
+        requested: RenderingQuality,
+        tessellationEnabled: Bool,
+        meshShadersEnabled: Bool,
+        supportsMeshShaders: Bool,
+        pipelineErrors: [String]
+    ) -> String? {
+        let effective: RenderingQuality =
+            meshShadersEnabled ? .maximum : (tessellationEnabled ? .enhanced : .standard)
+        guard requested != effective, requested != .standard else { return nil }
+        var why: [String] = []
+        if requested == .maximum, !meshShadersEnabled {
+            why.append(
+                supportsMeshShaders
+                    ? "mesh-shader pipelines failed to build"
+                    : "this GPU has no mesh shaders (Apple9 family: M3 / A17 Pro or later)")
+        }
+        if !tessellationEnabled {
+            why.append("tessellation pipelines failed to build")
+        }
+        why += pipelineErrors
+        return "renderingQuality .\(requested) requested, drawing with .\(effective): "
+            + why.joined(separator: "; ")
+    }
+
     // MARK: - Shaded surface draw
+
+    /// Cull modes the translucent pass draws each body with, in order: the far-facing triangles
+    /// first, then the camera-facing ones, so a body's near wall composites over its far wall.
+    ///
+    /// Mesh triangles wind counter-clockwise seen from outside, which the default clockwise
+    /// front-facing rule rasterises as back faces: `.back` culls the camera-facing side and
+    /// leaves the far one. `OffscreenRenderer` uses the same order.
+    nonisolated static let translucentCullOrder: [MTLCullMode] = [.back, .front]
 
     /// Encodes a body's shaded surface via the mesh-shader, tessellated, or standard path.
     ///
@@ -2898,6 +2913,34 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 indexBufferOffset: 0
             )
         }
+    }
+
+    /// Composites a body's `triangleStyles` over its shaded surface (issue #25).
+    ///
+    /// The caller sets the depth-stencil state (`highlightDepthState`) and cull mode. Rebinds
+    /// fragment buffers 1 (scene uniforms) and 2 (the style buffer).
+    private func encodeTriangleHighlight(
+        _ encoder: MTLRenderCommandEncoder,
+        buffers: BodyBuffers,
+        uniforms: inout Uniforms
+    ) {
+        guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+            let styleBuf = buffers.triangleStyleBuffer, buffers.indexCount > 0
+        else { return }
+        if let nb = buffers.normalBuffer {
+            // Direct-mesh body: position@0 + normal@2.
+            encoder.setRenderPipelineState(highlightDirectPipeline)
+            encoder.setVertexBuffer(nb, offset: 0, index: 2)
+        } else {
+            encoder.setRenderPipelineState(highlightPipeline)
+        }
+        encoder.setVertexBuffer(vb, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setFragmentBuffer(styleBuf, offset: 0, index: 2)
+        encoder.drawIndexedPrimitives(
+            type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+            indexBuffer: ib, indexBufferOffset: 0)
     }
 
     // MARK: - Buffer Management
@@ -3000,8 +3043,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // Tessellation patches and meshlets, shared with OffscreenRenderer (#165). Direct-mesh
-        // bodies get neither: both builders consume an interleaved stride-6 buffer + faceIndices,
-        // and a direct body brings its own normals. Patches read the uploaded (possibly smoothed)
+        // bodies get neither: both builders consume an interleaved stride-6 buffer, and a direct
+        // body brings its own normals. `faceIndices` plays no part (#161). Patches read the uploaded (possibly smoothed)
         // vertex buffer and meshlets the same smoothed data, so both see the smoothed normals.
         let refinement = RendererSharedBuffers.makeRefinementBuffers(
             for: body, smoothedVertexData: smoothedVertexData, mesh: mesh,
@@ -3017,7 +3060,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 tessMgr.didLogDiagnostic = true
                 let msg = """
                     ensureBuffers: body=\(body.id) tris=\(indexCount / 3) \
-                    faceIdx=\(body.faceIndices.count) tessResult=\(tessBuffers != nil)
+                    tessResult=\(tessBuffers != nil)
                     """
                 NSLog("[ViewportRenderer] %@", msg)
             }

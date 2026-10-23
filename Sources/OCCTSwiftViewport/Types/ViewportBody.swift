@@ -12,6 +12,11 @@ import simd
 /// selection outline pass with an always-pass depth state, so the body is visible
 /// even when occluded by other geometry, which is what manipulator widgets and similar
 /// always-on-top UI affordances need. Overlay bodies get no selection or hover outline.
+///
+/// Overlay bodies are widgets, not model geometry: their surfaces draw in every display mode,
+/// `.wireframe` included, they neither cast nor receive shadows, and their edges and arcs are
+/// drawn on top as well. The GPU pick pass stamps exactly what they draw, over all geometry,
+/// including edges without `edgeIndices`.
 public enum RenderLayer: Hashable, Sendable {
     case geometry
     case overlay
@@ -145,8 +150,8 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Maps each drawn line segment back to the B-Rep edge it came from, for edge selection.
     ///
     /// Parallel to the line primitives of `edges` flattened
-    /// (`[poly0.seg0, poly0.seg1, ..., poly1.seg0, ...]`). Empty leaves the body not
-    /// edge-pickable.
+    /// (`[poly0.seg0, poly0.seg1, ..., poly1.seg0, ...]`). Empty leaves a `.geometry` body not
+    /// edge-pickable; an `.overlay` body's drawn edges are pickable either way.
     public var edgeIndices: [Int32] {
         didSet { geometryDidChange() }
     }

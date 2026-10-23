@@ -183,7 +183,7 @@ The GPU pick pass writes only what the current `DisplayMode` shows, so geometry 
 | Faces (`.face`) | `displayMode.showsSurfaces`: every mode except `.wireframe` |
 | Edges (`.edge`, including analytic arcs) | `displayMode.drawsEdges(bodyHasMesh:)`: `.wireframe`, `.shadedWithEdges` and `.xray`, plus edge-only bodies in every mode |
 | Vertices (`.vertex`) | always (vertex sprites are never drawn, so no mode hides them) |
-| Overlay-layer bodies | always, whatever the mode |
+| Overlay-layer bodies | as drawn: faces in every mode, edges and arcs by the rule above, vertices always, all over the geometry (#170) |
 
 | Mode | Faces | Edges (bodies with a mesh) |
 |---|:---:|:---:|
@@ -194,7 +194,7 @@ The GPU pick pass writes only what the current `DisplayMode` shows, so geometry 
 
 `.xray` keeps surfaces pickable even though they are see-through: the nearest surface under the cursor wins, as in `.shaded`, and edges co-planar with it win the depth tie. Edges and faces behind that nearest surface stay unpickable, although they show through it.
 
-A body's polyline `edges` are pickable only when it sets `edgeIndices` (its `arcs` always are). In `.wireframe`, where faces are not pickable, a body with no `edgeIndices`, `arcs` or `vertices` therefore can't be picked at all. Set `edgeIndices` on bodies you want selectable in wireframe.
+A geometry-layer body's polyline `edges` are pickable only when it sets `edgeIndices` (its `arcs` always are; an overlay body's edges always are). In `.wireframe`, where faces are not pickable, a body with no `edgeIndices`, `arcs` or `vertices` therefore can't be picked at all. Set `edgeIndices` on bodies you want selectable in wireframe.
 
 Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so a click could select an invisible face or edge.
 

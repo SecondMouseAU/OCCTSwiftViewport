@@ -29,11 +29,8 @@ struct MeshletDescriptor {
     var vertexCount: UInt32  // Number of unique vertices in this meshlet
     var triangleOffset: UInt32  // Offset into meshlet triangle index buffer
     var triangleCount: UInt32  // Number of triangles in this meshlet
-    var faceIndexFirst: Int32  // Face index of first triangle (for picking)
-    var _pad0: Int32 = 0
-    var _pad1: Int32 = 0
-    var _pad2: Int32 = 0
-    // Size: 3*4 + 4 + 3*4 + 4 + 4*4 + 4 + 3*4 = 64 bytes
+    // Layout: center 0, radius 16, coneAxis 32, coneCutoff 48, four UInt32 at 52...67; stride 80
+    // (SIMD3<Float> and Metal's float3 are both 16-byte aligned).
 }
 
 /// Per-body meshlet data uploaded to GPU.
@@ -41,7 +38,6 @@ struct MeshletBuffers {
     let descriptorBuffer: MTLBuffer  // MeshletDescriptor per meshlet
     let vertexIndexBuffer: MTLBuffer  // UInt32: global vertex indices (meshlet-local → global)
     let triangleIndexBuffer: MTLBuffer  // UInt8: meshlet-local triangle indices (3 per tri)
-    let faceIndexBuffer: MTLBuffer  // Int32: per-triangle face index for picking
     let meshletCount: Int
 }
 
@@ -53,29 +49,26 @@ enum MeshletBuilder {
     /// - Parameters:
     ///   - vertexData: Interleaved vertex data (stride 6 floats)
     ///   - indices: Triangle index buffer
-    ///   - faceIndices: Per-triangle face index
     ///   - device: Metal device for buffer allocation
-    /// - Returns: MeshletBuffers or nil if mesh is empty
+    /// - Returns: MeshletBuffers or nil if mesh is empty. Needs only the mesh: bodies without
+    ///   `faceIndices` get meshlets too (#161).
     static func build(
         vertexData: [Float],
         indices: [UInt32],
-        faceIndices: [Int32],
         device: MTLDevice
     ) -> MeshletBuffers? {
         let triangleCount = indices.count / 3
-        guard triangleCount > 0, faceIndices.count >= triangleCount else { return nil }
+        guard triangleCount > 0 else { return nil }
 
         var meshlets: [MeshletDescriptor] = []
         var allVertexIndices: [UInt32] = []  // Global vertex indices
         var allTriangleIndices: [UInt8] = []  // Meshlet-local triangle indices
-        var allFaceIndices: [Int32] = []  // Per-triangle face index
 
         // Greedy meshlet construction
         var usedTriangles = [Bool](repeating: false, count: triangleCount)
         var currentVertices: [UInt32] = []  // Global vertex indices in current meshlet
         var vertexMap: [UInt32: UInt8] = [:]  // Global → local index
         var currentTriangles: [(UInt8, UInt8, UInt8)] = []
-        var currentFaceIndices: [Int32] = []
 
         func flushMeshlet() {
             guard !currentTriangles.isEmpty else { return }
@@ -124,8 +117,7 @@ enum MeshletBuilder {
                 vertexOffset: UInt32(allVertexIndices.count),
                 vertexCount: UInt32(currentVertices.count),
                 triangleOffset: UInt32(allTriangleIndices.count / 3),
-                triangleCount: UInt32(currentTriangles.count),
-                faceIndexFirst: currentFaceIndices.first ?? 0
+                triangleCount: UInt32(currentTriangles.count)
             )
             meshlets.append(desc)
 
@@ -133,12 +125,10 @@ enum MeshletBuilder {
             for (a, b, c) in currentTriangles {
                 allTriangleIndices.append(contentsOf: [a, b, c])
             }
-            allFaceIndices.append(contentsOf: currentFaceIndices)
 
             currentVertices.removeAll(keepingCapacity: true)
             vertexMap.removeAll(keepingCapacity: true)
             currentTriangles.removeAll(keepingCapacity: true)
-            currentFaceIndices.removeAll(keepingCapacity: true)
         }
 
         func canAddTriangle(_ i0: UInt32, _ i1: UInt32, _ i2: UInt32) -> Bool {
@@ -173,7 +163,6 @@ enum MeshletBuilder {
             let l1 = addVertex(i1)
             let l2 = addVertex(i2)
             currentTriangles.append((l0, l1, l2))
-            currentFaceIndices.append(faceIndices[t])
             usedTriangles[t] = true
         }
         flushMeshlet()
@@ -210,19 +199,10 @@ enum MeshletBuilder {
             )
         else { return nil }
 
-        guard
-            let fiBuf = device.makeBuffer(
-                bytes: allFaceIndices,
-                length: allFaceIndices.count * MemoryLayout<Int32>.size,
-                options: .storageModeShared
-            )
-        else { return nil }
-
         return MeshletBuffers(
             descriptorBuffer: descBuf,
             vertexIndexBuffer: viBuf,
             triangleIndexBuffer: tiBuf,
-            faceIndexBuffer: fiBuf,
             meshletCount: meshlets.count
         )
     }

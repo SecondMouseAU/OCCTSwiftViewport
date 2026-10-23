@@ -1771,16 +1771,14 @@ kernel void brdf_integration(
 // MARK: - Hardware Tessellation (PN Triangles)
 // =====================================================================
 
-// Per-patch data: 10 Bezier control points + 3 corner normals + face index
+// Per-patch data: 10 Bezier control points + 3 corner normals.
 // Uses packed_float3 (12 bytes, alignment 4) to avoid float3's 16-byte padding.
-// Total: 13 * 12 + 4 + 4 = 164 bytes per patch.
+// Total: 13 * 12 = 156 bytes per patch — TessellationManager.patchStride must match.
 struct PNPatchData {
     packed_float3 b300, b030, b003;           // Corner positions
     packed_float3 b210, b120, b201, b102, b021, b012; // Edge control points
     packed_float3 b111;                        // Center control point
     packed_float3 n200, n020, n002;           // Corner normals
-    int32_t faceIndex;                         // B-Rep face index (not read by the pick pass)
-    float _pad;                                // Alignment to 168? No — 164 is 4-aligned
 };
 
 // Tessellation factor parameters
@@ -1801,8 +1799,7 @@ kernel void compute_pn_patches(
     device float*       vertices     [[buffer(0)]],  // stride 6: px,py,pz,nx,ny,nz
     device uint32_t*    indices      [[buffer(1)]],  // 3 per triangle
     device PNPatchData* patches      [[buffer(2)]],  // output: 1 per triangle
-    device int32_t*     faceIndices  [[buffer(3)]],  // per-triangle face index
-    constant uint&      triangleCount [[buffer(4)]],
+    constant uint&      triangleCount [[buffer(3)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= triangleCount) return;
@@ -1892,7 +1889,6 @@ kernel void compute_pn_patches(
     patch.b021 = b021; patch.b012 = b012;
     patch.b111 = b111;
     patch.n200 = n0; patch.n020 = n1; patch.n002 = n2;
-    patch.faceIndex = faceIndices[gid];
     patches[gid] = patch;
 }
 
@@ -2131,8 +2127,6 @@ struct MeshletDesc {
     uint   vertexCount;
     uint   triangleOffset;
     uint   triangleCount;
-    int    faceIndexFirst;
-    int    _pad0, _pad1, _pad2;
 };
 
 // Payload passed from object shader to mesh shader
