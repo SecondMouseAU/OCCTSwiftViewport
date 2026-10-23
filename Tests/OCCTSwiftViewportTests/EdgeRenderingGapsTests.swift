@@ -12,6 +12,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import Metal
 import SwiftUI
 import Testing
 import UniformTypeIdentifiers
@@ -108,6 +109,36 @@ struct ArcQuadEdgeVertexTests {
             EdgeUniforms(
                 uniforms: uniforms, configuration: config, viewportSize: SIMD2(10, 10), width: 9
             ).edgeParams.x == 9)
+    }
+}
+
+// MARK: - Arc buffer pool
+
+@Suite("Per-frame buffer pool")
+struct FrameBufferPoolTests {
+
+    @Test("A buffer still in flight is never handed out again until it is released")
+    func inFlightBuffersAreNotReused() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let pool = FrameBufferPool(device: device)
+        let first = try #require(pool.acquire(byteCount: 64))
+        let second = try #require(pool.acquire(byteCount: 64))
+        #expect(first !== second, "two in-flight frames shared one arc buffer")
+        pool.release(first)
+        let third = try #require(pool.acquire(byteCount: 64))
+        #expect(third === first, "a released buffer was not reused")
+        #expect(pool.allocatedCount == 2)
+    }
+
+    @Test("A released buffer too small for the request is skipped, not overrun")
+    func smallBufferIsSkipped() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let pool = FrameBufferPool(device: device)
+        let small = try #require(pool.acquire(byteCount: 64))
+        pool.release(small)
+        let big = try #require(pool.acquire(byteCount: 64 * 1024))
+        #expect(big !== small)
+        #expect(big.length >= 64 * 1024)
     }
 }
 
@@ -240,6 +271,19 @@ struct EdgeRenderingGapsTests {
             return max(pixels[i], pixels[i + 1], pixels[i + 2]) > 100
         }
         #expect(column.count >= 6, "overlay edge is \(column.count) px thick")
+    }
+
+    @Test("Arc frames take buffers from the pool and return them, so it stays small")
+    func arcBuffersAreRecycled() throws {
+        let pair = try makeLive(bodies: [Self.arcBody()], edge: EdgeLineConfiguration(width: 5))
+        for _ in 0..<12 {
+            _ = pair.renderer.renderHeadlessBGRA(
+                width: Self.size, height: Self.size, backgroundColor: SIMD4(0, 0, 0, 1))
+        }
+        // Line + quad buffers per frame; each headless frame completes before the next, so a
+        // handful of buffers serve every frame instead of one per frame.
+        let allocated = pair.renderer.arcBufferPool.allocatedCount
+        #expect(allocated >= 2 && allocated <= 6, "\(allocated) arc buffers for 12 frames")
     }
 
     // MARK: Pick footprints (L5)

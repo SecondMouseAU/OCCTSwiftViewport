@@ -457,13 +457,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// rebuilt each frame, so picks of those kinds are flagged `isPrimitiveIndexAmbiguous`.
     private var currentAmbiguousKinds: [String: Set<PrimitiveKind>] = [:]
 
-    /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue #48).
+    /// Buffers for the per-frame adaptively-sampled analytic arc edges (issue #48): line
+    /// segments and, with quad expansion, their quad strips.
     ///
-    /// Grown on demand; written CPU-side each frame.
-    private var arcLineBuffer: MTLBuffer?
-
-    /// Quad-strip counterpart of `arcLineBuffer`, filled when edges use quad expansion.
-    private var arcQuadBuffer: MTLBuffer?
+    /// Written CPU-side each frame. Each frame takes buffers no earlier frame still has in flight
+    /// and returns them when its command buffer completes, so the CPU never overwrites arc data
+    /// the GPU is still drawing or picking from. Internal so tests can check reuse.
+    lazy var arcBufferPool = FrameBufferPool(device: device)
 
     /// Drawable pixels per point, updated each live frame from the view.
     ///
@@ -1866,10 +1866,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Adaptively samples each visible body's `arcs` to line segments by their
         // projected size, so circular feature edges stay smooth at any zoom
         // independent of mesh density. Per-arc segment ranges are recorded in
-        // `frameArcDraws` and the data lives in `arcLineBuffer`, so the pick pass
+        // `frameArcDraws` and the data lives in `frameArcLineBuffer`, so the pick pass
         // below re-draws the same segments to the pick texture without re-sampling.
         // With quad expansion on, the same samples are also expanded into quad strips (from
-        // `arcQuadBuffer`, ranges `quadStart`/`quadCount`) so arcs get the configured width and
+        // `frameArcQuadBuffer`, ranges `quadStart`/`quadCount`) so arcs get the configured width and
         // dash pattern like polyline edges, and their pick footprint matches.
         var frameArcDraws:
             [(
@@ -1879,6 +1879,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
         let useQuadArcs = frameEdgeConfig.useQuadExpansion && quadEdgePipeline != nil
         var frameArcQuadBuffer: MTLBuffer?
+        var frameArcLineBuffer: MTLBuffer?
         if !arcBodies.isEmpty {
             let vpSize = SIMD2<Float>(Float(w), Float(h))
             var arcVerts: [Float] = []
@@ -1917,15 +1918,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
 
             if !arcVerts.isEmpty,
-                let arcBuf = ensureArcBuffer(byteCount: arcVerts.count * MemoryLayout<Float>.size)
+                let arcBuf = arcBufferPool.acquire(
+                    byteCount: arcVerts.count * MemoryLayout<Float>.size)
             {
+                arcBufferPool.release(arcBuf, after: commandBuffer)
+                frameArcLineBuffer = arcBuf
                 arcVerts.withUnsafeBytes { raw in
                     arcBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
                 }
                 if useQuadArcs, !arcQuadVerts.isEmpty,
-                    let quadBuf = ensureArcQuadBuffer(
+                    let quadBuf = arcBufferPool.acquire(
                         byteCount: arcQuadVerts.count * MemoryLayout<Float>.size)
                 {
+                    arcBufferPool.release(quadBuf, after: commandBuffer)
                     arcQuadVerts.withUnsafeBytes { raw in
                         quadBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
                     }
@@ -2442,7 +2447,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     }
 
                     // Arc pick pass (issue #48): re-draw this frame's adaptively
-                    // sampled arc segments (from `arcLineBuffer`, ranges in
+                    // sampled arc segments (from `frameArcLineBuffer`, ranges in
                     // `frameArcDraws`) to the pick texture. Each arc is drawn
                     // separately so the fragment can stamp the ARC index (kind=1).
                     if let quadPickPipeline, !frameArcDraws.isEmpty,
@@ -2476,7 +2481,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 vertexCount: d.quadCount)
                         }
                     } else if let pickArcPipeline, !frameArcDraws.isEmpty,
-                        let arcBuf = arcLineBuffer
+                        let arcBuf = frameArcLineBuffer
                     {
                         pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
                         pickEncoder.setRenderPipelineState(pickArcPipeline)
@@ -2935,19 +2940,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     }
 
     // MARK: - Buffer Management
-
-    /// Returns the reused arc-line buffer, growing it if needed.
-    private func ensureArcBuffer(byteCount: Int) -> MTLBuffer? {
-        if let b = arcLineBuffer, b.length >= byteCount { return b }
-        arcLineBuffer = device.makeBuffer(length: max(byteCount, 4096), options: .storageModeShared)
-        return arcLineBuffer
-    }
-
-    private func ensureArcQuadBuffer(byteCount: Int) -> MTLBuffer? {
-        if let b = arcQuadBuffer, b.length >= byteCount { return b }
-        arcQuadBuffer = device.makeBuffer(length: max(byteCount, 4096), options: .storageModeShared)
-        return arcQuadBuffer
-    }
 
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation

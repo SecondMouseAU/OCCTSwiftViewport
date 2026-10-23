@@ -3,6 +3,7 @@
 //
 // GPU buffer construction shared by ViewportRenderer and OffscreenRenderer.
 
+import Foundation
 @preconcurrency import Metal
 import simd
 
@@ -219,5 +220,52 @@ enum RendererSharedBuffers {
                 options: .storageModeShared
             )
         }
+    }
+}
+
+// MARK: - Per-frame buffer pool
+
+/// Shared-storage buffers for data the CPU rewrites every frame, such as sampled arcs.
+///
+/// A buffer handed out by `acquire(byteCount:)` stays reserved until `release(_:)`, which the
+/// renderer calls from the frame's command-buffer completion handler. So the CPU never rewrites a
+/// buffer the GPU may still be reading, however many frames are in flight. Released buffers are
+/// reused, so a steady scene settles at one buffer per frame in flight.
+final class FrameBufferPool: @unchecked Sendable {
+
+    private let device: MTLDevice
+    private let lock = NSLock()
+    private var free: [MTLBuffer] = []
+    private(set) var allocatedCount = 0
+
+    init(device: MTLDevice) {
+        self.device = device
+    }
+
+    /// A buffer of at least `byteCount` bytes that no in-flight frame is using.
+    func acquire(byteCount: Int) -> MTLBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let index = free.firstIndex(where: { $0.length >= byteCount }) {
+            return free.remove(at: index)
+        }
+        guard
+            let buffer = device.makeBuffer(
+                length: max(byteCount, 4096), options: .storageModeShared)
+        else { return nil }
+        allocatedCount += 1
+        return buffer
+    }
+
+    /// Returns `buffer` to the pool once the GPU has finished with it.
+    func release(_ buffer: MTLBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        free.append(buffer)
+    }
+
+    /// Releases `buffer` when `commandBuffer` completes.
+    func release(_ buffer: MTLBuffer, after commandBuffer: MTLCommandBuffer) {
+        commandBuffer.addCompletedHandler { [self] _ in release(buffer) }
     }
 }
