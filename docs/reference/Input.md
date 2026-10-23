@@ -383,7 +383,7 @@ public enum ViewResetTrigger: Sendable, Hashable {
 
 | Case | Fires on |
 |---|---|
-| `.keyCombination(key:modifiers:)` | `key` pressed with exactly `modifiers` held. `key` is the unshifted character and compares case-insensitively, so Shift+H is `.keyCombination(key: "h", modifiers: [.shift])`. On macOS, `MetalViewportView` handles these itself: key equivalents (combinations with ⌘) work while the viewport's window is key, and other keys work while the viewport has focus. The view claims keys only when a key trigger is configured. On other platforms, forward keys to `ViewportController.handleKeyCombination(_:modifiers:)`. |
+| `.keyCombination(key:modifiers:)` | `key` pressed with exactly `modifiers` held. `key` is the unshifted character and compares case-insensitively, so Shift+H is `.keyCombination(key: "h", modifiers: [.shift])`. On macOS, `MetalViewportView` handles these itself. Key equivalents (combinations with ⌘) work while the viewport's window is key. Other keys work while the viewport has focus, and when such a trigger is configured, clicking the viewport makes it first responder. The view claims keys only when a key trigger is configured. On other platforms, forward keys to `ViewportController.handleKeyCombination(_:modifiers:)`. |
 | `.doubleClick(modifiers:)` | A macOS double-click with exactly `modifiers` held. Use `[]` for a plain double-click. |
 | `.doubleTap` | An iOS / visionOS double-tap. |
 

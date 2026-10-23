@@ -46,6 +46,10 @@ import SwiftUI
         ///
         /// Returns `true` if handled. `nil` (the default) leaves every key to the responder chain.
         var onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)?
+        /// Whether a click makes this view first responder (off by default).
+        ///
+        /// Plain (non-⌘) key triggers then reach `keyDown` without relying on implicit focus.
+        var takesKeyFocusOnClick = false
         /// Incremental drag delta in points (y down) since the previous event.
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         /// Drag finished; velocity in points/second (y down).
@@ -97,6 +101,9 @@ import SwiftUI
         override func mouseDown(with event: NSEvent) {
             let locationInView = convert(event.locationInWindow, from: nil)
             let viewSize = bounds.size
+            if takesKeyFocusOnClick, window?.firstResponder !== self {
+                window?.makeFirstResponder(self)
+            }
             onMouseDown?(
                 locationInView, viewSize, event.clickCount,
                 ViewportModifierKeys(event.modifierFlags))
@@ -195,6 +202,7 @@ import SwiftUI
         var onScrollWheel: ((CGFloat, CGPoint, CGSize) -> Void)?
         var onMouseDown: ((CGPoint, CGSize, Int, ViewportModifierKeys) -> Void)?
         var onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)?
+        var takesKeyFocusOnClick = false
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onDragEnd: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onMagnify: ((CGFloat, CGPoint, CGSize) -> Void)?
@@ -214,6 +222,7 @@ import SwiftUI
             view.onScrollWheel = onScrollWheel
             view.onMouseDown = onMouseDown
             view.onKeyCombination = onKeyCombination
+            view.takesKeyFocusOnClick = takesKeyFocusOnClick
             install(on: view)
             return view
         }
@@ -224,6 +233,7 @@ import SwiftUI
                 scView.onScrollWheel = onScrollWheel
                 scView.onMouseDown = onMouseDown
                 scView.onKeyCombination = onKeyCombination
+                scView.takesKeyFocusOnClick = takesKeyFocusOnClick
                 install(on: scView)
             }
         }

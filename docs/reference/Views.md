@@ -23,7 +23,7 @@ Two types form the public entry point to the viewport: `MetalViewportView` is th
 
 ## MetalViewportView
 
-A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap; on macOS: mouse drag, scroll-wheel zoom, trackpad magnify/rotate, double-click and configured reset key combinations, all handled natively by the `MTKView` subclass. Double-taps, double-clicks and keys do nothing unless `GestureConfiguration.resetViewTriggers`, `doubleTap` or `doubleClick` opt in. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
+A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap; on macOS: mouse drag, scroll-wheel zoom, trackpad magnify/rotate, double-click and configured reset key combinations, all handled natively by the `MTKView` subclass. Double-taps, double-clicks and keys do nothing unless `GestureConfiguration.resetViewTriggers`, `doubleTap` or `doubleClick` opt in. On iOS / visionOS the double-tap recognizer is attached only when something uses it, so single-tap picks are not held back waiting for a possible second tap. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
 
 Built-in overlays that the view manages automatically:
 
@@ -667,20 +667,28 @@ Removes all committed measurements from `measurements` and clears any in-progres
 
 ### Keyboard
 
-#### `handleKeyPress(_:)`
+#### `handleKeyPress(_:modifiers:)`
 
 ```swift
-public func handleKeyPress(_ key: Character)
+@discardableResult
+public func handleKeyPress(_ key: Character, modifiers: ViewportModifierKeys) -> Bool
+public func handleKeyPress(_ key: Character)  // same, with no modifiers held
 ```
 
-Processes a single keystroke. Checks `StandardView.keyboardShortcut` and `DisplayMode.keyboardShortcut`; the first match executes the corresponding action. Wire this to a `onKeyPress` modifier or a `Button` keyboard shortcut handler.
+Processes a single keystroke. Checks `StandardView.keyboardShortcut` and `DisplayMode.keyboardShortcut`; the first match executes the corresponding action and returns `true`. The shortcuts are bare keys, so a press with ⌘, ⌃ or ⌥ held is ignored and returns `false`. App shortcuts such as ⌘F or ⌘W therefore pass through instead of switching to the front view or wireframe. Wire this to an `onKeyPress` modifier, passing the modifiers along.
 
 ```swift
 .onKeyPress { press in
-    controller.handleKeyPress(press.characters.first ?? Character(""))
-    return .handled
+    var modifiers: ViewportModifierKeys = []
+    if press.modifiers.contains(.command) { modifiers.insert(.command) }
+    if press.modifiers.contains(.control) { modifiers.insert(.control) }
+    if press.modifiers.contains(.option) { modifiers.insert(.option) }
+    let key = press.characters.first ?? " "
+    return controller.handleKeyPress(key, modifiers: modifiers) ? .handled : .ignored
 }
 ```
+
+Previously the single-argument form was the only one, so ⌘F reached it as a bare "f" and switched to the front view.
 
 ---
 

@@ -136,7 +136,7 @@ Menu("Views") {
 | Left | `l` |
 | Isometric (front-right) | `i` |
 
-These are automatically handled by `ViewportController.handleKeyPress(_:)`.
+Forward key presses to `ViewportController.handleKeyPress(_:modifiers:)` to run them. A press with ⌘, ⌃ or ⌥ held is ignored, so app shortcuts such as ⌘F still reach the app.
 
 ### Building a CameraState directly from a StandardView
 

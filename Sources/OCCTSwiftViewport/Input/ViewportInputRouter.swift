@@ -47,6 +47,28 @@ extension ViewportController {
         }
     }
 
+    /// Whether a key trigger without ⌘ is configured.
+    ///
+    /// Plain keys reach only the first responder, so the macOS view then takes focus when
+    /// clicked; ⌘ combinations arrive as key equivalents whatever has focus.
+    var wantsViewportKeyFocus: Bool {
+        configuration.gestureConfiguration.resetViewTriggers.contains {
+            if case .keyCombination(_, let modifiers) = $0 { return !modifiers.contains(.command) }
+            return false
+        }
+    }
+
+    /// Whether anything uses a double-tap.
+    ///
+    /// That is a `.doubleTap` reset trigger, or a `doubleTap` action the router acts on. When
+    /// nothing does, the touch view leaves the double-tap recognizer off,
+    /// so single-tap picks are not held back waiting for a possible second tap.
+    var usesDoubleTap: Bool {
+        let gestures = configuration.gestureConfiguration
+        return gestures.resetsViewOnDoubleTap
+            || gestures.doubleTap == .focusOnPoint || gestures.doubleTap == .resetView
+    }
+
     /// `dispatch(_:)` with the modifier keys held during a tap.
     ///
     /// `ViewportInputEvent.tap` does not carry modifiers. The macOS view passes them so `.doubleClick(modifiers:)` triggers match.

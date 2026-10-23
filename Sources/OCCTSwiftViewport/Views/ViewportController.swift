@@ -719,12 +719,29 @@ extension ViewportController {
 
 extension ViewportController {
     /// Handles keyboard shortcuts for standard views and display modes.
+    ///
+    /// Equivalent to `handleKeyPress(_:modifiers:)` with no modifiers held. Prefer that overload
+    /// when the key event carries modifiers, so ⌘F or ⌘W are not taken as "f" or "w".
     public func handleKeyPress(_ key: Character) {
+        handleKeyPress(key, modifiers: [])
+    }
+
+    /// Handles keyboard shortcuts for standard views and display modes.
+    ///
+    /// The shortcuts are bare keys, so a press with ⌘, ⌃ or ⌥ held is ignored: ⌘F and ⌘W stay
+    /// with the app instead of switching to the front view or wireframe. Shift is allowed through,
+    /// although the shortcuts are lowercase and match case-sensitively.
+    ///
+    /// - Returns: `true` if the key ran a shortcut.
+    @discardableResult
+    public func handleKeyPress(_ key: Character, modifiers: ViewportModifierKeys) -> Bool {
+        guard modifiers.isDisjoint(with: [.command, .control, .option]) else { return false }
+
         // Standard view shortcuts
         for view in StandardView.allCases {
             if view.keyboardShortcut == key {
                 goToStandardView(view)
-                return
+                return true
             }
         }
 
@@ -732,8 +749,9 @@ extension ViewportController {
         for mode in DisplayMode.allCases {
             if mode.keyboardShortcut == key {
                 displayMode = mode
-                return
+                return true
             }
         }
+        return false
     }
 }

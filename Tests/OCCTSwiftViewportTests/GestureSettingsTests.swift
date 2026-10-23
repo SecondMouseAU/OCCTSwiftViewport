@@ -206,6 +206,53 @@ struct GestureSettingsTests {
         #expect(isAtTop(vc))
     }
 
+    @Test("Plain-key triggers ask for key focus; ⌘ combinations do not need it")
+    func keyFocusOnlyForPlainKeys() {
+        #expect(!controller().wantsViewportKeyFocus)
+        #expect(
+            !resettable([.keyCombination(key: "h", modifiers: [.command])]).wantsViewportKeyFocus)
+        #expect(resettable([.keyCombination(key: "h", modifiers: [])]).wantsViewportKeyFocus)
+        #expect(resettable([.keyCombination(key: "h", modifiers: [.option])]).wantsViewportKeyFocus)
+    }
+
+    @Test("The double-tap recognizer is wanted only when something uses it")
+    func doubleTapRecognizerOnlyWhenUsed() {
+        #expect(!controller().usesDoubleTap)
+        #expect(!resettable([.doubleClick(modifiers: [])]).usesDoubleTap)
+        #expect(!controller(GestureConfiguration(doubleTap: .orbit)).usesDoubleTap)
+        #expect(resettable([.doubleTap]).usesDoubleTap)
+        #expect(controller(GestureConfiguration(doubleTap: .focusOnPoint)).usesDoubleTap)
+        #expect(controller(GestureConfiguration(doubleTap: .resetView)).usesDoubleTap)
+    }
+
+    // MARK: - handleKeyPress
+
+    @Test("handleKeyPress ignores ⌘, ⌃ and ⌥ so app shortcuts like ⌘W pass through")
+    func keyPressIgnoresCommandKeys() {
+        let vc = controller()
+        let mode = vc.displayMode
+        for modifiers: ViewportModifierKeys in [
+            [.command], [.control], [.option], [.command, .shift],
+        ] {
+            #expect(!vc.handleKeyPress("w", modifiers: modifiers))
+            #expect(!vc.handleKeyPress("f", modifiers: modifiers))
+        }
+        #expect(vc.displayMode == mode)
+        #expect(!vc.cameraController.isAnimating)
+    }
+
+    @Test("handleKeyPress still runs bare-key shortcuts")
+    func keyPressBareKeys() {
+        let vc = controller()
+        #expect(vc.handleKeyPress("w", modifiers: []))
+        #expect(vc.displayMode == .wireframe)
+        vc.handleKeyPress("s")  // the modifier-less overload
+        #expect(vc.displayMode == .shaded)
+        #expect(vc.handleKeyPress("f", modifiers: [.shift]))
+        #expect(vc.cameraController.isAnimating)
+        #expect(!vc.handleKeyPress("q", modifiers: []))
+    }
+
     @Test("With no key trigger, keys are left alone")
     func noKeyTriggerNoKeys() {
         let vc = controller()
@@ -383,6 +430,27 @@ struct GestureSettingsTests {
                     with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
                     windowNumber: 0, context: nil, characters: characters,
                     charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 4))
+        }
+
+        @Test("macOS: a click takes key focus only when asked to")
+        func macClickTakesFocusWhenAsked() throws {
+            for takesFocus in [false, true] {
+                let window = NSWindow(
+                    contentRect: CGRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled],
+                    backing: .buffered, defer: true)
+                let view = ScrollCaptureMTKView()
+                window.contentView = view
+                window.makeFirstResponder(nil)
+                view.takesKeyFocusOnClick = takesFocus
+                let event = try #require(
+                    NSEvent.mouseEvent(
+                        with: .leftMouseDown, location: CGPoint(x: 5, y: 5), modifierFlags: [],
+                        timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, clickCount: 1, pressure: 1))
+                view.mouseDown(with: event)
+                view.mouseUp(with: event)
+                #expect((window.firstResponder === view) == takesFocus)
+            }
         }
 
         @Test("macOS: the view ignores keys unless a key handler is installed")

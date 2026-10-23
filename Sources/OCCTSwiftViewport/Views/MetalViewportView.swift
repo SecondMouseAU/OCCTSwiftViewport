@@ -94,7 +94,11 @@ public struct MetalViewportView: View {
                                     handlePickAt(value.location, viewSize: geometry.size)
                                 }
                         )
-                        .gesture(doubleTapGesture(viewSize: geometry.size))
+                        // Only when something uses it: an attached double-tap holds back every
+                        // single-tap pick until the second-tap window has passed.
+                        .gesture(
+                            doubleTapGesture(viewSize: geometry.size),
+                            including: controller.usesDoubleTap ? .all : .subviews)
                     #endif
 
                 if controller.showViewCube {
@@ -333,6 +337,7 @@ public struct MetalViewportView: View {
                 onScrollWheel: onScrollWheel,
                 onMouseDown: onMouseDown,
                 onKeyCombination: onKeyCombination,
+                takesKeyFocusOnClick: controller.wantsViewportKeyFocus,
                 onDrag: onDrag,
                 onDragEnd: onDragEnd,
                 onMagnify: onMagnify,
