@@ -714,7 +714,7 @@ Controls the tessellation tier used by `ViewportRenderer` and, through `Offscree
 |---|---|
 | `.standard` | Finer CPU-side tessellation combined with crease-aware normal smoothing. No GPU hardware tessellation. Runs on all supported hardware. |
 | `.enhanced` | Everything in `.standard`, plus GPU hardware tessellation using PN triangles (Phong tessellation). Requires an Apple3+ GPU; falls back to `.standard` if the tessellation pipelines can't be built. |
-| `.maximum` | Everything in `.enhanced`, plus mesh shaders with per-meshlet culling. Requires an Apple9 GPU (M3 / A17 Pro or later); falls back to `.enhanced` without one, or if a mesh-shader pipeline fails to build. |
+| `.maximum` | Everything in `.enhanced`, plus mesh shaders with per-meshlet culling. Requires an Apple9 GPU (M3 / A17 Pro or later); falls back to `.enhanced` without one, or if the mesh-shader surface pipeline fails to build. If only the shadow, depth-prepass or pick mesh pipeline fails, the renderer stays on `.maximum`, draws that pass through the vertex pipeline, and logs which pipeline failed. |
 
 **Which bodies take which path.** Every body with an interleaved mesh (`vertexData` + `indices`) is tessellated at `.enhanced` and drawn through meshlets at `.maximum`, whether or not it carries `faceIndices`. Before #161 both paths required `faceIndices`, so STL/OBJ imports and the `Primitives` factories silently stayed on the standard path. Bodies built with `ViewportBody.directMesh(...)` always take the standard direct-mesh path: they bring their own normals and get no PN refinement or meshlets. Overlay-layer bodies always draw through the standard pipelines.
 
