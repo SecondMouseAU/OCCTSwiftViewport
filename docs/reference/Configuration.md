@@ -774,6 +774,8 @@ Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled ea
 
 Quad edges are shaded like native ones: `ViewportController.edgeIntensity` (or `OffscreenRenderOptions.edgeIntensity`) dims and depth-fades them, and they are depth-biased toward the viewer so an edge lying on a face is not lost to it. The bias grows with the line width: each edge vertex is pulled toward the viewer by twice (half the width + 1 px), measured as world distance per pixel at its depth, so a wide edge keeps its full width on faces tilted up to about 63° from the view plane. Only a face less than that distance in front of an edge can let it show through.
 
+Native edges (`useQuadExpansion` off) are biased the same way, by a fixed 0.6% of the NDC height (about 3 px at 1000 px tall) in world units at each vertex's depth, because the shader has no viewport size. Neither path uses a constant NDC depth offset, whose world-space size depends on the near/far range: under a wide range it let hidden back edges show through faces (issue #157). Neither bias can push an edge past the near plane.
+
 With `PickingConfiguration.isEnabled`, edge and arc picks cover the same width as the drawn edge (at least 1 pt), so a wide edge is clickable across its whole width. Dash gaps are pickable too. See [Picking](Picking.md#pick-footprints).
 
 | Property | Type | Default | Notes |

@@ -172,7 +172,10 @@ struct DirectMeshRenderingTests {
                           - (Int(direct[p]) + Int(direct[p + 1]) + Int(direct[p + 2]))
             if lostLight > 30 { shadowedPixels += 1 }
         }
-        #expect(shadowedPixels > 100,
+        // The cast shadow is ~47 px at 160x160. This threshold was 100 until #156, when ~107
+        // more px along the ground's front edge also counted: that edge sat on the near plane,
+        // which then had no margin, and rendered differently with shadows on and off.
+        #expect(shadowedPixels > 30,
                 "expected a materially-sized cast shadow on the receiver (\(shadowedPixels) px in \(w)×\(h)) — direct body may not be casting")
     }
 

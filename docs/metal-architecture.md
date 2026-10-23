@@ -358,8 +358,11 @@ vertex float4 wireframe_vertex(
 ) {
     float4 worldPos = u.modelMatrix * float4(position, 1.0);
     float4 clipPos = u.projectionMatrix * u.viewMatrix * worldPos;
-    // Depth bias: pull edges slightly toward camera to prevent z-fighting
-    clipPos.z -= 0.0001 * clipPos.w;
+    // Depth bias: pull the vertex toward the viewer along its own view ray by a fixed
+    // fraction of the NDC height, in world units at this depth (#157). A constant NDC
+    // offset (the original `clipPos.z -= 0.0001 * clipPos.w`) spans whole world units when
+    // the near/far range is wide and lets hidden edges show through faces.
+    // ... see Shaders.metal `wireframe_vertex` for the full version.
     return clipPos;
 }
 

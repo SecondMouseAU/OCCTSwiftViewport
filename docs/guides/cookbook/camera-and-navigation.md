@@ -58,6 +58,16 @@ let proj = cameraState.projectionMatrix(
 
 The matrix is perspective or orthographic depending on `isOrthographic`. Both use Metal NDC (z in [0, 1]).
 
+Fixed planes like these waste depth precision on CAD scenes. Fit them to the scene instead, as the built-in renderers do on every frame:
+
+```swift
+let (near, far) = cameraState.clipPlanes(sceneBounds: sceneBoundingBox)
+let proj = cameraState.projectionMatrix(
+    aspectRatio: Float(viewSize.width / viewSize.height), near: near, far: far)
+```
+
+`near` sits 1% in front of the scene's bounding box, so a face square-on to the camera at the front of the box (a top view of a plate, a flat sketch) is never clipped by it.
+
 ---
 
 ## Fitting the camera to geometry
