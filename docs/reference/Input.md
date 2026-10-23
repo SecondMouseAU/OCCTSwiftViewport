@@ -9,7 +9,7 @@ These types form the platform-neutral input pipeline for OCCTSwiftViewport. Nati
 
 ## Topics
 
-- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [View reset](#view-reset) · [GestureAction](#gestureaction)
+- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [DragRotationConvention](#dragrotationconvention) · [View reset](#view-reset) · [GestureAction](#gestureaction)
 
 ---
 
@@ -226,7 +226,7 @@ Bridges UIKit key-modifier flags into the portable representation. Maps `.shift`
 public struct GestureConfiguration: Sendable
 ```
 
-Configuration for gesture handling in the viewport. Controls sensitivity, orbit-inversion flags, inertia behaviour, and the mapping from input gestures / modifier keys to `GestureAction` values. Assigned to `ViewportConfiguration.gestureConfiguration`.
+Configuration for gesture handling in the viewport. Controls sensitivity, drag direction (`dragRotation` plus the per-axis invert flags), inertia behaviour, and the mapping from input gestures / modifier keys to `GestureAction` values. Assigned to `ViewportConfiguration.gestureConfiguration`.
 
 ---
 
@@ -290,14 +290,29 @@ Starting point for visionOS spatial (indirect pinch + look) input in a window or
 
 ---
 
-### Orbit-inversion flags
+### Drag direction: `dragRotation`
 
 ```swift
-public var invertOrbitHorizontal: Bool  // default false
-public var invertOrbitVertical: Bool    // default false
+public var dragRotation: DragRotationConvention  // default .rotateObject
+public var invertOrbitHorizontal: Bool           // default false
+public var invertOrbitVertical: Bool             // default false
+public var orbitDragSigns: SIMD2<Float> { get }  // (1, 1) by default
 ```
 
-When `false` (default) a left-drag rotates the scene counter-clockwise — the camera orbits right around the model. Set `invertOrbitHorizontal = true` for "grab the model and drag it" (object follows the pointer). The same logic applies vertically for `invertOrbitVertical`.
+`dragRotation` sets which way every drag that resolves to `.orbit` turns the view: the iOS / visionOS one-finger drag (and the two-finger drag when bound to `.orbit`), the macOS mouse drag, the navigation cube, and the release momentum of each.
+
+| `DragRotationConvention` | Drag right | Drag up |
+|---|---|---|
+| `.rotateObject` (default) | the model's near side moves right, with the finger | the near side moves up, with the finger |
+| `.orbitCamera` | the camera moves right around the pivot, so the model turns left | the camera moves up, so the near side moves down |
+
+`.rotateObject` feels as if the finger is turning the object directly. It holds for every `RotationStyle`: turntable (the default), arcball, and first-person. In this library `.firstPerson` keeps the camera at `pivot + distance` along its back vector, so it also turns about the pivot and differs from turntable only in how it composes yaw and pitch; `.rotateObject` gives it the touch "drag the scene" feel, and `.orbitCamera` the desktop mouse-look feel (drag right, look right).
+
+Every preset uses `.rotateObject`. Blender's middle-mouse orbit and Fusion 360's orbit both carry the model's near side with the pointer on both axes, as do Shapr3D, Onshape and SolidWorks.
+
+`invertOrbitHorizontal` and `invertOrbitVertical` stay as per-axis flips applied on top of the convention. `orbitDragSigns` is the result: `(1, 1)` for `.rotateObject`, `(-1, -1)` for `.orbitCamera`, with each set flag negating its axis. `CameraController.orbit(deltaX:deltaY:)` itself turns the model with the drag, so `ViewportController` multiplies the drag delta and the release velocity by these signs before passing them on.
+
+> **Changed default.** Before `dragRotation` existed, the horizontal axis moved the camera (the model turned against the finger) while the vertical axis turned the model with it. Both axes now turn the model with the finger. An app that set `invertOrbitHorizontal = true` to get the object-follows-finger feel should drop it, since the flag now reverses the new default; set `dragRotation = .orbitCamera` to get camera-orbit on both axes.
 
 ---
 
@@ -422,6 +437,7 @@ public init(
     zoomSensitivity:      Float         = 1.0,
     scrollZoomSensitivity: Float        = 0.25,
     minPanSpeed:          Float         = 0.001,
+    dragRotation:         DragRotationConvention = .rotateObject,
     invertOrbitHorizontal: Bool         = false,
     invertOrbitVertical:   Bool         = false,
     enableInertia:        Bool          = true,
@@ -444,9 +460,9 @@ public init(
 Creates a gesture configuration. All parameters are optional; every field has a sensible default so you can pass only the fields you want to change.
 
 ```swift
-// Orbit-invert for users who prefer "grab-and-drag" feel
+// Camera-orbit drag on both axes instead of the default rotate-object
 var config = ViewportConfiguration()
-config.gestureConfiguration = GestureConfiguration(invertOrbitHorizontal: true)
+config.gestureConfiguration = GestureConfiguration(dragRotation: .orbitCamera)
 ```
 
 ---
@@ -463,6 +479,24 @@ Resolves the `GestureAction` for a pointer drag given the active modifier keys. 
 let action = config.gestureConfiguration.dragAction(for: ViewportModifierKeys([.shift]))
 // action == .pan  (with .default preset)
 ```
+
+---
+
+## DragRotationConvention
+
+```swift
+public enum DragRotationConvention: String, CaseIterable, Sendable {
+    case rotateObject   // default
+    case orbitCamera
+}
+```
+
+How an orbiting drag maps onto the view; set it with `GestureConfiguration.dragRotation`. The two cases differ only in sign.
+
+- **`rotateObject`** turns the model under the finger: a drag right carries its near side right, a drag up carries it up.
+- **`orbitCamera`** moves the camera around the pivot, so the model appears to turn against the drag on both axes.
+
+Both hold in every `RotationStyle`. See [Drag direction](#drag-direction-dragrotation) for the presets, first-person behaviour and the invert flags.
 
 ---
 

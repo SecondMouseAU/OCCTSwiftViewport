@@ -89,7 +89,8 @@ gestures.zoomSensitivity = 1.2            // pinch / drag-zoom exponent (default
 gestures.scrollZoomSensitivity = 0.4      // scroll-wheel zoom (default 0.25)
 gestures.enableInertia = true             // momentum after release (default true)
 gestures.dampingFactor = 0.1             // 0 = frictionless, 1 = instant stop (default 0.1)
-gestures.invertOrbitHorizontal = true     // "grab model" feel vs "orbit camera" (default false)
+gestures.dragRotation = .orbitCamera      // move the camera, not the model (default .rotateObject)
+gestures.invertOrbitHorizontal = false    // flip one axis on top of dragRotation (default false)
 gestures.invertOrbitVertical = false      // (default false)
 
 // Every gesture can be remapped; `.none` disables it.
@@ -104,6 +105,12 @@ let controller = ViewportController(configuration: config)
 ```
 
 To change sensitivity on a live controller, set the matching property on `controller.cameraController` (for example `orbitSensitivity`). The action mappings are read from the configuration and cannot change after init.
+
+### Orbit direction
+
+By default a drag turns the model as if the finger were holding it (`dragRotation = .rotateObject`): drag right and the model's near side moves right, drag up and it moves up. This applies to the iOS one-finger drag, the macOS mouse drag, the navigation cube and the release momentum, in every `RotationStyle`. Every preset uses it, matching Blender's and Fusion 360's orbit. Set `.orbitCamera` to move the camera around the pivot instead, which turns the model against the drag on both axes. `invertOrbitHorizontal` / `invertOrbitVertical` flip one axis on top of either.
+
+Earlier releases mixed the two: a horizontal drag orbited the camera while a vertical drag turned the model. If your app set `invertOrbitHorizontal = true` to work around that, remove it. See [Drag direction](../../reference/Input.md#drag-direction-dragrotation).
 
 ---
 

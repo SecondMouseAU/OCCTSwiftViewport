@@ -192,7 +192,10 @@ Observe `viewport.isAnimating` (a `@Published Bool`) to gate UI interactions dur
 These calls go through `ViewportController`'s gesture-forwarding API, which in turn drives `CameraController`.
 
 ```swift
-// Orbit (drag translation in points)
+// Orbit (drag translation in points, y down). handleOrbit is the raw call: it always turns
+// the model with the drag. MetalViewportView's own drags also apply
+// GestureConfiguration.dragRotation (default .rotateObject); to honour that in a custom
+// gesture, multiply by configuration.gestureConfiguration.orbitDragSigns first.
 viewport.handleOrbit(translation: gesture.translation)
 
 // Release with inertia — auto-snaps to a nearby axis view if velocity < 200 pt/s

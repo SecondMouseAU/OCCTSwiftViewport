@@ -292,7 +292,10 @@ public final class ViewportController: ObservableObject {
 
     // MARK: - Camera Control
 
-    /// Handles orbit gesture input.
+    /// Handles orbit gesture input: a drag delta in points, y down.
+    ///
+    /// This is the raw call. The model always turns with the delta, and
+    /// `GestureConfiguration.dragRotation` is not applied; `dispatch(_:)` applies it.
     public func handleOrbit(translation: CGSize) {
         cameraController.orbit(
             deltaX: Float(translation.width),

@@ -107,7 +107,7 @@ if let region = cube.region(at: tapPoint) {
 
 ## Drag-to-orbit
 
-Dragging the cube more than 4 pt triggers orbit mode. The delta is forwarded to `controller.handleOrbit(translation:)` — the same call the main viewport uses — so inertia and rotation style settings apply identically.
+Dragging the cube more than 4 pt triggers orbit mode. The delta goes through the same path as a viewport drag, ending in `controller.handleOrbit(translation:)`, so `GestureConfiguration.dragRotation`, inertia and rotation style apply identically: with the default `.rotateObject`, the cube face under the finger turns with it.
 
 The sign is inverted relative to viewport drags: dragging the cube clockwise rotates the camera clockwise around the model (grab-the-camera, not grab-the-model).
 

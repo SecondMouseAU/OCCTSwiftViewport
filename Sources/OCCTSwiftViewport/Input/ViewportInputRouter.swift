@@ -17,7 +17,7 @@ extension ViewportController {
     /// `ViewportInputEvent` (delta math, gesture arbitration) and for any lifecycle
     /// glue it already owns (e.g. dynamic-pivot scheduling). All *interpretation*
     /// (which `GestureAction` a drag, pinch, scroll or double-tap maps to, the orbit
-    /// X-axis inversion, the drag-to-zoom curve) lives here, so the meaning is
+    /// direction from `GestureConfiguration.dragRotation`, the drag-to-zoom curve) lives here, so the meaning is
     /// identical regardless of the input source.
     public func dispatch(_ event: ViewportInputEvent) {
         dispatch(event, tapModifiers: [])
@@ -212,15 +212,7 @@ extension ViewportController {
     private func applyDrag(_ action: GestureAction, delta: SIMD2<Float>) {
         switch action {
         case .orbit:
-            // Negate X so left/right drag rotates the model under the pointer; the invert flags let a
-            // consumer flip either axis to taste (object-follows-finger vs camera-orbits).
-            let cfg = configuration.gestureConfiguration
-            let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
-            let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
-            handleOrbit(
-                translation: CGSize(
-                    width: sx * CGFloat(delta.x),
-                    height: sy * CGFloat(delta.y)))
+            orbitDrag(delta: delta)
         case .pan:
             handlePan(
                 translation: CGSize(
@@ -233,6 +225,22 @@ extension ViewportController {
         default:
             break
         }
+    }
+
+    /// Orbits by a screen drag (points, y down) in the configured `dragRotation` direction.
+    ///
+    /// The one place a drag's orbit signs are applied: the viewport drag and the navigation cube
+    /// both come through here, so they always turn the same way.
+    func orbitDrag(delta: SIMD2<Float>) {
+        let signed = delta * configuration.gestureConfiguration.orbitDragSigns
+        handleOrbit(translation: CGSize(width: CGFloat(signed.x), height: CGFloat(signed.y)))
+    }
+
+    /// Releases an orbit drag with `velocity` (points per second, y down), signed like
+    /// `orbitDrag(delta:)` so the momentum keeps turning the way the drag did.
+    func endOrbitDrag(velocity: SIMD2<Float>) {
+        let signed = velocity * configuration.gestureConfiguration.orbitDragSigns
+        endOrbit(velocity: CGSize(width: CGFloat(signed.x), height: CGFloat(signed.y)))
     }
 
     private func endDrag(velocity: SIMD2<Float>) {
@@ -252,13 +260,7 @@ extension ViewportController {
     private func endDrag(mode: InputDragMode, velocity: SIMD2<Float>) {
         switch mode {
         case .orbit:
-            let cfg = configuration.gestureConfiguration
-            let sx: CGFloat = cfg.invertOrbitHorizontal ? 1 : -1
-            let sy: CGFloat = cfg.invertOrbitVertical ? -1 : 1
-            endOrbit(
-                velocity: CGSize(
-                    width: sx * CGFloat(velocity.x),
-                    height: sy * CGFloat(velocity.y)))
+            endOrbitDrag(velocity: velocity)
         case .pan:
             endPan(
                 velocity: CGSize(

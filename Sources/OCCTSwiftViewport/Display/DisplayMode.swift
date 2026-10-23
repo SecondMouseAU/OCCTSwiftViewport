@@ -109,7 +109,7 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     ///
     /// The default of both `ViewportConfiguration.xrayOpacity` (and so
     /// `ViewportController.xrayOpacity`) and `OffscreenRenderOptions.xrayOpacity`.
-    public static let defaultXRayOpacity: Float = 0.4
+    public static let defaultXRayOpacity: Float = 0.2
 
     /// Clamps an x-ray opacity setting to `0...1`.
     ///

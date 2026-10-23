@@ -26,7 +26,7 @@ struct DisplayModeRuleTests {
             #expect(mode.surfaceOpacity(forMaterialOpacity: 0.7) == 0.7)
         }
         let cap = DisplayMode.defaultXRayOpacity
-        #expect(cap == 0.4)
+        #expect(cap == 0.2)
         #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: 1) == cap)
         #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: cap / 2) == cap / 2)
         #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: 1, xrayOpacity: 0.7) == 0.7)
@@ -61,8 +61,8 @@ struct DisplayModeRuleTests {
         mutableOptions.xrayOpacity = 1.5
         #expect(mutableOptions.xrayOpacity == 1)
 
-        let controller = ViewportController(configuration: ViewportConfiguration(xrayOpacity: 0.2))
-        #expect(controller.xrayOpacity == 0.2)
+        let controller = ViewportController(configuration: ViewportConfiguration(xrayOpacity: 0.6))
+        #expect(controller.xrayOpacity == 0.6)
         controller.xrayOpacity = 9
         #expect(controller.xrayOpacity == 1)
         controller.xrayOpacity = .nan
@@ -277,9 +277,13 @@ struct OffscreenDisplayModeTests {
         let o = DisplayModeScenes.rgb(opaque, width: 96, x: 48, y: 48)
         // Opaque: the red front panel hides the green one. X-ray: green shows through.
         #expect(o.y < 60, "opaque centre should be red-dominated, got \(o)")
+        // Compare green's share of red, not absolute levels: at the default 0.2 opacity the whole
+        // x-ray centre is dim, so the green back panel shows as a share, not a bright channel.
+        let greenShare = { (c: SIMD3<Int>) in Float(c.y) / Float(max(c.x, 1)) }
         #expect(
-            x.y > o.y + 20, "x-ray centre should let the green back panel through: \(x) vs \(o)")
-        #expect(x.x > 40, "x-ray centre should still carry the red front panel, got \(x)")
+            greenShare(x) > greenShare(o) + 0.3,
+            "x-ray centre should let the green back panel through: \(x) vs \(o)")
+        #expect(x.x > x.z + 20, "x-ray centre should still carry the red front panel, got \(x)")
     }
 
     @Test(".xray shows an edge hidden behind another body; .shadedWithEdges doesn't")

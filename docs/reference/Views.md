@@ -138,7 +138,7 @@ Current display mode (e.g. `.shaded`, `.wireframe`, `.shadedWithEdges`). Writabl
 @Published public var xrayOpacity: Float
 ```
 
-Opacity ceiling for surfaces in `.xray` mode, adjustable live (bind it to a `Slider`). Starts at `configuration.xrayOpacity` (default `DisplayMode.defaultXRayOpacity`, 0.4) and is clamped to `0...1` on set; NaN or infinity resets it to the default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
+Opacity ceiling for surfaces in `.xray` mode, adjustable live (bind it to a `Slider`). Starts at `configuration.xrayOpacity` (default `DisplayMode.defaultXRayOpacity`, 0.2) and is clamped to `0...1` on set; NaN or infinity resets it to the default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
 
 #### `showViewCube`
 
@@ -363,7 +363,7 @@ Toggles between perspective and orthographic projection, animated over 0.3 s.
 public func handleOrbit(translation: CGSize)
 ```
 
-Applies an incremental orbit delta (in points). Prefer `dispatch(_:)` for custom input sources.
+Applies an incremental orbit delta (in points, y down). This is the raw call: the model always turns with the delta, and `GestureConfiguration.dragRotation` is not applied. Prefer `dispatch(_:)` for custom input sources, which applies it.
 
 #### `endOrbit(velocity:)`
 

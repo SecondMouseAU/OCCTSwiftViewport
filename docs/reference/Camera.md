@@ -302,7 +302,9 @@ The turntable tilt is deliberately unclamped: the camera can tilt over the pole 
 public func orbit(deltaX: Float, deltaY: Float)
 ```
 
-Rotates the camera by the given drag delta in points, dispatching to the algorithm selected by `rotationStyle` (arcball, turntable, or first-person).
+Rotates the camera by the given drag delta in points (y down), dispatching to the algorithm selected by `rotationStyle` (arcball, turntable, or first-person).
+
+In every style the model turns with the delta: a positive `deltaX` carries the model's near side right on screen, and a negative `deltaY` (an upward drag) carries it up. `ViewportController` multiplies drag deltas by `GestureConfiguration.orbitDragSigns` before calling this, which is how `DragRotationConvention.orbitCamera` and the invert flags reverse it. Arcball turns about an axis in screen space, so a horizontal drag from any view turns the model about the screen's vertical axis; before this was fixed, it turned about a world axis, and from the front view a horizontal drag rolled the picture instead.
 
 ---
 
@@ -574,7 +576,7 @@ Z-axis–locked rotation ("pottery wheel"). Horizontal drag rotates around world
 
 #### `case firstPerson`
 
-Camera-centric yaw/pitch. Horizontal drag yaws around world Z; vertical drag pitches around the camera right vector. Best for walk-through and VR-style navigation.
+Yaw/pitch without stored spherical angles. Horizontal drag yaws around world Z; vertical drag pitches around the camera right vector. The camera position is still derived as `pivot + distance` along the back vector, so this turns about the pivot like the other styles rather than turning the camera in place; it differs from `.turntable` in composing the rotation incrementally. The drag direction follows `GestureConfiguration.dragRotation` as for the other styles: `.orbitCamera` gives a mouse-look feel (drag right, look right).
 
 ---
 
