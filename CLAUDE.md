@@ -97,7 +97,7 @@ Three rotation styles: **arcball** (Ken Shoemake virtual sphere), **turntable** 
 ## Key Conventions
 
 - **Public API re-export:** `Sources/OCCTSwiftViewport/OCCTSwiftViewport.swift` uses underscore-prefixed typealiases (`public typealias _CameraState = CameraState`) to aggregate ~40 public types. Consumers import the module and use `_TypeName` directly.
-- **Primitives for testing:** `ViewportBody` has factory methods (`.box()`, `.cylinder()`, `.sphere()`) in `Primitives.swift`. They are Y-up (cylinder axis and sphere poles on Y) while the viewport world is Z-up
+- **Primitives for testing:** `ViewportBody` has factory methods (`.box()`, `.cylinder()`, `.sphere()`) in `Primitives.swift`. Their `up:` parameter defaults to `.y` for source compatibility; pass `.z` for the Z-up viewport world
 - **Platform branching:** `#if os(iOS)` / `#elseif os(macOS)` within shared files (not separate files per platform). macOS uses a custom `ScrollCaptureMTKView` subclass for scroll/mouse events.
 - **Tests:** Swift Testing framework (`import Testing`, `@Test`, `@Suite`), not XCTest
 - **Configuration presets:** `LightingConfiguration` (`.threePoint`, `.studio`, `.architectural`, `.flat`), `GestureConfiguration` (`.blender`, `.fusion360`, `.default`), `RotationStyle` (`.cadDefault`, `.modelingDefault`)
