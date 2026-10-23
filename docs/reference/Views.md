@@ -472,7 +472,7 @@ Flips `showGrid`.
 @Published public private(set) var pickResult: PickResult?
 ```
 
-The most recent pick result for the user-geometry layer, or `nil` if nothing is selected. Updated by `handlePick(result:ndc:)`. Widget-layer picks are routed to `widgetPickResult` instead.
+The most recent pick result for the user-geometry layer, or `nil` if nothing is selected. Updated by `handlePick(result:ndc:)`. Widget-layer picks are routed to `widgetPickResult` instead. On a tap, `MetalViewportView` resolves a wrapped face index (body over 16,384 triangles) before calling `handlePick`, so a face pick here is exact unless `isPrimitiveIndexAmbiguous` is still set; see [Picking limits](Picking.md#limits).
 
 #### `widgetPickResult`
 
@@ -640,7 +640,7 @@ public func handleMeasurementPick(
 )
 ```
 
-Converts a GPU pick result into a world-space surface point (ray / triangle intersection, respecting the body's transform) and feeds it to `addMeasurementPoint(_:)`. Only `.face` picks are accepted; edge / vertex picks and misses are ignored. Called by `MetalViewportView` while `measurementMode != .none`.
+Converts a GPU pick result into a world-space surface point (ray / triangle intersection, respecting the body's transform) and feeds it to `addMeasurementPoint(_:)`. Only `.face` picks are accepted; edge / vertex picks and misses are ignored. On a body with more than `PickResult.maxPrimitivesPerKind` triangles, the wrapped triangle index is first resolved with `ViewportBody.resolveWrappedTriangleIndex(_:ray:)`; a pick that cannot be resolved is ignored rather than measured on the wrong triangle. Called by `MetalViewportView` while `measurementMode != .none`.
 
 #### `cancelPendingMeasurement()`
 

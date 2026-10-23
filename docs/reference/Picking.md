@@ -68,11 +68,32 @@ bits 16–29 : primitiveID  (14 bits: triangle/segment/point index within body)
 bits 30–31 : kind         ( 2 bits: 0=face, 1=edge, 2=vertex)
 ```
 
+For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data. Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
+
+### Limits
+
+The 32-bit format caps two things:
+
+| Limit | Value | What happens past it |
+|-------|-------|----------------------|
+| `maxPickableBodies` | 65,536 visible bodies per frame, counted in draw order | Later bodies are drawn into the pick pass with the sentinel. They still hide what is behind them, but picking them returns `nil`. They never corrupt another body's pick. |
+| `maxPrimitivesPerKind` | 16,384 triangles, edge segments (or arcs), or points per body | The GPU reports `index % 16_384`. The decoded result has `isPrimitiveIndexAmbiguous == true`. |
+
+The built-in tap path resolves ambiguous **face** picks before publishing `pickResult` and before tap-to-measure. It tests the congruent candidates (`i`, `i + 16_384`, …) against the tap ray on the CPU and keeps the nearest hit (`ViewportBody.resolveWrappedTriangleIndex(_:ray:)`). If no candidate is hit, which can happen at silhouettes under tessellation, the result stays flagged. Ambiguous edge and vertex picks, and region-pick results, are not resolved: check the flag before mapping `triangleIndex` through `faceIndices`, `edgeIndices` or `vertexIndices`.
+
 ### Properties
 
 #### `static let sentinel: UInt32`
 
-The sentinel value (`0xFFFF_FFFF`) written to pixels that have no geometry or hit a non-pickable body. `init?(rawValue:indexMap:layerMap:)` returns `nil` for this value.
+The sentinel value (`0xFFFF_FFFF`) written to pixels that have no geometry or hit a non-pickable body, or a body past `maxPickableBodies`. `init?(rawValue:indexMap:layerMap:ambiguousKinds:)` returns `nil` for this value.
+
+#### `static let maxPickableBodies: Int`
+
+`65_536`. Number of visible bodies, in draw order, that receive a pick ID each frame. See [Limits](#limits).
+
+#### `static let maxPrimitivesPerKind: Int`
+
+`16_384`. Number of distinct primitive indices per kind that the 14-bit primitive field can carry. See [Limits](#limits).
 
 #### `let bodyID: String`
 
@@ -90,6 +111,12 @@ The primitive index within the body, interpreted by `kind`:
 - `.vertex`: point index into `vertices`
 
 The name is preserved for historical compatibility; it is semantically a *primitive* index.
+
+When `isPrimitiveIndexAmbiguous` is `true`, this is the true index modulo 16,384.
+
+#### `let isPrimitiveIndexAmbiguous: Bool`
+
+`true` when the body has more than `maxPrimitivesPerKind` primitives of the picked kind, so `triangleIndex` may have wrapped. The built-in tap path clears it for face picks it can resolve; see [Limits](#limits).
 
 #### `let kind: PrimitiveKind`
 
@@ -109,11 +136,12 @@ The pick layer the body belongs to, as recorded in the layer map at the time of 
 public init?(
     rawValue: UInt32,
     indexMap: [Int: String],
-    layerMap: [String: PickLayer] = [:]
-) 
+    layerMap: [String: PickLayer] = [:],
+    ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
+)
 ```
 
-Decodes a raw pick-buffer value. Returns `nil` when `rawValue` equals `sentinel`, when the `objectIndex` is absent from `indexMap`, or when the encoded kind bits do not match a valid `PrimitiveKind` case. Bodies absent from `layerMap` default to `.userGeometry`.
+Decodes a raw pick-buffer value. Returns `nil` when `rawValue` equals `sentinel`, when the `objectIndex` is absent from `indexMap`, or when the encoded kind bits do not match a valid `PrimitiveKind` case. Bodies absent from `layerMap` default to `.userGeometry`. A pick whose kind is listed for its body in `ambiguousKinds` gets `isPrimitiveIndexAmbiguous == true`; the renderer builds this map each frame.
 
 **Example: subscribing to face picks**
 

@@ -65,7 +65,10 @@ extension BodyUniforms {
     init(body: ViewportBody, objectIndex: UInt32 = 0, isSelected: UInt32 = 0) {
         let m = body.effectiveMaterial
         self.color = SIMD4<Float>(m.baseColor.x, m.baseColor.y, m.baseColor.z, m.opacity)
-        self.objectIndex = objectIndex
+        // `objectIndex` is the body's draw-order ordinal and is read only by the pick shaders.
+        // Past the 16-bit object field it becomes the sentinel, so the body reads back as a miss
+        // instead of bleeding into the primitive bits (issue #136, H4).
+        self.objectIndex = PickResult.pickObjectIndex(forOrdinal: objectIndex)
         self.roughness = m.roughness
         self.metallic = m.metallic
         self.isSelected = isSelected
@@ -334,14 +337,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let tessellatedShadedPipeline: MTLRenderPipelineState?
     private let tessellatedShadowPipeline: MTLRenderPipelineState?
     private let tessellatedDepthOnlyPipeline: MTLRenderPipelineState?
-    private let tessellatedPickPipeline: MTLRenderPipelineState?
+    // Internal (not private) so headless tests can tell whether the tessellated pick path ran.
+    let tessellatedPickPipeline: MTLRenderPipelineState?
     private let tessellationEnabled: Bool
 
     // Mesh shaders (Apple9+ / M3+ / A17+)
     private let meshShaderShadedPipeline: MTLRenderPipelineState?
     private let meshShaderShadowPipeline: MTLRenderPipelineState?
     private let meshShaderDepthOnlyPipeline: MTLRenderPipelineState?
-    private let meshShaderPickPipeline: MTLRenderPipelineState?
+    // Internal (not private) so headless tests can tell whether the mesh-shader pick path ran.
+    let meshShaderPickPipeline: MTLRenderPipelineState?
     private let meshShadersEnabled: Bool
 
     /// Off-screen attachment set backing `renderHeadless(...)`; `nil` until the first such call.
@@ -401,6 +406,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///
     /// Routes GPU pick results to either `ViewportController.pickResult` or `widgetPickResult`.
     private var currentLayerMap: [String: PickLayer] = [:]
+    /// Maps bodyID → primitive kinds with more than `PickResult.maxPrimitivesPerKind` primitives,
+    /// rebuilt each frame, so picks of those kinds are flagged `isPrimitiveIndexAmbiguous`.
+    private var currentAmbiguousKinds: [String: Set<PrimitiveKind>] = [:]
 
     /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue #48).
     ///
@@ -820,7 +828,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             let shadedFrag = library.makeFunction(name: "shaded_fragment")!
             let depthFrag = library.makeFunction(name: "depth_only_fragment")
-            let pickFrag = library.makeFunction(name: "pick_fragment")
+            let pickFrag = library.makeFunction(name: "meshlet_pick_fragment")
 
             self.meshShaderShadedPipeline = makeMeshPipeline(
                 meshFn: meshFunc, fragmentFn: shadedFrag,
@@ -1287,6 +1295,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Build index map for picking: objectIndex → bodyID
         var indexMap: [Int: String] = [:]
         var layerMap: [String: PickLayer] = [:]
+        var ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
         var objectIndex: UInt32 = 0
 
         // Ensure buffers for all visible bodies, and resolve each body's buffers +
@@ -1298,15 +1307,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         frameVisibleBodies.reserveCapacity(bodies.count)
         for body in bodies where body.isVisible {
             ensureBuffers(for: body)
-            indexMap[Int(objectIndex)] = body.id
+            // Bodies past the 16-bit object field get no pick ID (BodyUniforms writes the
+            // sentinel for them), so they never enter the index map.
+            if PickResult.pickObjectIndex(forOrdinal: objectIndex) != PickResult.sentinel {
+                indexMap[Int(objectIndex)] = body.id
+            }
             layerMap[body.id] = body.pickLayer
             if let bufs = bodyBufferCache[body.id] {
                 frameVisibleBodies.append((body, bufs, objectIndex))
+                let kinds = PickResult.ambiguousKinds(
+                    triangleCount: bufs.indexCount / 3,
+                    edgeSegmentCount: max(bufs.edgePrimitiveCount, body.arcs.count),
+                    pointCount: bufs.pointVertexCount)
+                if !kinds.isEmpty { ambiguousKinds[body.id] = kinds }
             }
             objectIndex += 1
         }
         currentIndexMap = indexMap
         currentLayerMap = layerMap
+        currentAmbiguousKinds = ambiguousKinds
 
         // Per-body frustum culling (issue #42): off-screen bodies are skipped
         // inline in the main pass below, using the cached local AABB — no per-frame
@@ -2911,6 +2930,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let ambiguousKinds = currentAmbiguousKinds
         let readbackBuffer = pickReadbackBuffer
 
         // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
@@ -2923,7 +2943,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // See issue #110.
         commandBuffer.addCompletedHandler { @Sendable _ in
             let rawValue = readbackBuffer.contents().load(as: UInt32.self)
-            let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
+            let result = PickResult(
+                rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
+                ambiguousKinds: ambiguousKinds)
             Task { @MainActor in
                 completion(result)
             }
@@ -2979,6 +3001,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let ambiguousKinds = currentAmbiguousKinds
         let centerX = pixel.x - startX
         let centerY = pixel.y - startY
 
@@ -2994,7 +3017,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
             let bestResult = Self.bestNeighborhoodPickResult(
                 rawValues, width: actualWidth, center: SIMD2(centerX, centerY),
-                indexMap: indexMap, layerMap: layerMap)
+                indexMap: indexMap, layerMap: layerMap, ambiguousKinds: ambiguousKinds)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3086,6 +3109,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let ambiguousKinds = currentAmbiguousKinds
 
         // `@Sendable` for the same reason as in `performPick(at:)` above: this handler runs on
         // Metal's completion queue, so it must not inherit `@MainActor` isolation. See issue #110.
@@ -3100,7 +3124,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 rawValues.append(contentsOf: UnsafeBufferPointer(start: rowValues, count: w))
             }
             let results = Self.decodeRegionPickResults(
-                rawValues, indexMap: indexMap, layerMap: layerMap)
+                rawValues, indexMap: indexMap, layerMap: layerMap, ambiguousKinds: ambiguousKinds)
             Task { @MainActor in
                 completion(results)
             }
@@ -3171,7 +3195,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         width: Int,
         center: SIMD2<Int>,
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
     ) -> PickResult? {
         guard width > 0 else { return nil }
         var bestResult: PickResult? = nil
@@ -3180,7 +3205,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         for (index, rawValue) in rawValues.enumerated() {
             guard
-                let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap)
+                let result = PickResult(
+                    rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
+                    ambiguousKinds: ambiguousKinds)
             else {
                 continue
             }
@@ -3214,14 +3241,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     nonisolated static func decodeRegionPickResults(
         _ rawValues: [UInt32],
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
     ) -> [PickResult] {
         var seen = Set<UInt32>()
         var results: [PickResult] = []
         for rawValue in rawValues {
             guard rawValue != PickResult.sentinel, !seen.contains(rawValue) else { continue }
             seen.insert(rawValue)
-            if let result = PickResult(rawValue: rawValue, indexMap: indexMap, layerMap: layerMap) {
+            if let result = PickResult(
+                rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
+                ambiguousKinds: ambiguousKinds)
+            {
                 results.append(result)
             }
         }

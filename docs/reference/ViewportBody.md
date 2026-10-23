@@ -311,9 +311,9 @@ public func worldHitPoint(ray: Ray, triangleIndex: Int) -> SIMD3<Float>?
 
 Returns the world-space point where `ray` intersects the triangle at `triangleIndex`, accounting for this body's `transform`.
 
-Looks up the three vertex positions from `indices`/`vertexData` (stride 6), transforms each into world space via `transform`, and intersects with the ray using Möller-Trumbore. Returns `nil` if `triangleIndex` is out of range or the ray misses the (transformed) triangle.
+Looks up the three vertex positions from `indices`/`vertexData` (stride 6), or from `vertices` on a direct-mesh body (whose `vertexData` is empty), transforms each into world space via `transform`, and intersects with the ray using Möller-Trumbore. Returns `nil` if `triangleIndex` is out of range or the ray misses the (transformed) triangle.
 
-`triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick result — pass the two together to find where the user tapped on a surface.
+`triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick result — pass the two together to find where the user tapped on a surface. If the pick has `isPrimitiveIndexAmbiguous` set, resolve the index with `resolveWrappedTriangleIndex(_:ray:)` first.
 
 | Parameter | Description |
 |---|---|
@@ -327,6 +327,27 @@ Looks up the three vertex positions from `indices`/`vertexData` (stride 6), tran
 if result.kind == .face,
    let point = body.worldHitPoint(ray: tapRay, triangleIndex: result.triangleIndex) {
     viewportController.addMeasurementPoint(point)
+}
+```
+
+---
+
+### `resolveWrappedTriangleIndex(_:ray:)`
+
+```swift
+public func resolveWrappedTriangleIndex(_ wrappedIndex: Int, ray: Ray) -> Int?
+```
+
+Resolves a face pick's wrapped triangle index to the exact triangle under `ray`. The GPU pick format carries 14 bits of primitive index, so on a body with more than `PickResult.maxPrimitivesPerKind` (16,384) triangles a face pick reports the true index modulo 16,384 and sets `PickResult.isPrimitiveIndexAmbiguous`. This tests each congruent candidate (`wrappedIndex`, `wrappedIndex + 16_384`, …) against `ray` in world space and returns the one hit nearest the ray origin, which is the triangle the GPU depth test kept. It costs one ray-triangle test per 16,384 triangles.
+
+Returns `nil` when `wrappedIndex` is outside `0..<16_384` or the ray hits no candidate. A miss can happen at silhouettes under `.enhanced`/`.maximum` rendering quality, where the GPU picks the curved tessellated surface but this tests the flat input triangles.
+
+The built-in tap path calls this for you before publishing `ViewportController.pickResult` and for tap-to-measure. Call it yourself for picks you decode some other way.
+
+```swift
+if result.kind == .face, result.isPrimitiveIndexAmbiguous,
+   let exact = body.resolveWrappedTriangleIndex(result.triangleIndex, ray: tapRay) {
+    let faceID = body.faceIndices[exact]
 }
 ```
 
