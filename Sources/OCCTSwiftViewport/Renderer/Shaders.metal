@@ -699,11 +699,15 @@ fragment float4 visible_point_fragment(
 
 // MARK: - Selection Outline Pipeline
 
+// IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift
+// `struct SelectionOutlineParamsSwift`). Field order, types, and alignment must stay identical.
+// Total stride = 160 bytes.
 struct SelectionOutlineParams {
-    float4x4 viewProjectionMatrix;
-    float4x4 modelMatrix;
-    float3 outlineColor;
-    float outlineScale;
+    float4x4 viewProjectionMatrix; // offset   0
+    float4x4 modelMatrix;          // offset  64
+    float3 outlineColor;           // offset 128 (16 bytes)
+    float outlineWidth;            // offset 144 — drawable pixels
+    float2 viewportSize;           // offset 152 — drawable pixels
 };
 
 struct SelectionOutlineVertexOut {
@@ -711,20 +715,34 @@ struct SelectionOutlineVertexOut {
     float3 worldPosition;    // un-expanded surface point, for clip plane testing
 };
 
-// Renders geometry slightly scaled along normals for the outline effect
+// Renders the body pushed outward along its screen-space normal by a fixed pixel width, so the
+// ring left outside the body's stencil footprint is the same thickness at any zoom or model scale.
 vertex SelectionOutlineVertexOut selection_outline_vertex(
     VertexIn in [[stage_in]],
     constant SelectionOutlineParams &params [[buffer(1)]]
 ) {
-    // Scale vertex position along normal to create outline thickness
-    float3 expandedPos = in.position + in.normal * params.outlineScale;
-    float4 worldPos = params.modelMatrix * float4(expandedPos, 1.0);
+    float4 worldPos = params.modelMatrix * float4(in.position, 1.0);
+    float3 worldNormal = (params.modelMatrix * float4(in.normal, 0.0)).xyz;
+    float4 clipPos = params.viewProjectionMatrix * worldPos;
+    float4 clipNormal = params.viewProjectionMatrix * float4(worldNormal, 0.0);
+
+    // Direction the normal moves the projected vertex: d(xy/w) is proportional to
+    // (dxy * w - xy * dw), up to the positive factor 1/w^2. Scale to pixels before normalising
+    // so non-square viewports get a round ring.
+    float2 dirNdc = clipNormal.xy * clipPos.w - clipPos.xy * clipNormal.w;
+    float2 dirPx = dirNdc * params.viewportSize;
+    float lenPx = length(dirPx);
+    if (lenPx > 1e-6 && params.outlineWidth > 0.0) {
+        // One pixel spans 2 / viewportSize in NDC; multiply by w to offset in clip space.
+        float2 offsetNdc = (dirPx / lenPx) * (2.0 * params.outlineWidth / params.viewportSize);
+        clipPos.xy += offsetNdc * clipPos.w;
+    }
 
     SelectionOutlineVertexOut out;
-    out.clipPosition = params.viewProjectionMatrix * worldPos;
-    // Clip against the surface point, not the normal-expanded one, so the outline is cut
-    // exactly where the section cuts the body.
-    out.worldPosition = (params.modelMatrix * float4(in.position, 1.0)).xyz;
+    out.clipPosition = clipPos;
+    // Clip against the surface point, not the expanded one, so the outline is cut exactly
+    // where the section cuts the body.
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 

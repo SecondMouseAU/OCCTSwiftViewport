@@ -229,7 +229,7 @@ Selects the render pass: `.mesh` (shaded + wireframe), `.point` (point-cloud spr
 
 #### `triangleStyles: [TriangleStyle]`
 
-Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles over the shaded pass with `.lessEqual` depth, preventing silhouette flicker. Mutating this field triggers a GPU style-buffer re-upload without disturbing vertex/index/edge buffers.
+Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles over the shaded pass with `.lessEqual` depth, preventing silhouette flicker. Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
 
 #### `color: SIMD4<Float>`
 

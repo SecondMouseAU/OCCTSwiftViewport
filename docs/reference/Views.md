@@ -199,7 +199,7 @@ Edge / wireframe intensity multiplier. `0` = invisible, `1` = default, `>1` = bo
 @Published public var clipPlanes: [ClipPlane]
 ```
 
-Active clipping planes (up to 4). Only planes with `isEnabled == true` are applied by the renderer each frame. Clipped geometry is hidden from every drawn pass and from GPU picking (see `ClipPlane`).
+Clipping planes for section views. Only planes with `isEnabled == true` are applied by the renderer each frame, and at most `ClipPlane.maxActivePlanes` (4) of them, in array order. Enabled planes past the fourth are ignored; debug builds log a warning when the array is set with more. Clipped geometry is hidden from every drawn pass and from GPU picking (see `ClipPlane`).
 
 #### `measurements`
 
@@ -235,7 +235,7 @@ DoF aperture value. Smaller = shallower depth of field. Default `2.8`.
 @Published public var dofFocalDistance: Float
 ```
 
-DoF focal distance in world units. `0` enables auto-focus. Default `0`.
+DoF focal distance in world units. `0` enables auto-focus on the world-space centre of the visible geometry bodies. Default `0`.
 
 #### `dofMaxBlurRadius`
 
@@ -488,7 +488,7 @@ The most recent pick result for the widget layer (bodies with `pickLayer == .wid
 @Published public var selectedBodyIDs: Set<String>
 ```
 
-The set of selected body IDs. Bodies in this set render with a highlight outline. Assign directly for programmatic selection, or use `selectBody(_:toggle:)` / `deselectAll()`.
+The set of selected body IDs. Bodies in this set render with a highlight outline, styled by `ViewportConfiguration.selectionOutline` (colour and pixel width). Assign directly for programmatic selection, or use `selectBody(_:toggle:)` / `deselectAll()`.
 
 #### `hoveredBodyID`
 

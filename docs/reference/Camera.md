@@ -432,7 +432,7 @@ Seeds pan inertia. Same semantics as `setAngularVelocity`.
 
 ## PivotStrategy
 
-`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. When the camera is zoomed out it returns the scene center; when zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
+`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. When the camera is zoomed out it returns the scene center (the world-space union of the bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too); when zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
 
 `ViewportController` owns a `PivotStrategy` and drives it automatically. You only need to interact with it directly for custom viewport integrations.
 

@@ -262,7 +262,7 @@ Most behaviour is configured via `ViewportController` properties rather than dir
 public init?(controller: ViewportController, bodies: Binding<[ViewportBody]>)
 ```
 
-Returns `nil` if Metal device/queue creation fails or any required pipeline state cannot be compiled. Normally called by `MetalViewportView` — you do not need to create `ViewportRenderer` directly.
+Returns `nil` if Metal device/queue creation fails or any required pipeline state cannot be compiled. `configuration.msaaSampleCount` is first clamped to a count the device supports (the same mapping `OffscreenRenderer` uses), so an unsupported value no longer makes this fail; `MetalViewportView` configures its `MTKView` with the clamped count. Normally called by `MetalViewportView` — you do not need to create `ViewportRenderer` directly.
 
 ### Properties
 

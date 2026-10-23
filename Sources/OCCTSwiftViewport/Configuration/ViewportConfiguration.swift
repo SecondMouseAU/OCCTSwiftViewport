@@ -104,6 +104,28 @@ public struct EdgeLineConfiguration: Sendable {
     public static let dashed = EdgeLineConfiguration(dashPattern: .dashed)
 }
 
+// MARK: - Selection Outline Style
+
+/// Colour and width of the outline ring drawn around a selected or hovered body.
+public struct SelectionOutlineStyle: Sendable, Hashable {
+    /// Outline colour in linear RGB.
+    public var color: SIMD3<Float>
+
+    /// Outline width in drawable pixels, constant at any zoom and model scale; 0 hides it.
+    public var width: Float
+
+    public init(color: SIMD3<Float>, width: Float = 3.0) {
+        self.color = color
+        self.width = width
+    }
+
+    /// Default outline for selected bodies: bright blue, 3 px.
+    public static let selection = SelectionOutlineStyle(color: SIMD3<Float>(0.1, 0.5, 1.0))
+
+    /// Default outline for the hovered body: light blue, 3 px.
+    public static let hover = SelectionOutlineStyle(color: SIMD3<Float>(0.4, 0.7, 1.0))
+}
+
 // MARK: - Grid Style
 
 /// Rendering style for the ground grid.
@@ -222,11 +244,12 @@ public struct ViewportConfiguration: Sendable {
 
     // MARK: - Anti-Aliasing
 
-    /// MSAA sample count: 1 for no anti-aliasing, 4 for 4x.
+    /// Requested MSAA sample count: 1 for no anti-aliasing, 4 (the default) for 4x.
     ///
-    /// Must be 1 or 4. The value reaches the Metal pipeline and render-target descriptors
-    /// without validation here, so an unsupported count surfaces as a pipeline-creation
-    /// failure rather than a checked error.
+    /// The renderer clamps the request to a count the device supports: values below 2 mean no
+    /// MSAA, otherwise the largest of 8, 4 and 2 that does not exceed the request and that
+    /// `MTLDevice.supportsTextureSampleCount(_:)` accepts, falling back to 1. The same mapping
+    /// applies to `OffscreenRenderOptions.msaaSampleCount`.
     public var msaaSampleCount: Int
 
     // MARK: - Edge Silhouettes
@@ -239,6 +262,19 @@ public struct ViewportConfiguration: Sendable {
 
     /// Silhouette edge darkness (0 = invisible, 1 = fully dark).
     public var silhouetteIntensity: Float
+
+    // MARK: - Selection Outline
+
+    /// Outline drawn around selected bodies.
+    ///
+    /// The width is in drawable pixels, so the ring looks the same on a millimetre-scale part
+    /// and a building. Defaults to ``SelectionOutlineStyle/selection``.
+    public var selectionOutline: SelectionOutlineStyle = .selection
+
+    /// Outline drawn around the hovered body when it is not also selected.
+    ///
+    /// Defaults to ``SelectionOutlineStyle/hover``.
+    public var hoverOutline: SelectionOutlineStyle = .hover
 
     // MARK: - Edge Lines
 
@@ -281,7 +317,7 @@ public struct ViewportConfiguration: Sendable {
     /// DoF aperture (smaller = shallower depth of field).
     public var dofAperture: Float
 
-    /// DoF focal distance (0 = autofocus on selection or scene center).
+    /// DoF focal distance (0 = autofocus on the world-space centre of the visible geometry).
     public var dofFocalDistance: Float
 
     /// Maximum blur radius in pixels for DoF.

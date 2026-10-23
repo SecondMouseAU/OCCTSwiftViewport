@@ -23,7 +23,16 @@ import simd
 /// // Clip everything to the left of X = 2
 /// let plane = ClipPlane(normal: SIMD3(1, 0, 0), distance: -2)
 /// ```
+///
+/// The renderer applies at most ``maxActivePlanes`` (4) enabled planes at once, taken in array
+/// order from `ViewportController.clipPlanes`. Enabled planes beyond that are not applied, and
+/// debug builds log a warning when `clipPlanes` is set with more.
 public struct ClipPlane: Sendable, Equatable {
+    /// Maximum number of enabled clip planes the renderer applies at once.
+    ///
+    /// The shader uniform holds four planes; enabled planes past the fourth are dropped.
+    public static let maxActivePlanes = 4
+
     /// Outward-facing normal of the clip plane (unit vector).
     public var normal: SIMD3<Float>
 
@@ -60,4 +69,12 @@ public struct ClipPlane: Sendable, Equatable {
 
     /// A clip plane that cuts at Z = 0 (removes geometry on the negative-Z side).
     public static let zPlane = ClipPlane(normal: SIMD3(0, 0, 1), distance: 0)
+
+    /// Splits `planes` into the enabled planes the renderer applies and how many enabled planes
+    /// it drops for exceeding ``maxActivePlanes``.
+    static func activePlanes(in planes: [ClipPlane]) -> (applied: [ClipPlane], dropped: Int) {
+        let enabled = planes.filter(\.isEnabled)
+        let applied = Array(enabled.prefix(maxActivePlanes))
+        return (applied, enabled.count - applied.count)
+    }
 }

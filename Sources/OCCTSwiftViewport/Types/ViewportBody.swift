@@ -148,8 +148,10 @@ public struct ViewportBody: Identifiable, Sendable {
 
     /// Per-triangle highlight overlay, e.g. to tint the triangles of a selected face.
     ///
-    /// Empty (the default) skips the highlight pass for this body entirely. When populated,
-    /// `count == indices.count / 3`.
+    /// Empty (the default) skips the highlight pass for this body entirely. When populated it
+    /// needs exactly one entry per triangle (`count == indices.count / 3`); an array of any
+    /// other length is ignored, so the body draws without highlights, and debug builds log the
+    /// mismatch.
     ///
     /// Set entries to non-zero-alpha colors to highlight specific triangles
     /// (e.g., the triangles of a selected face). The renderer composites the
@@ -159,7 +161,16 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Mutating this field on an existing body forces the renderer to upload
     /// a fresh per-triangle style buffer; the rest of the body's GPU state
     /// (vertex / index / edge / point buffers) is preserved.
-    public var triangleStyles: [TriangleStyle]
+    public var triangleStyles: [TriangleStyle] {
+        didSet {
+            ViewportBody._nextGeneration += 1
+            triangleStylesGeneration = ViewportBody._nextGeneration
+        }
+    }
+
+    /// Changes whenever `triangleStyles` is assigned, so the renderer can re-upload just the
+    /// style buffer for a body whose `generation` (and so geometry) is unchanged.
+    private(set) var triangleStylesGeneration: UInt64
 
     /// Base colour in linear RGBA, used for shading when no `material` is set.
     ///
@@ -259,6 +270,7 @@ public struct ViewportBody: Identifiable, Sendable {
     ) {
         ViewportBody._nextGeneration += 1
         self.generation = ViewportBody._nextGeneration
+        self.triangleStylesGeneration = ViewportBody._nextGeneration
         self.id = id
         self.vertexData = vertexData
         self.indices = indices
