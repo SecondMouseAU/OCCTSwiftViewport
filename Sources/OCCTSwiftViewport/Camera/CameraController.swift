@@ -180,6 +180,10 @@ public final class CameraController: ObservableObject {
     /// distance to the user and to momentum.
     private var animatesPivotOnly = false
 
+    /// The distances a `slidePivotAlongLineOfSight` animation runs between, or `nil` when the
+    /// pivot-only animation is an `adjustPivot` one.
+    private var pivotDepthAnimation: (start: Float, target: Float)?
+
     /// Timer for animations and inertia.
     private var animationTimer: Timer?
 
@@ -655,6 +659,7 @@ public final class CameraController: ObservableObject {
     }
 
     private func startAnimation(to target: CameraState, duration: Float) {
+        pivotDepthAnimation = nil
         animationStart = cameraState
         animationTarget = target
         animationDuration = duration
@@ -687,6 +692,7 @@ public final class CameraController: ObservableObject {
         isAnimating = false
         animationTarget = nil
         animatesPivotOnly = false
+        pivotDepthAnimation = nil
         if simd_length(angularVelocity) <= 0.001 && simd_length(panVelocity) <= 0.001 {
             stopAnimationTimer()
         }
@@ -754,6 +760,45 @@ public final class CameraController: ObservableObject {
         target.pivot = newPivot
         animatesPivotOnly = true
         startAnimation(to: target, duration: duration)
+    }
+
+    /// Slides the pivot along the current line of sight to the depth of `point`, leaving the
+    /// camera's position and orientation exactly as they are.
+    ///
+    /// This is how the dynamic pivot moves the orbit centre after a gesture: only `distance`
+    /// changes, and the pivot is recomputed from the camera's position on every animation tick,
+    /// so the view never moves, even while orbit or pan momentum is still coasting. A target at
+    /// or behind the camera is ignored, and the distance stays within
+    /// `minDistance...maxDistance`. Like `adjustPivot(to:duration:)`, it does nothing while
+    /// another animation runs.
+    ///
+    /// - Parameters:
+    ///   - point: A world point whose depth along the line of sight the pivot moves to. Only
+    ///     its depth is used; a point off the line of sight does not pull the view across.
+    ///   - duration: Animation duration in seconds; `0` moves at once.
+    func slidePivotAlongLineOfSight(toDepthOf point: SIMD3<Float>, duration: Float = 0.15) {
+        guard !isAnimating else { return }
+        let depth = simd_dot(point - cameraState.position, cameraState.viewDirection)
+        guard depth > 0 else { return }
+        let target = max(minDistance, min(maxDistance, depth))
+        guard abs(target - cameraState.distance) > 0.001 else { return }
+        guard duration > 0 else {
+            setDistanceKeepingPosition(target)
+            return
+        }
+        animatesPivotOnly = true
+        startAnimation(to: cameraState, duration: duration)
+        pivotDepthAnimation = (cameraState.distance, target)
+    }
+
+    /// Sets `distance`, moving the pivot along the line of sight so the camera stays put.
+    private func setDistanceKeepingPosition(_ distance: Float) {
+        let eye = cameraState.position
+        var newState = cameraState
+        newState.distance = max(minDistance, min(maxDistance, distance))
+        // position = pivot − viewDirection × distance.
+        newState.pivot = eye + cameraState.viewDirection * newState.distance
+        cameraState = newState
     }
 
     /// Moves the pivot by `delta`, changing `distance` by the move's depth along the line of
@@ -919,7 +964,12 @@ public final class CameraController: ObservableObject {
             let finished = animationProgress >= 1.0
             let t: Float = finished ? 1 : 1.0 - pow(1.0 - animationProgress, 3)
 
-            if animatesPivotOnly {
+            if animatesPivotOnly, let depth = pivotDepthAnimation {
+                // Along the line of sight as it is now, from where the camera is now, so momentum
+                // that turned or panned the view meanwhile is kept and the camera never moves.
+                setDistanceKeepingPosition(
+                    cameraState.distance + (depth.target - depth.start) * (t - previousT))
+            } else if animatesPivotOnly {
                 // Move the pivot by this tick's share of the way, so pan momentum that moves it
                 // too is kept, and leave the rotation alone.
                 movePivotKeepingDepth(by: (target.pivot - start.pivot) * (t - previousT))
@@ -934,6 +984,7 @@ public final class CameraController: ObservableObject {
                 isAnimating = false
                 animationTarget = nil
                 animatesPivotOnly = false
+                pivotDepthAnimation = nil
             } else {
                 needsContinue = true
             }

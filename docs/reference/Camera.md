@@ -483,9 +483,9 @@ Resets to `homeCameraState`, which defaults to the controller's initial state; f
 public func adjustPivot(to newPivot: SIMD3<Float>, duration: Float = 0.15)
 ```
 
-Silently shifts the orbit pivot if the new position differs by more than 0.001 world units and no animation is already running. Used by `PivotStrategy` to auto-adjust the orbit center. Only the pivot is animated, so orbit and pan momentum keep coasting while it moves. Previously the animation replayed the rotation it started from on every tick and, when it finished, threw away whatever the momentum had turned in the meantime, so the model jumped back. `ViewportController` skips the dynamic pivot in `.firstPerson`, where moving the pivot would move the camera.
+Silently shifts the orbit pivot if the new position differs by more than 0.001 world units and no animation is already running. Only the pivot is animated, so orbit and pan momentum keep coasting while it moves. Previously the animation replayed the rotation it started from on every tick and, when it finished, threw away whatever the momentum had turned in the meantime, so the model jumped back. `ViewportController` skips the dynamic pivot in `.firstPerson`, where moving the pivot would move the camera.
 
-The camera keeps its place along the line of sight: `distance` changes by the pivot's change in depth (clamped to `[minDistance, maxDistance]`). A pivot that moves along the view axis, such as the dynamic pivot's view-centre raycast hit, leaves the view exactly as it was. Previously the distance was kept, so the camera slid toward or away from the model after each gesture when zoomed in, a visible zoom jump (issue #200). Only a move across the view, such as the zoomed-out jump to the scene centre, still moves the camera, sideways, as it must for the pivot to stay at the centre of the view.
+The camera keeps its place along the line of sight: `distance` changes by the pivot's change in depth (clamped to `[minDistance, maxDistance]`). A pivot that moves along the view axis, such as the dynamic pivot's view-centre raycast hit, leaves the view exactly as it was. Previously the distance was kept, so the camera slid toward or away from the model after each gesture when zoomed in, a visible zoom jump (issue #200). Only a move across the view still moves the camera, sideways, as it must for the pivot to stay at the centre of the view. The dynamic pivot never makes such a move: `ViewportController` slides the pivot along the current line of sight to the depth `PivotStrategy` picked, recomputing it from the camera's position on every tick, so the view never moves, even while momentum turns or pans it (issue #204).
 
 ---
 
@@ -511,7 +511,7 @@ Seeds pan inertia. Same semantics as `setAngularVelocity`.
 
 ## PivotStrategy
 
-`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. When the camera is zoomed out it returns the scene center (the world-space union of the visible `.geometry`-layer bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too; hidden and `.overlay` bodies are left out); when zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
+`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. Every pivot it returns is on the line of sight through the view centre, so moving the pivot there never moves the view. When the camera is zoomed out it returns the point on the line of sight at the depth of the scene centre (the centre of the world-space union of the visible `.geometry`-layer bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too; hidden and `.overlay` bodies are left out). It used to return the scene centre itself, which after a pan was off to the side, so releasing the pan slid the view back to the model (issue #204). When zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
 
 `ViewportController` owns a `PivotStrategy` and drives it automatically. You only need to interact with it directly for custom viewport integrations.
 
@@ -537,7 +537,7 @@ public func computePivot(
 ) -> SIMD3<Float>?
 ```
 
-Returns the recommended pivot, or `nil` when `config.isEnabled` is `false` or no scene geometry exists. The view-centre raycast skips geometry removed by `clipPlanes`, so a sectioned model pivots on what is drawn; `ViewportController` passes its own `clipPlanes`. The caller (typically `ViewportController`) should feed the result to `CameraController.adjustPivot(to:duration:)`.
+Returns the recommended pivot, or `nil` when `config.isEnabled` is `false`, no scene geometry exists, the scene centre is behind the camera, or (closer in than the zoomed-out band) the view-centre raycast misses. The view-centre raycast skips geometry removed by `clipPlanes`, so a sectioned model pivots on what is drawn; `ViewportController` passes its own `clipPlanes`. `ViewportController` slides its pivot along the line of sight to the result's depth. A custom integration can pass the result to `CameraController.adjustPivot(to:duration:)`, which for a point on the line of sight also leaves the view unchanged.
 
 ---
 
@@ -570,7 +570,7 @@ public init(
 
 - **`isEnabled`**: set to `false` to use a fixed pivot at all times.
 - **`animationDuration`**: how long the pivot glide animation takes (seconds).
-- **`zoomThreshold`**: `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (scene center) from "zoomed in" (raycast hit). Default `0.5`.
+- **`zoomThreshold`**: `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (the scene centre's depth on the line of sight) from "zoomed in" (raycast hit). Default `0.5`.
 - **`blendBand`**: fraction of `zoomThreshold` used as the width of the smoothstep blend zone between the two pivot strategies. Default `0.3`.
 
 ---

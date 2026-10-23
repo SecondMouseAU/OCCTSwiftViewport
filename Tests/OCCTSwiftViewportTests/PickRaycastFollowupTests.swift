@@ -158,14 +158,16 @@ struct PivotStrategyFilteringTests {
         var body = quad(id: "q", x: 40)
         body.isVisible = false
         let strategy = PivotStrategy()
-        let far = CameraState(distance: 1000)
+        // Looking down -z at a pivot 5 above the quad, so the quad's depth is a new pivot.
+        let far = CameraState(distance: 1000, pivot: SIMD3(0, 0, 5))
         #expect(
             strategy.computePivot(cameraState: far, bodies: [body], aspectRatio: 1, config: config)
                 == nil)
         body.isVisible = true
         let pivot = try #require(
             strategy.computePivot(cameraState: far, bodies: [body], aspectRatio: 1, config: config))
-        #expect(simd_distance(pivot, [40, 0, 0]) < 1e-3, "pivot \(pivot)")
+        // The quad's centre at its depth on the line of sight (issue #204), not the centre.
+        #expect(simd_distance(pivot, [0, 0, 0]) < 1e-3, "pivot \(pivot)")
     }
 }
 

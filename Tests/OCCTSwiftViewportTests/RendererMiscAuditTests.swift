@@ -111,7 +111,8 @@ struct EmptiedBodyTests {
         }
         var opts = OffscreenRenderOptions(
             width: 64, height: 64, cameraState: frontCamera,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false, showAxes: false)
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false,
+            showAxes: false)
         opts.displayMode = .unlit
 
         let full = try #require(renderer.render(bodies: [quadBody(id: "a")], options: opts))
@@ -475,11 +476,12 @@ struct PivotWorldBoundsTests {
     @Test("Zoomed-out pivot is the world-space centre of a transformed body")
     func transformedBody() throws {
         var body = ViewportBody.box(id: "b")
-        body.transform = translation(50, 0, 0)
+        // Along the line of sight, where the zoomed-out pivot goes (issue #204).
+        body.transform = translation(0, 0, 50)
         let pivot = try #require(
             PivotStrategy().computePivot(
                 cameraState: farCamera, bodies: [body], aspectRatio: 1, config: config))
-        #expect(simd_distance(pivot, [50, 0, 0]) < 1e-3, "pivot \(pivot)")
+        #expect(simd_distance(pivot, [0, 0, 50]) < 1e-3, "pivot \(pivot)")
     }
 
     @Test("Moving a body by transform alone moves the pivot (no stale cache)")

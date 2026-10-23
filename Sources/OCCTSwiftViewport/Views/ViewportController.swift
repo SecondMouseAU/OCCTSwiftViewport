@@ -759,6 +759,10 @@ public final class ViewportController: ObservableObject {
 extension ViewportController {
 
     /// Computes and applies a dynamic pivot update.
+    ///
+    /// The pivot only slides along the line of sight, so the camera's position and view
+    /// direction never change: releasing a pan, orbit, pinch or roll leaves the view where the
+    /// gesture put it (issue #204).
     internal func updateDynamicPivot(bodies: [ViewportBody]) {
         let config = configuration.dynamicPivotConfiguration
         // First-person turns the camera in place and the pivot just follows it; moving the
@@ -772,7 +776,8 @@ extension ViewportController {
             config: config,
             clipPlanes: clipPlanes
         ) {
-            cameraController.adjustPivot(to: newPivot, duration: config.animationDuration)
+            cameraController.slidePivotAlongLineOfSight(
+                toDepthOf: newPivot, duration: config.animationDuration)
         }
     }
 
