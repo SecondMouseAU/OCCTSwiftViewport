@@ -56,9 +56,8 @@ public struct MetalViewportView: View {
     // `ViewportInputEvent`s; interpretation (which action a drag performs) lives
     // in `ViewportController.dispatch(_:)`.
     #if os(iOS) || os(visionOS)
-        @State private var lastDragValue: CGSize = .zero
+        @State private var touchDrags = TouchDragArbiter()
         @State private var lastMagnification: CGFloat = 1.0
-        @State private var isPanning: Bool = false
         @State private var lastRotation: Angle = .zero
     #endif
 
@@ -131,10 +130,9 @@ public struct MetalViewportView: View {
         }
     }
 
+    /// Passes the view's size to the controller, for picking and for a 1:1 pan.
     private func updateAspectRatio(_ size: CGSize) {
-        if size.width > 0, size.height > 0 {
-            controller.lastAspectRatio = Float(size.width / size.height)
-        }
+        controller.updateViewportSize(size)
     }
 
     // MARK: - Measurement Overlay
@@ -367,8 +365,14 @@ public struct MetalViewportView: View {
     #if os(iOS) || os(visionOS)
         private var panGestureOverlay: some View {
             TwoFingerPanGestureView(
+                onBegan: { centroid, viewSize in
+                    apply(touchDrags.twoFingerPanBegan())
+                    controller.setTwoFingerDragOrigin(
+                        offsetFromCenter: SIMD2(
+                            Float(centroid.x - viewSize.width / 2),
+                            Float(centroid.y - viewSize.height / 2)))
+                },
                 onChanged: { translation in
-                    isPanning = true
                     controller.dispatch(
                         .twoFingerPanChanged(
                             translation: SIMD2<Float>(
@@ -376,6 +380,7 @@ public struct MetalViewportView: View {
                         ))
                 },
                 onEnded: { velocity in
+                    touchDrags.twoFingerPanEnded()
                     controller.dispatch(
                         .twoFingerPanEnded(
                             velocity: SIMD2<Float>(Float(velocity.width), Float(velocity.height))
@@ -384,44 +389,31 @@ public struct MetalViewportView: View {
             )
         }
 
+        /// Sets the drag origin and dispatches the events of one `TouchDragArbiter` step.
+        private func apply(_ step: TouchDragArbiter.Step) {
+            if let origin = step.dragOrigin {
+                controller.setDragOrigin(offsetFromCenter: origin)
+            }
+            for event in step.events {
+                controller.dispatch(event)
+            }
+        }
+
         private func orbitGesture(viewSize: CGSize) -> some Gesture {
             // minimumDistance 8 (was 1): a 1pt threshold caught the sub-pixel jitter of a *tap* as a
             // micro-orbit, so SpatialTapGesture rarely fired and tap-to-select felt broken. 8pt cleanly
             // separates a tap (select) from a drag (orbit).
+            // `TouchDragArbiter` keeps this drag out of the way of a two-finger pan, and ends a
+            // drag whose end never arrived (issue #200).
             DragGesture(minimumDistance: 8)
                 .onChanged { value in
-                    guard !isPanning else { return }
-
-                    if lastDragValue == .zero {
-                        // First change of a drag: where it started, for the arcball's sphere.
-                        controller.setDragOrigin(
-                            offsetFromCenter: SIMD2(
-                                Float(value.startLocation.x - viewSize.width / 2),
-                                Float(value.startLocation.y - viewSize.height / 2)))
-                    }
-                    let delta = CGSize(
-                        width: value.translation.width - lastDragValue.width,
-                        height: value.translation.height - lastDragValue.height
-                    )
-                    lastDragValue = value.translation
-
-                    controller.dispatch(
-                        .dragChanged(
-                            delta: SIMD2<Float>(Float(delta.width), Float(delta.height)),
-                            modifiers: []
-                        ))
+                    apply(
+                        touchDrags.dragChanged(
+                            start: value.startLocation, translation: value.translation,
+                            viewSize: viewSize))
                 }
                 .onEnded { value in
-                    lastDragValue = .zero
-                    if !isPanning {
-                        controller.dispatch(
-                            .dragEnded(
-                                velocity: SIMD2<Float>(
-                                    Float(value.velocity.width), Float(value.velocity.height)),
-                                modifiers: []
-                            ))
-                    }
-                    isPanning = false
+                    apply(touchDrags.dragEnded(velocity: value.velocity))
                     controller.scheduleDynamicPivotUpdate(bodies: bodies)
                 }
         }
@@ -520,6 +512,8 @@ public struct MetalViewportView: View {
 
     /// A transparent UIView overlay that recognizes two-finger pan gestures via UIKit.
     private struct TwoFingerPanGestureView: UIViewRepresentable {
+        /// The pan began: the touches' centroid where they went down, and the view's size.
+        var onBegan: (CGPoint, CGSize) -> Void
         var onChanged: (CGSize) -> Void
         var onEnded: (CGSize) -> Void
 
@@ -540,26 +534,40 @@ public struct MetalViewportView: View {
         }
 
         func updateUIView(_ uiView: UIView, context: Context) {
+            context.coordinator.onBegan = onBegan
             context.coordinator.onChanged = onChanged
             context.coordinator.onEnded = onEnded
         }
 
         func makeCoordinator() -> Coordinator {
-            Coordinator(onChanged: onChanged, onEnded: onEnded)
+            Coordinator(onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
         }
 
         @MainActor
         class Coordinator: NSObject, UIGestureRecognizerDelegate {
+            var onBegan: (CGPoint, CGSize) -> Void
             var onChanged: (CGSize) -> Void
             var onEnded: (CGSize) -> Void
 
-            init(onChanged: @escaping (CGSize) -> Void, onEnded: @escaping (CGSize) -> Void) {
+            init(
+                onBegan: @escaping (CGPoint, CGSize) -> Void,
+                onChanged: @escaping (CGSize) -> Void, onEnded: @escaping (CGSize) -> Void
+            ) {
+                self.onBegan = onBegan
                 self.onChanged = onChanged
                 self.onEnded = onEnded
             }
 
             @objc func handlePan(_ recognizer: UIPanGestureRecognizer) {
                 switch recognizer.state {
+                case .began:
+                    // The translation is not reset here, so the first change carries the
+                    // movement since touch-down; the centroid there is where the drag began.
+                    let location = recognizer.location(in: recognizer.view)
+                    let translation = recognizer.translation(in: recognizer.view)
+                    onBegan(
+                        CGPoint(x: location.x - translation.x, y: location.y - translation.y),
+                        recognizer.view?.bounds.size ?? .zero)
                 case .changed:
                     let translation = recognizer.translation(in: recognizer.view)
                     onChanged(CGSize(width: translation.x, height: translation.y))

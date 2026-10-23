@@ -8,9 +8,9 @@ nav_order: 11
 
 OCCTSwiftViewport ships with a platform-neutral input architecture built around three layers:
 
-1. **`GestureConfiguration`** — declares *what* each gesture or modifier+drag means (orbit, pan, zoom, select, …)
-2. **`ViewportInputEvent`** — the portable event type that carries deltas and modifier state, decoupled from AppKit/UIKit
-3. **`ViewportController.dispatch(_:)`** — the single interpretation entry point that applies the configuration and drives the camera
+1. **`GestureConfiguration`**: declares *what* each gesture or modifier+drag means (orbit, pan, zoom, select, …)
+2. **`ViewportInputEvent`**: the portable event type that carries deltas and modifier state, decoupled from AppKit/UIKit
+3. **`ViewportController.dispatch(_:)`**: the single interpretation entry point that applies the configuration and drives the camera
 
 Native platform gesture recognisers (iOS drag/pinch/rotate; macOS mouse/scroll) are already wired in by `MetalViewportView`. You only need this page if you want to change the *mapping*, intercept events for inspection, or feed *synthetic* input (tests, XR, Catalyst, scripting).
 
@@ -20,7 +20,7 @@ Native platform gesture recognisers (iOS drag/pinch/rotate; macOS mouse/scroll) 
 
 `GestureConfiguration` is a `Sendable` value type. Assign a preset to `ViewportConfiguration.gestureConfiguration` before (or after) creating the controller.
 
-### `.default` — Shapr3D style (the out-of-the-box preset)
+### `.default`: Shapr3D style (the out-of-the-box preset)
 
 | Input | Action |
 |---|---|
@@ -32,7 +32,7 @@ Native platform gesture recognisers (iOS drag/pinch/rotate; macOS mouse/scroll) 
 | Command+drag (macOS) | Select |
 | Double-tap / double-click | Nothing (opt in; see [Resetting the view](#resetting-the-view)) |
 
-### `.blender` — Blender style
+### `.blender`: Blender style
 
 Unmodified mouse drag selects; orbit is behind **Option**, pan behind **Shift**, zoom behind **Command**.
 
@@ -45,7 +45,7 @@ Unmodified mouse drag selects; orbit is behind **Option**, pan behind **Shift**,
 
 Touch gestures (iOS/visionOS) are unchanged from `.default`.
 
-### `.fusion360` — Fusion 360 style
+### `.fusion360`: Fusion 360 style
 
 | Input | Action |
 |---|---|
@@ -54,7 +54,7 @@ Touch gestures (iOS/visionOS) are unchanged from `.default`.
 | Option+drag | Pan |
 | Command+drag | Zoom |
 
-### `.visionOS` — spatial (indirect pinch) input
+### `.visionOS`: spatial (indirect pinch) input
 
 Identical iOS touch mapping with `dampingFactor` raised to `0.15` so inertia settles more predictably with indirect input. Tune further on real hardware.
 
@@ -84,7 +84,7 @@ All sensitivity values are properties on `GestureConfiguration`. Start from a pr
 ```swift
 var gestures = GestureConfiguration.default
 gestures.orbitSensitivity = 0.008         // radians per point (default 0.005)
-gestures.panSensitivity = 0.005           // multiplier (default 0.005)
+gestures.panSensitivity = 1               // pan speed × the finger's; 1 = 1:1 (default 1)
 gestures.zoomSensitivity = 1.2            // pinch / drag-zoom exponent (default 1.0)
 gestures.scrollZoomSensitivity = 0.4      // scroll-wheel zoom (default 0.25)
 gestures.enableInertia = true             // momentum after release (default true)
@@ -133,7 +133,17 @@ controller.setDragOrigin(offsetFromCenter: SIMD2(Float(start.x - size.width / 2)
 controller.dispatch(.dragChanged(delta: delta, modifiers: []))
 ```
 
-Without it a drag is taken to start at the centre of the view, where the arcball only tumbles.
+Without it a drag is taken to start at the centre of the view, where the arcball only tumbles. A two-finger drag bound to `.orbit` takes its start, the centroid of the touches, from `setTwoFingerDragOrigin(offsetFromCenter:)` in the same way.
+
+If your view is not a `MetalViewportView`, also give the controller its size, so pan stays 1:1 with the finger:
+
+```swift
+controller.updateViewportSize(size)   // sets lastAspectRatio and the camera's viewportHeight
+```
+
+### Pan speed
+
+Pan is 1:1 by default: the point under the finger stays under it (in perspective, the point at the pivot's depth; in orthographic, any point). `panSensitivity` multiplies that, so `2` pans twice as far as the finger moves. Before issue #200 it was world units per point scaled by the camera distance, default `0.005`, which panned about five times as far as the finger; a configuration that still sets `0.005` now pans 200 times slower than 1:1, so change it to `1`.
 
 ---
 
@@ -173,7 +183,7 @@ None of the presets ships a reset binding. Blender's Home key and Fusion 360's H
 | `.orbit` | Rotate camera around pivot |
 | `.pan` | Translate camera parallel to view plane |
 | `.zoom` | Dolly in/out |
-| `.select` | Initiates a pick (observational — picking runs on its own renderer path) |
+| `.select` | Initiates a pick (observational; picking runs on its own renderer path) |
 | `.focusOnPoint` | Recentres the pivot under the cursor |
 | `.resetView` | Resets to `initialCameraState` (prefer `resetViewTriggers`) |
 | `.none` | No-op |
@@ -194,10 +204,10 @@ ViewportModifierKeys.command  // rawValue 8
 Bridge from platform types at the point where you translate native input:
 
 ```swift
-// macOS — inside an NSResponder / NSEvent handler
+// macOS: inside an NSResponder / NSEvent handler
 let modifiers = ViewportModifierKeys(event.modifierFlags)  // NSEvent.ModifierFlags
 
-// iOS / Catalyst — from a UIKeyModifierFlags (e.g. a hardware-keyboard gesture)
+// iOS / Catalyst: from a UIKeyModifierFlags (e.g. a hardware-keyboard gesture)
 let modifiers = ViewportModifierKeys(command.modifierFlags)  // UIKeyModifierFlags
 ```
 
@@ -222,9 +232,9 @@ let action = controller.configuration.gestureConfiguration.dragAction(for: modif
 | `.twoFingerPanEnded(velocity:)` | release velocity | Two-finger release |
 | `.pinchChanged(scale:)` | incremental scale ratio (1.0 = no change) | Pinch gesture |
 | `.pinchAtChanged(scale:centerNDC:aspectRatio:)` | scale + pinch centre in NDC | Pinch-to-zoom at cursor |
-| `.pinchEnded` | — | Pinch release |
+| `.pinchEnded` | (none) | Pinch release |
 | `.rotateChanged(radians:)` | incremental angle | Two-finger rotation |
-| `.rotateEnded` | — | Rotation release |
+| `.rotateEnded` | (none) | Rotation release |
 | `.scroll(delta:cursorNDC:aspectRatio:)` | scroll amount + cursor NDC | Scroll wheel |
 | `.tap(ndc:count:)` | NDC position + tap count | Tap / click |
 
@@ -257,7 +267,7 @@ The dispatch implementation resolves the `GestureAction` (using `GestureConfigur
 
 ## Observing the Event Stream: `onInputEvent`
 
-`ViewportController.onInputEvent` is an optional `((ViewportInputEvent) -> Void)` callback fired on every event *before* interpretation. It does not affect camera behaviour — use it for debugging, HUD inspectors, or logging:
+`ViewportController.onInputEvent` is an optional `((ViewportInputEvent) -> Void)` callback fired on every event *before* interpretation. It does not affect camera behaviour; use it for debugging, HUD inspectors, or logging:
 
 ```swift
 controller.onInputEvent = { event in
@@ -283,7 +293,7 @@ controller.onInputEvent = nil
 
 ## Building a Custom Mapping
 
-For a mapping not covered by the presets, construct `GestureConfiguration` directly. Example — Maya-style (Alt+LMB orbit, Alt+MMB pan, Alt+RMB zoom; bare click selects):
+For a mapping not covered by the presets, construct `GestureConfiguration` directly. Example, Maya-style (Alt+LMB orbit, Alt+MMB pan, Alt+RMB zoom; bare click selects):
 
 ```swift
 var maya = GestureConfiguration(

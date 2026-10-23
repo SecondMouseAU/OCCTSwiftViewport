@@ -6,9 +6,9 @@ nav_order: 4
 
 # ViewCube
 
-The ViewCube is an interactive 3D navigation widget — familiar from Shapr3D and FreeCAD — that tracks the camera orientation and lets the user snap to any of 26 standard views with a single tap. Dragging the cube orbits the camera in real time.
+The ViewCube is an interactive 3D navigation widget, familiar from Shapr3D and FreeCAD, that tracks the camera orientation and lets the user snap to any of 26 standard views with a single tap. Dragging the cube orbits the camera in real time.
 
-## Two widgets — use the right one
+## Two widgets: use the right one
 
 | Widget | Type | Purpose |
 |---|---|---|
@@ -19,7 +19,7 @@ The ViewCube is an interactive 3D navigation widget — familiar from Shapr3D an
 
 ## Built-in overlay (zero setup)
 
-`MetalViewportView` draws `NavigationCubeView` automatically when `showViewCube` is `true` — which is the default. No extra code is required:
+`MetalViewportView` draws `NavigationCubeView` automatically when `showViewCube` is `true`, which is the default. No extra code is required:
 
 ```swift
 let controller = ViewportController()
@@ -41,7 +41,7 @@ config.viewCubePosition = .topTrailing   // move cube to top-right
 let controller = ViewportController(configuration: config)
 ```
 
-`ViewCubePosition` has four cases — `.topLeading`, `.topTrailing`, `.bottomLeading`, `.bottomTrailing` — each mapping to the matching SwiftUI `Alignment` corner.
+`ViewCubePosition` has four cases (`.topLeading`, `.topTrailing`, `.bottomLeading`, `.bottomTrailing`), each mapping to the matching SwiftUI `Alignment` corner.
 
 ## Hiding and showing at runtime
 
@@ -57,7 +57,7 @@ controller.showViewCube = true
 
 ## The 26 ViewCubeRegions
 
-A tap on the cube resolves to a `ViewCubeRegion` — an enum with 26 cases covering every clickable target:
+A tap on the cube resolves to a `ViewCubeRegion`, an enum with 26 cases covering every clickable target:
 
 | Category | Count | Examples |
 |---|---|---|
@@ -65,7 +65,7 @@ A tap on the cube resolves to a `ViewCubeRegion` — an enum with 26 cases cover
 | Edges | 12 | `.topFront`, `.frontLeft`, `.bottomRight`, … |
 | Corners | 8 | `.topFrontLeft`, `.topBackRight`, `.bottomFrontRight`, … |
 
-Each case exposes `.isFace`, `.isEdge`, `.isCorner`, and a human-readable `.displayName` (e.g. `"Top-Front-Left"`). Faces additionally provide `.standardView` — the matching `StandardView` case, or `nil` for edges and corners.
+Each case exposes `.isFace`, `.isEdge`, `.isCorner`, and a human-readable `.displayName` (e.g. `"Top-Front-Left"`). Faces additionally provide `.standardView`: the matching `StandardView` case, or `nil` for edges and corners.
 
 ## Snapping the camera with goToRegion
 
@@ -89,9 +89,9 @@ The rotation is computed by `ViewCubeRegion.cameraState(pivot:distance:)`:
 
 The pure model lives in `NavigationCube` (no SwiftUI dependency, fully unit-tested). The algorithm:
 
-1. **Project** — the tap point is un-projected from widget coordinates into the unit-cube's rotated frame using the camera quaternion inverse.
-2. **Ray-cast** — a ray is built from that screen point through the cube, intersected with `[-1, 1]³` via a slab test. The *frontmost* surface point is taken.
-3. **Classify** — each tangent axis coordinate is compared against ±⅓. Any coordinate outside that band activates the corresponding face region (e.g. x > ⅓ → `.right`). One active face = face hit; two = edge hit; three = corner hit.
+1. **Project**: the tap point is un-projected from widget coordinates into the unit-cube's rotated frame using the camera quaternion inverse.
+2. **Ray-cast**: a ray is built from that screen point through the cube, intersected with `[-1, 1]³` via a slab test. The *frontmost* surface point is taken.
+3. **Classify**: each tangent axis coordinate is compared against ±⅓. Any coordinate outside that band activates the corresponding face region (e.g. x > ⅓ → `.right`). One active face = face hit; two = edge hit; three = corner hit.
 
 ```swift
 // Use NavigationCube directly for custom hit-testing
@@ -107,9 +107,7 @@ if let region = cube.region(at: tapPoint) {
 
 ## Drag-to-orbit
 
-Dragging the cube more than 4 pt triggers orbit mode. The delta goes through the same path as a viewport drag, ending in `controller.handleOrbit(translation:)`, so `GestureConfiguration.dragRotation`, inertia and rotation style apply identically: with the default `.rotateObject`, the cube face under the finger turns with it. The cube does not report where on it the drag started, so in `.arcball` a cube drag starts at the centre of the virtual sphere and tumbles; roll from the viewport instead.
-
-The sign is inverted relative to viewport drags: dragging the cube clockwise rotates the camera clockwise around the model (grab-the-camera, not grab-the-model).
+Dragging the cube more than 4 pt triggers orbit mode. The delta goes through the same path as a viewport drag, ending in `controller.handleOrbit(translation:)`, so `GestureConfiguration.dragRotation`, inertia and rotation style apply identically: with the default `.rotateObject`, the cube face under the finger turns with it. In `.arcball` a cube drag starts at its offset from the cube's centre. The virtual sphere is sized for the viewport (400 pt across at the default sensitivity), so on a 96 pt cube that only tilts the tumble axis a little, and a cube drag cannot roll; roll from the viewport instead. A cube drag also stops any momentum and any running view animation, as a viewport drag does.
 
 ## Embedding NavigationCubeView manually
 
@@ -122,7 +120,7 @@ ZStack {
 
     // Disable the built-in overlay first to avoid double-rendering
     // (showViewCube defaults to true).
-    // controller.showViewCube = false  — set before MetalViewportView appears
+    // controller.showViewCube = false  // set before MetalViewportView appears
     
     VStack {
         NavigationCubeView(controller: controller)
@@ -138,10 +136,10 @@ ZStack {
 
 ## Legacy: ViewCubeView
 
-`ViewCubeView` is a passive orientation indicator with a compass ring. It has no tap or drag interaction — tapping a face calls `controller.goToStandardView(_:duration:)` internally but does not support edges or corners. Prefer `NavigationCubeView` for all new code.
+`ViewCubeView` is a passive orientation indicator with a compass ring. It has no tap or drag interaction; tapping a face calls `controller.goToStandardView(_:duration:)` internally but does not support edges or corners. Prefer `NavigationCubeView` for all new code.
 
 ```swift
-// Legacy usage — orientation indicator only
+// Legacy usage: orientation indicator only
 ViewCubeView(controller: controller)
     .frame(width: 80, height: 80)
 ```

@@ -85,22 +85,32 @@ extension ViewportController {
         case .twoFingerPanChanged(let translation):
             if !twoFingerDragActive {
                 twoFingerDragActive = true
-                cameraController.stopInertia()
+                cameraController.yieldToGesture()
+                twoFingerDragPointer = pendingTwoFingerDragOrigin ?? .zero
+                pendingTwoFingerDragOrigin = nil
             }
+            let pointer = twoFingerDragPointer ?? .zero
             applyDrag(
                 configuration.gestureConfiguration.twoFingerDrag, delta: translation,
-                pointer: .zero)
+                pointer: pointer)
+            twoFingerDragPointer = pointer + translation
 
         case .twoFingerPanEnded(let velocity):
             twoFingerDragActive = false
+            twoFingerDragPointer = nil
+            pendingTwoFingerDragOrigin = nil
             endDrag(configuration.gestureConfiguration.twoFingerDrag, velocity: velocity)
 
+        // Pinch, roll and scroll take the camera from a view animation, which would overwrite
+        // them on its next tick, but leave momentum coasting.
         case .pinchChanged(let scale):
             guard resolvedPinchAction == .zoom else { break }
+            cameraController.cancelViewAnimation()
             handleZoom(magnification: CGFloat(scale))
 
         case .pinchAtChanged(let scale, let centerNDC, let aspectRatio):
             guard resolvedPinchAction == .zoom else { break }
+            cameraController.cancelViewAnimation()
             handleZoom(
                 magnification: CGFloat(scale), centerNormalized: centerNDC, aspectRatio: aspectRatio
             )
@@ -109,6 +119,7 @@ extension ViewportController {
             break
 
         case .rotateChanged(let radians):
+            cameraController.cancelViewAnimation()
             handleRoll(angle: CGFloat(radians))
 
         case .rotateEnded:
@@ -116,6 +127,7 @@ extension ViewportController {
 
         case .scroll(let delta, let cursorNDC, let aspectRatio):
             guard configuration.gestureConfiguration.scrollWheel == .zoom else { break }
+            cameraController.cancelViewAnimation()
             handleScrollZoom(
                 delta: CGFloat(delta),
                 cursorNormalized: cursorNDC,
@@ -212,10 +224,24 @@ extension ViewportController {
         pendingDragOrigin = offsetFromCenter
     }
 
+    /// Where the next two-finger drag starts: the centroid of the two touches, in points from the
+    /// centre of the view (y down).
+    ///
+    /// Optional, like `setDragOrigin(offsetFromCenter:)`, and used the same way when
+    /// `GestureConfiguration.twoFingerDrag` is `.orbit` with the arcball rotation style: a
+    /// two-finger drag that starts near the edge of the view and moves around the centre rolls
+    /// it. `MetalViewportView` calls it when a two-finger pan begins (iOS / visionOS); call it
+    /// before the first `.twoFingerPanChanged` of a drag from another input source. Without it
+    /// the drag is taken to start at the centre, where it can only tumble.
+    public func setTwoFingerDragOrigin(offsetFromCenter: SIMD2<Float>) {
+        pendingTwoFingerDragOrigin = offsetFromCenter
+    }
+
     private func apply(dragDelta delta: SIMD2<Float>, modifiers: ViewportModifierKeys) {
         if inputDragPointer == nil {
-            // A new drag: stop any momentum still coasting rather than adding to it.
-            cameraController.stopInertia()
+            // A new drag: stop any momentum still coasting rather than adding to it, and any
+            // animation that would overwrite the drag.
+            cameraController.yieldToGesture()
             inputDragPointer = pendingDragOrigin ?? .zero
             pendingDragOrigin = nil
         }

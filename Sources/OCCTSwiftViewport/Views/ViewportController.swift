@@ -199,6 +199,17 @@ public final class ViewportController: ObservableObject {
     /// Current aspect ratio (updated by MetalViewportView).
     public internal(set) var lastAspectRatio: Float = 1.0
 
+    /// Records the size of the view, in points, that gestures move over.
+    ///
+    /// Sets `lastAspectRatio` and `CameraController.viewportHeight`, which keeps pan 1:1 with the
+    /// pointer. `MetalViewportView` calls it whenever its size changes; call it yourself when
+    /// you drive the controller from another view. An empty size is ignored.
+    public func updateViewportSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        lastAspectRatio = Float(size.width / size.height)
+        cameraController.viewportHeight = Float(size.height)
+    }
+
     /// Coalescing work item for dynamic pivot updates.
     private var pivotWorkItem: DispatchWorkItem?
 
@@ -463,6 +474,14 @@ public final class ViewportController: ObservableObject {
     ///
     /// Internal, used by the input router.
     var twoFingerDragActive = false
+
+    /// The two-finger drag's centroid, in points from the view centre (y down).
+    ///
+    /// `nil` between drags. Internal, used by the input router.
+    var twoFingerDragPointer: SIMD2<Float>?
+
+    /// Where the next two-finger drag starts, from `setTwoFingerDragOrigin(offsetFromCenter:)`.
+    var pendingTwoFingerDragOrigin: SIMD2<Float>?
 
     /// Scene bodies that a `.focusOnPoint` double-tap or double-click raycasts against.
     ///

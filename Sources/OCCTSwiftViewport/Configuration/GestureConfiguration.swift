@@ -16,7 +16,15 @@ public struct GestureConfiguration: Sendable {
     /// Orbit sensitivity (radians per point of drag).
     public var orbitSensitivity: Float
 
-    /// Pan sensitivity multiplier.
+    /// Pan speed as a multiple of the pointer's: `1` (the default) is 1:1.
+    ///
+    /// At `1` the point under the finger or pointer stays under it while panning: the world
+    /// point at the pivot's depth in perspective, any point in orthographic. `2` pans twice as
+    /// far as the pointer moves, `0.5` half as far.
+    ///
+    /// Before issue #200 the default was `0.005` world units per point, scaled by the camera
+    /// distance, which panned about five times as far as the finger in an 800 pt tall view. A
+    /// value carried over from then pans 200 times slower than 1:1; use `1` instead.
     public var panSensitivity: Float
 
     /// Pinch and drag-zoom sensitivity: the exponent applied to the gesture's magnification
@@ -26,7 +34,12 @@ public struct GestureConfiguration: Sendable {
     /// Scroll wheel zoom sensitivity.
     public var scrollZoomSensitivity: Float
 
-    /// Minimum pan speed floor (prevents pan stalling when zoomed in very close).
+    /// Minimum pan speed, in world units per point of drag.
+    ///
+    /// Default `0`.
+    /// The 1:1 pan already tracks the pointer however close the camera is, so the default leaves
+    /// it alone. A positive value speeds pan up wherever 1:1 would move less than that per
+    /// point. It was `0.001` before issue #200, which broke 1:1 inside a distance of about 1.
     public var minPanSpeed: Float
 
     // MARK: - Orbit direction
@@ -182,10 +195,10 @@ public struct GestureConfiguration: Sendable {
     /// Creates a gesture configuration with the specified settings.
     public init(
         orbitSensitivity: Float = 0.005,
-        panSensitivity: Float = 0.005,
+        panSensitivity: Float = 1,
         zoomSensitivity: Float = 1.0,
         scrollZoomSensitivity: Float = 0.25,
-        minPanSpeed: Float = 0.001,
+        minPanSpeed: Float = 0,
         dragRotation: DragRotationConvention = .rotateObject,
         invertOrbitHorizontal: Bool = false,
         invertOrbitVertical: Bool = false,

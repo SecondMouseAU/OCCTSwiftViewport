@@ -25,6 +25,10 @@ Two types form the public entry point to the viewport: `MetalViewportView` is th
 
 A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap; on macOS: mouse drag, scroll-wheel zoom, trackpad magnify/rotate, double-click and configured reset key combinations, all handled natively by the `MTKView` subclass. Double-taps, double-clicks and keys do nothing unless `GestureConfiguration.resetViewTriggers`, `doubleTap` or `doubleClick` opt in. On iOS / visionOS the double-tap recognizer is attached only when something uses it, so single-tap picks are not held back waiting for a possible second tap. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
 
+The view passes its size to `ViewportController.updateViewportSize(_:)` whenever it changes, which keeps pan 1:1 with the pointer. On iOS / visionOS it tells the controller where each drag starts: the one-finger drag's start (`setDragOrigin(offsetFromCenter:)`) and the two-finger pan's centroid where the fingers went down (`setTwoFingerDragOrigin(offsetFromCenter:)`), so an arcball drag of either kind can roll.
+
+The one-finger drag stands aside while a two-finger pan runs (issue #200). A second finger landing during a one-finger drag ends that drag at once, without momentum, and the rest of it is ignored even after the second finger lifts. The pan clears itself when it ends; previously only the one-finger drag's end cleared it, so a two-finger pan that never started the one-finger drag swallowed the whole next one-finger drag. A one-finger drag cut short by the second finger used to be left open, so the next drag continued it; and a cancelled drag, whose end SwiftUI never delivers, left a stale translation that made the next drag jump. A drag that starts somewhere new now ends any drag still open first.
+
 Built-in overlays that the view manages automatically:
 
 | Overlay | Shown when |
@@ -111,6 +115,14 @@ public internal(set) var lastAspectRatio: Float
 ```
 
 The most recently observed viewport aspect ratio (width / height). Updated automatically by `MetalViewportView` whenever the geometry changes.
+
+#### `updateViewportSize(_:)`
+
+```swift
+public func updateViewportSize(_ size: CGSize)
+```
+
+Records the size of the view, in points, that gestures move over: sets `lastAspectRatio` and `CameraController.viewportHeight`, which pan uses to stay 1:1 with the pointer. `MetalViewportView` calls it whenever its size changes; call it yourself when you drive the controller from another view. An empty size is ignored.
 
 ---
 
@@ -339,7 +351,7 @@ public func focusOn(
 )
 ```
 
-Moves the camera orbit pivot to `point`. Optionally sets the camera-to-pivot `distance`; if `nil`, the current distance is kept. Pass `animated: false` for an instant jump.
+Moves the camera orbit pivot to `point`. Optionally sets the camera-to-pivot `distance`; if `nil`, the current distance is kept. Pass `animated: false` for an instant jump. Either way it stops orbit and pan momentum; previously an instant jump left momentum coasting, which carried the camera straight off the point.
 
 #### `reset(animated:)`
 
@@ -379,7 +391,7 @@ Ends an orbit gesture, optionally applying inertia from the release velocity (po
 public func handlePan(translation: CGSize)
 ```
 
-Applies an incremental pan translation (in points).
+Applies an incremental pan translation (in points). At the default `GestureConfiguration.panSensitivity` of `1` the pan is 1:1: the point under the pointer (at the pivot's depth in perspective) stays under it. See `CameraController.pan(deltaX:deltaY:)`.
 
 #### `endPan(velocity:)`
 

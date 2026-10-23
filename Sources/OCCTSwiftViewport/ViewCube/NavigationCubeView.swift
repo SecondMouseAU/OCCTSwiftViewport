@@ -19,6 +19,8 @@ public struct NavigationCubeView: View {
     @State private var hovered: ViewCubeRegion?
     @State private var lastDrag: CGSize = .zero
     @State private var isOrbiting = false
+    /// Start location of the press the state above belongs to.
+    @State private var pressStart: CGPoint?
 
     /// Movement (points) past which a press becomes an orbit rather than a tap.
     private let orbitThreshold: CGFloat = 4
@@ -74,8 +76,28 @@ public struct NavigationCubeView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        if pressStart != value.startLocation {
+                            // A new press. SwiftUI does not call onEnded for a cancelled
+                            // gesture, so end an orbit the last press left open, rather than
+                            // continuing it from a stale translation.
+                            if isOrbiting { controller.endOrbitDrag(velocity: .zero) }
+                            pressStart = value.startLocation
+                            isOrbiting = false
+                            lastDrag = .zero
+                        }
                         let moved = hypot(value.translation.width, value.translation.height)
-                        if moved > orbitThreshold { isOrbiting = true }
+                        if moved > orbitThreshold, !isOrbiting {
+                            isOrbiting = true
+                            // Take the camera from any momentum or view animation, and begin
+                            // the arcball where the press is on the cube, as the viewport's own
+                            // drags do (issue #200). The sphere is sized for the viewport, so
+                            // on the cube this only tilts the tumble axis a little.
+                            controller.cameraController.yieldToGesture()
+                            controller.beginOrbitDrag(
+                                at: SIMD2(
+                                    Float(value.startLocation.x - side / 2),
+                                    Float(value.startLocation.y - side / 2)))
+                        }
                         if isOrbiting {
                             let dx = value.translation.width - lastDrag.width
                             let dy = value.translation.height - lastDrag.height
@@ -96,6 +118,7 @@ public struct NavigationCubeView: View {
                         }
                         isOrbiting = false
                         lastDrag = .zero
+                        pressStart = nil
                     }
             )
         }
