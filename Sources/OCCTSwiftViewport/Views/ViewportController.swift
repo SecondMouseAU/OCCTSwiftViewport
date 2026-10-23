@@ -671,7 +671,10 @@ public final class ViewportController: ObservableObject {
         guard measurementMode != .none, let result, result.kind == .face else { return }
         guard let body = Self.body(for: result, in: bodies) else { return }
 
-        let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio)
+        // In orthographic the ray starts in front of the picked body (issue #211).
+        let ray = Ray.fromCamera(
+            ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio,
+            sceneBounds: Self.worldBounds(of: body))
         // A wrapped index (body over 16,384 triangles) would intersect the wrong triangle.
         let resolved = Self.resolveAmbiguousFacePick(result, ray: ray, bodies: bodies)
         guard !resolved.isPrimitiveIndexAmbiguous,
@@ -692,8 +695,15 @@ public final class ViewportController: ObservableObject {
         guard let result, result.isPrimitiveIndexAmbiguous, result.kind == .face else {
             return result
         }
-        let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio)
+        let ray = Ray.fromCamera(
+            ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio,
+            sceneBounds: Self.body(for: result, in: bodies).flatMap(Self.worldBounds(of:)))
         return Self.resolveAmbiguousFacePick(result, ray: ray, bodies: bodies)
+    }
+
+    /// The world-space bounds of `body`, which an orthographic pick ray starts in front of.
+    nonisolated static func worldBounds(of body: ViewportBody) -> BoundingBox? {
+        body.boundingBox?.transformed(by: body.transform)
     }
 
     /// Replaces a wrapped face-pick triangle index with the exact one under `ray`.
@@ -791,6 +801,20 @@ extension ViewportController {
         ) {
             cameraController.slidePivotAlongLineOfSight(
                 toDepthOf: newPivot, duration: config.animationDuration)
+        }
+    }
+
+    /// Gives the camera the scene to keep an orthographic eye in front of (issue #211).
+    ///
+    /// Sets `CameraController.sceneBoundsProvider` to the bounds of `bodies()`, read from the
+    /// dynamic pivot's per-generation bounding-box cache. `MetalViewportView` calls it with its
+    /// bodies.
+    ///
+    /// - Parameter bodies: Returns the scene bodies; it is called on each camera change in
+    ///   orthographic.
+    internal func attachSceneBodies(_ bodies: @escaping @MainActor () -> [ViewportBody]) {
+        cameraController.sceneBoundsProvider = { [weak self] in
+            self?.pivotStrategy.sceneBounds(of: bodies())
         }
     }
 

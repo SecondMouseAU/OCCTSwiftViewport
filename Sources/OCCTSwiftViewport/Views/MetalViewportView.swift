@@ -123,6 +123,10 @@ public struct MetalViewportView: View {
             if renderer == nil {
                 renderer = ViewportRenderer(controller: controller, bodies: $bodies)
             }
+            // An orthographic eye is kept in front of these bodies, so zooming or orbiting
+            // never takes it into the model (issue #211).
+            let sceneBodies = $bodies
+            controller.attachSceneBodies { sceneBodies.wrappedValue }
         }
     }
 
@@ -322,6 +326,9 @@ public struct MetalViewportView: View {
             let onRotate: (Float) -> Void = { radians in
                 controller.dispatch(.rotateChanged(radians: radians))
             }
+            // No pivot update after a roll, by design: a roll turns the view about the line of
+            // sight, which the dynamic pivot moves along, so the update would find the pivot it
+            // already has (issue #211).
             let onRotateEnd: () -> Void = {
                 controller.dispatch(.rotateEnded)
             }
@@ -403,6 +410,8 @@ public struct MetalViewportView: View {
                     controller.dispatch(.rotateChanged(radians: Float(radians)))
                 },
                 onRotateEnded: {
+                    // No pivot update, by design: a roll keeps the line of sight the dynamic
+                    // pivot moves along, so it would find the same pivot (issue #211).
                     controller.dispatch(.rotateEnded)
                 }
             )

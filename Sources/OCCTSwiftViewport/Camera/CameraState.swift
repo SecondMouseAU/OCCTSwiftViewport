@@ -28,6 +28,10 @@ public struct CameraState: Hashable, Codable, Sendable {
     public var rotation: simd_quatf
 
     /// Distance from pivot point along view direction.
+    ///
+    /// In perspective it sets how large the view is. In orthographic `orthographicScale` does
+    /// that, and `distance` only places the eye along the line of sight, which moves the clip
+    /// planes but not the picture; orthographic zoom leaves it alone (issue #211).
     public var distance: Float
 
     /// Pivot point (orbit center) in world coordinates.
@@ -175,7 +179,9 @@ public struct CameraState: Hashable, Codable, Sendable {
     /// Pivots on the bounding box centre and chooses a distance (perspective) or
     /// `orthographicScale` (orthographic) such that the bounding sphere of `bounds`
     /// fits inside the view frustum on its narrower axis. `padding` is a
-    /// multiplicative margin: `1.0` = tight fit, `1.1` = 10 % breathing room.
+    /// multiplicative margin: `1.0` = tight fit, `1.1` = 10 % breathing room. In orthographic
+    /// the eye is also moved back, if need be, to sit in front of `bounds` (see
+    /// `placingOrthographicEye(inFrontOf:)`).
     public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState
     {
         let center = bounds.center
@@ -194,6 +200,9 @@ public struct CameraState: Hashable, Codable, Sendable {
             let horizontalScale =
                 aspectRatio < 1 ? verticalScale / max(aspectRatio, 0.001) : verticalScale
             copy.orthographicScale = horizontalScale
+            // The scale frames the view; the eye goes in front of the bounds, so a short
+            // `distance` doesn't put it inside them and near-clip the front (issue #211).
+            copy = copy.placingOrthographicEye(inFrontOf: bounds)
         } else {
             // d = r / sin(halfFovMin). FoV is vertical; horizontal halfFov derives from aspect.
             let halfFovY = (fieldOfView * .pi / 180.0) * 0.5

@@ -23,15 +23,25 @@ public struct Ray: Sendable {
 
     /// Constructs a ray from NDC coordinates through the camera.
     ///
+    /// A perspective ray starts at the eye. An orthographic ray runs along the view direction
+    /// from the eye's plane; with `sceneBounds` it starts in front of them instead, at the eye
+    /// `CameraState.placingOrthographicEye(inFrontOf:)` places, so geometry between the eye
+    /// and the camera's side of the scene, or behind the eye, is not missed (issue #211). That
+    /// is the eye the camera renders from when `CameraController` keeps it in front of the
+    /// scene, so the ray finds what is drawn.
+    ///
     /// - Parameters:
     ///   - ndc: Normalized device coordinates in `[-1, 1]` (x right, y up).
     ///   - cameraState: Current camera state.
     ///   - aspectRatio: Viewport width / height.
+    ///   - sceneBounds: World-space bounds of the scene an orthographic ray must start in front
+    ///     of, or `nil` to start it at the eye. Perspective rays ignore it.
     /// - Returns: A world-space ray.
     public static func fromCamera(
         ndc: SIMD2<Float>,
         cameraState: CameraState,
-        aspectRatio: Float
+        aspectRatio: Float,
+        sceneBounds: BoundingBox? = nil
     ) -> Ray {
         let right = cameraState.rightVector
         let up = cameraState.upVector
@@ -41,7 +51,8 @@ public struct Ray: Sendable {
             let halfH = cameraState.orthographicScale * 0.5
             let halfW = halfH * aspectRatio
             let offset = right * ndc.x * halfW + up * ndc.y * halfH
-            return Ray(origin: cameraState.position + offset, direction: forward)
+            let eye = cameraState.placingOrthographicEye(inFrontOf: sceneBounds).position
+            return Ray(origin: eye + offset, direction: forward)
         } else {
             let fovRad = cameraState.fieldOfView * .pi / 180.0
             let halfH = tan(fovRad * 0.5)
@@ -52,11 +63,16 @@ public struct Ray: Sendable {
     }
 
     /// Constructs a ray through the view center.
+    ///
+    /// `sceneBounds` works as in ``fromCamera(ndc:cameraState:aspectRatio:sceneBounds:)``.
     public static func throughViewCenter(
         cameraState: CameraState,
-        aspectRatio: Float
+        aspectRatio: Float,
+        sceneBounds: BoundingBox? = nil
     ) -> Ray {
-        fromCamera(ndc: .zero, cameraState: cameraState, aspectRatio: aspectRatio)
+        fromCamera(
+            ndc: .zero, cameraState: cameraState, aspectRatio: aspectRatio,
+            sceneBounds: sceneBounds)
     }
 
     // MARK: - Intersection Tests

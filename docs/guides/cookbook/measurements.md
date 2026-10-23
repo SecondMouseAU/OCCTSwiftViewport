@@ -135,6 +135,8 @@ var body: some View {
 
 The `MeasurementOverlay` included in `MetalViewportView` draws committed measurements only. Rubber-band rendering for in-progress points is left to the host app.
 
+A measurement with one end behind the camera (or, in orthographic, nearer than the near plane) is cut where it leaves the view rather than dropped: the visible part of the line is drawn, without the marker at the culled end. Headless renders (`OffscreenRenderer` with measurements) do the same (issue #211).
+
 ---
 
 ## Driving a distance measurement programmatically

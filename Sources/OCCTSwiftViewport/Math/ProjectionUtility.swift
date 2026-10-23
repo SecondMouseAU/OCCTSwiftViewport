@@ -50,13 +50,80 @@ public enum ProjectionUtility {
         vpMatrix: simd_float4x4
     ) -> SIMD3<Float>? {
         let clip = vpMatrix * SIMD4<Float>(point.x, point.y, point.z, 1.0)
-        if isAffine(vpMatrix) {
+        let affine = isAffine(vpMatrix)
+        if affine {
             // Orthographic: w carries no depth, so cull by NDC z (view-space depth, linearly).
-            guard clip.w > 0, clip.z / clip.w >= 0 else { return nil }
-        } else {
-            guard clip.w > 0.001 else { return nil }
+            guard clip.w > 0 else { return nil }
         }
+        guard frontDistance(clip, affine: affine) >= 0 else { return nil }
         return SIMD3<Float>(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w)
+    }
+
+    /// A world-space segment projected to the screen, cut where it passes behind the camera.
+    struct ScreenSegment: Equatable {
+        /// Screen point of the segment's first end, or of where it is cut.
+        var start: CGPoint
+        /// Screen point of the segment's second end, or of where it is cut.
+        var end: CGPoint
+        /// Whether `start` is the first end itself (`worldToScreen` projects it).
+        var startIsEndpoint: Bool
+        /// Whether `end` is the second end itself.
+        var endIsEndpoint: Bool
+
+        /// The screen point halfway between `start` and `end`.
+        var midpoint: CGPoint {
+            CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        }
+    }
+
+    /// Projects the segment from `a` to `b` to the screen, keeping the part in front of the
+    /// camera.
+    ///
+    /// "In front" is what ``worldToNDC(point:vpMatrix:)`` projects: in front of the near plane
+    /// in orthographic, just in front of the eye in perspective. A segment with one end behind
+    /// is cut where it crosses that plane, so a measurement whose endpoint is culled still draws
+    /// its visible part instead of vanishing (issue #211). The cut is made in clip space, which
+    /// is linear in the world point, so the cut point lies on the segment.
+    ///
+    /// - Returns: The visible part, or `nil` when the whole segment is behind.
+    static func clippedSegmentToScreen(
+        from a: SIMD3<Float>, to b: SIMD3<Float>, vpMatrix: simd_float4x4, viewportSize: CGSize
+    ) -> ScreenSegment? {
+        let affine = isAffine(vpMatrix)
+        let clipA = vpMatrix * SIMD4<Float>(a, 1)
+        let clipB = vpMatrix * SIMD4<Float>(b, 1)
+        let frontA = frontDistance(clipA, affine: affine)
+        let frontB = frontDistance(clipB, affine: affine)
+        guard frontA >= 0 || frontB >= 0 else { return nil }
+
+        // Where the segment crosses frontDistance = 0, from the end in front toward the other.
+        func cut(from front: SIMD4<Float>, _ f: Float, to behind: SIMD4<Float>, _ b: Float)
+            -> SIMD4<Float>
+        {
+            front + (behind - front) * (f / (f - b))
+        }
+        let visibleA = frontA >= 0 ? clipA : cut(from: clipB, frontB, to: clipA, frontA)
+        let visibleB = frontB >= 0 ? clipB : cut(from: clipA, frontA, to: clipB, frontB)
+        guard visibleA.w > 0, visibleB.w > 0 else { return nil }
+        return ScreenSegment(
+            start: screenPoint(visibleA, viewportSize: viewportSize),
+            end: screenPoint(visibleB, viewportSize: viewportSize),
+            startIsEndpoint: frontA >= 0, endIsEndpoint: frontB >= 0)
+    }
+
+    /// How far `clip` is in front of where projection stops, in clip units.
+    ///
+    /// NDC z (the near plane) in orthographic, `w − 0.001` (just in front of the eye) in
+    /// perspective. Linear in the clip coordinates, so a segment can be cut where it is zero.
+    private static func frontDistance(_ clip: SIMD4<Float>, affine: Bool) -> Float {
+        affine ? clip.z : clip.w - 0.001
+    }
+
+    /// Clip coordinates to a top-left-origin screen point.
+    private static func screenPoint(_ clip: SIMD4<Float>, viewportSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: CGFloat((clip.x / clip.w + 1) * 0.5) * viewportSize.width,
+            y: CGFloat((1 - clip.y / clip.w) * 0.5) * viewportSize.height)
     }
 
     /// Whether `matrix` leaves `w` alone (bottom row `0 0 0 1`), as an orthographic

@@ -34,7 +34,12 @@ public final class CameraController: ObservableObject {
     // MARK: - Published Properties
 
     /// Current camera state.
-    @Published public private(set) var cameraState: CameraState
+    ///
+    /// In orthographic, with a `sceneBoundsProvider`, every change keeps the eye in front of the
+    /// scene (see `CameraState.placingOrthographicEye(inFrontOf:)`).
+    @Published public private(set) var cameraState: CameraState {
+        didSet { keepOrthographicEyeInFrontOfScene() }
+    }
 
     /// Whether an animation is in progress.
     @Published public private(set) var isAnimating: Bool = false
@@ -153,7 +158,22 @@ public final class CameraController: ObservableObject {
     /// `ViewportConfiguration.dynamicPivotConfiguration.isEnabled`.
     public var zoomTowardShiftsPivot: Bool = true
 
+    /// Returns the world-space bounds of the scene, which an orthographic eye is kept in front of.
+    ///
+    /// An orthographic view's size is `orthographicScale`, whatever the eye's distance, but the
+    /// near plane cannot go behind the eye, so an eye inside the model cut its front away. With
+    /// a provider set, each change to `cameraState` in orthographic moves the eye back along the
+    /// line of sight, if need be, until it is in front of these bounds; the picture does not
+    /// change (issue #211). `MetalViewportView` sets one that reads its bodies. `nil` (the
+    /// default) leaves the eye where `distance` puts it.
+    public var sceneBoundsProvider: (@MainActor () -> BoundingBox?)? {
+        didSet { keepOrthographicEyeInFrontOfScene() }
+    }
+
     // MARK: - Internal State
+
+    /// Set while `keepOrthographicEyeInFrontOfScene()` writes `cameraState`.
+    private var isPlacingOrthographicEye = false
 
     /// Velocity for inertia (drag points per 1/60 s).
     private(set) var angularVelocity: SIMD2<Float> = .zero
@@ -515,23 +535,24 @@ public final class CameraController: ObservableObject {
 
     // MARK: - Zoom
 
-    /// Zooms by changing distance from pivot.
+    /// Zooms by changing the distance from the pivot (perspective) or `orthographicScale`
+    /// (orthographic).
     ///
-    /// The distance stays within `minDistance...maxDistance` and, in orthographic,
-    /// `orthographicScale` within `orthographicScaleRange`.
+    /// The distance stays within `minDistance...maxDistance` and `orthographicScale` within
+    /// `orthographicScaleRange`. An orthographic zoom leaves `distance`, and so the eye, where
+    /// it is: dividing it too walked the eye toward the pivot, into the model, where the near
+    /// plane cut away its front (issue #211).
     ///
     /// - Parameter factor: Zoom factor (>1 zooms in, <1 zooms out)
     public func zoom(factor: Float) {
         var newState = cameraState
-        let newDistance = cameraState.distance / factor
-        newState.distance = max(minDistance, min(maxDistance, newDistance))
-
         if cameraState.isOrthographic {
             let range = orthographicScaleRange
             newState.orthographicScale = min(
                 range.upperBound, max(range.lowerBound, newState.orthographicScale / factor))
+        } else {
+            newState.distance = max(minDistance, min(maxDistance, cameraState.distance / factor))
         }
-
         cameraState = newState
     }
 
@@ -728,15 +749,28 @@ public final class CameraController: ObservableObject {
     ///
     /// Stops any orbit or pan momentum, animated or not, so the camera stays on the point.
     ///
+    /// In orthographic, `distance` zooms to the height a perspective camera that far from the
+    /// point would show, `2 · distance · tan(fieldOfView / 2)`, within
+    /// `orthographicScaleRange`; it used to set the eye's distance, which an orthographic view
+    /// does not show, so the call did not zoom (issue #211). The eye's distance is kept.
+    ///
     /// - Parameters:
     ///   - point: World point to focus on
-    ///   - distance: Optional new distance
+    ///   - distance: Optional new distance (perspective), or the distance whose framing to
+    ///     show (orthographic)
     ///   - animated: Whether to animate
     public func focusOn(point: SIMD3<Float>, distance: Float? = nil, animated: Bool = true) {
         var target = cameraState
         target.pivot = point
         if let d = distance {
-            target.distance = max(minDistance, min(maxDistance, d))
+            let clamped = max(minDistance, min(maxDistance, d))
+            if cameraState.isOrthographic {
+                let range = orthographicScaleRange
+                let height = clamped * 2 * tan(cameraState.fieldOfView * .pi / 360)
+                target.orthographicScale = min(range.upperBound, max(range.lowerBound, height))
+            } else {
+                target.distance = clamped
+            }
         }
 
         animateTo(target, duration: animated ? 0.3 : 0)
@@ -823,6 +857,24 @@ public final class CameraController: ObservableObject {
         // position = pivot − viewDirection × distance.
         newState.pivot = eye + cameraState.viewDirection * newState.distance
         cameraState = newState
+    }
+
+    /// In orthographic, moves the eye back along the line of sight to the front of the scene.
+    ///
+    /// The scene is the `sceneBoundsProvider`'s bounds. The picture does not change: only
+    /// `distance` grows.
+    ///
+    /// An eye already in front of the scene is left exactly where it is, so a pivot that slides
+    /// along the line of sight (the dynamic pivot) never moves it.
+    private func keepOrthographicEyeInFrontOfScene() {
+        guard cameraState.isOrthographic, !isPlacingOrthographicEye,
+            let provider = sceneBoundsProvider
+        else { return }
+        let placed = cameraState.placingOrthographicEye(inFrontOf: provider())
+        guard placed != cameraState else { return }
+        isPlacingOrthographicEye = true
+        cameraState = placed
+        isPlacingOrthographicEye = false
     }
 
     /// Moves the pivot by `delta`, changing `distance` by the move's depth along the line of

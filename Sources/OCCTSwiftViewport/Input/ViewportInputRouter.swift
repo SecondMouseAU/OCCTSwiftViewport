@@ -200,7 +200,10 @@ extension ViewportController {
     /// (issue #163). Widgets and non-pickable bodies are skipped, and the bounding boxes come
     /// from the dynamic pivot's per-generation cache rather than a rescan per tap (issue #180).
     private func focus(atNDC ndc: SIMD2<Float>) {
-        let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio)
+        // In orthographic the ray starts in front of the scene, not at the eye (issue #211).
+        let ray = Ray.fromCamera(
+            ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio,
+            sceneBounds: pivotStrategy.sceneBounds(of: inputSceneBodies))
         guard
             let hit = pivotStrategy.raycast(
                 ray: ray, bodies: inputSceneBodies, clipPlanes: clipPlanes)

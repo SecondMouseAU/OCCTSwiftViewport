@@ -92,10 +92,13 @@ public final class PivotStrategy {
         // The scene centre at its depth on the line of sight, not the centre itself: moving the
         // pivot to an off-axis centre moved the camera across with it, which undid a pan on
         // every release (issue #204). On the line of sight, a pivot change never moves the view.
+        // Depths are measured from an orthographic eye placed in front of the scene, which is
+        // where the camera renders from once `CameraController` has placed it (issue #211).
+        let eyeState = cameraState.placingOrthographicEye(inFrontOf: sceneBB)
         let forward = cameraState.viewDirection
-        let sceneDepth = simd_dot(sceneBB.center - cameraState.position, forward)
+        let sceneDepth = simd_dot(sceneBB.center - eyeState.position, forward)
         guard sceneDepth > 0 else { return nil }
-        let sceneCenter = cameraState.position + forward * sceneDepth
+        let sceneCenter = eyeState.position + forward * sceneDepth
         let zoomRatio = Self.zoomDistance(of: cameraState) / diagonal
         let halfBand = config.zoomThreshold * config.blendBand * 0.5
 
@@ -105,7 +108,8 @@ public final class PivotStrategy {
         }
 
         // Cast ray through view center
-        let ray = Ray.throughViewCenter(cameraState: cameraState, aspectRatio: aspectRatio)
+        let ray = Ray.throughViewCenter(
+            cameraState: cameraState, aspectRatio: aspectRatio, sceneBounds: sceneBB)
         let hit = SceneRaycast.cast(
             ray: ray, bodies: bodies, boundingBoxCache: bbCache, clipPlanes: clipPlanes)
 
@@ -146,6 +150,13 @@ public final class PivotStrategy {
     /// Exposes the current bounding box cache (for SceneRaycast).
     internal var boundingBoxCache: [String: BoundingBox] {
         bbCache
+    }
+
+    /// World-space bounds of the visible geometry-layer `bodies`, from the per-generation cache,
+    /// so calling it on every camera change does not rescan their geometry.
+    func sceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
+        updateCache(bodies: bodies)
+        return sceneBoundingBox(bodies: bodies)
     }
 
     // MARK: - Private

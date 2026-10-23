@@ -35,44 +35,50 @@ struct MeasurementOverlay: View {
     private func drawDistance(
         _ m: DistanceMeasurement, in context: inout GraphicsContext, size: CGSize
     ) {
-        guard let startPt = project(m.start),
-            let endPt = project(m.end),
-            let midPt = project(m.midpoint)
-        else { return }
+        // An end behind the camera cuts the line where it leaves the view rather than dropping
+        // the measurement (issue #211); only the ends in view get a dot.
+        guard let line = segment(m.start, m.end) else { return }
 
         // Leader line
         let path = Path { p in
-            p.move(to: startPt)
-            p.addLine(to: endPt)
+            p.move(to: line.start)
+            p.addLine(to: line.end)
         }
         context.stroke(path, with: .color(.white), lineWidth: 1.5)
         context.stroke(path, with: .color(.blue), lineWidth: 1.0)
 
         // Endpoints (small circles)
-        drawEndpoint(at: startPt, in: &context)
-        drawEndpoint(at: endPt, in: &context)
+        if line.startIsEndpoint { drawEndpoint(at: line.start, in: &context) }
+        if line.endIsEndpoint { drawEndpoint(at: line.end, in: &context) }
 
-        // Label
+        // Label, at the midpoint, or at the middle of what is in view when that is culled.
         let text = m.label ?? formatDistance(m.distance)
-        drawLabel(text, at: midPt, in: &context)
+        drawLabel(text, at: project(m.midpoint) ?? line.midpoint, in: &context)
     }
 
     // MARK: - Angle
 
     private func drawAngle(_ m: AngleMeasurement, in context: inout GraphicsContext, size: CGSize) {
-        guard let vertexPt = project(m.vertex),
-            let aPt = project(m.pointA),
-            let bPt = project(m.pointB)
-        else { return }
+        // Each arm is cut where it leaves the view (issue #211). Without the vertex in view
+        // there is no corner for the arc, so only the visible parts of the arms are drawn.
+        let armA = segment(m.vertex, m.pointA)
+        let armB = segment(m.vertex, m.pointB)
+        guard armA != nil || armB != nil else { return }
 
         // Draw the two arms
         let armPath = Path { p in
-            p.move(to: aPt)
-            p.addLine(to: vertexPt)
-            p.addLine(to: bPt)
+            for arm in [armA, armB].compactMap({ $0 }) {
+                p.move(to: arm.start)
+                p.addLine(to: arm.end)
+            }
         }
         context.stroke(armPath, with: .color(.white), lineWidth: 1.5)
         context.stroke(armPath, with: .color(.orange), lineWidth: 1.0)
+
+        guard let armA, let armB, armA.startIsEndpoint else { return }
+        let vertexPt = armA.start
+        let aPt = armA.end
+        let bPt = armB.end
 
         // Draw arc indicator
         let armLength: CGFloat = 30
@@ -105,9 +111,10 @@ struct MeasurementOverlay: View {
 
     private func drawRadius(_ m: RadiusMeasurement, in context: inout GraphicsContext, size: CGSize)
     {
-        guard let centerPt = project(m.center),
-            let edgePt = project(m.edgePoint)
-        else { return }
+        // Cut where it leaves the view (issue #211); the markers only on the ends in view.
+        guard let line = segment(m.center, m.edgePoint) else { return }
+        let centerPt = line.start
+        let edgePt = line.end
 
         // Leader line from center to edge
         let path = Path { p in
@@ -118,6 +125,18 @@ struct MeasurementOverlay: View {
         context.stroke(path, with: .color(.green), lineWidth: 1.0)
 
         // Center marker (cross)
+        if line.startIsEndpoint { drawCenterCross(at: centerPt, in: &context) }
+
+        if line.endIsEndpoint { drawEndpoint(at: edgePt, in: &context) }
+
+        // Label
+        let value = m.showDiameter ? m.diameter : m.radius
+        let prefix = m.showDiameter ? "\u{2300}" : "R"
+        let text = m.label ?? "\(prefix)\(formatDistance(value))"
+        drawLabel(text, at: line.midpoint, in: &context)
+    }
+
+    private func drawCenterCross(at centerPt: CGPoint, in context: inout GraphicsContext) {
         let crossSize: CGFloat = 4
         let crossPath = Path { p in
             p.move(to: CGPoint(x: centerPt.x - crossSize, y: centerPt.y))
@@ -126,18 +145,6 @@ struct MeasurementOverlay: View {
             p.addLine(to: CGPoint(x: centerPt.x, y: centerPt.y + crossSize))
         }
         context.stroke(crossPath, with: .color(.green), lineWidth: 1.5)
-
-        drawEndpoint(at: edgePt, in: &context)
-
-        // Label
-        let value = m.showDiameter ? m.diameter : m.radius
-        let prefix = m.showDiameter ? "\u{2300}" : "R"
-        let text = m.label ?? "\(prefix)\(formatDistance(value))"
-        let midPt = CGPoint(
-            x: (centerPt.x + edgePt.x) / 2,
-            y: (centerPt.y + edgePt.y) / 2
-        )
-        drawLabel(text, at: midPt, in: &context)
     }
 
     // MARK: - Helpers
@@ -145,6 +152,12 @@ struct MeasurementOverlay: View {
     private func project(_ point: SIMD3<Float>) -> CGPoint? {
         ProjectionUtility.worldToScreen(
             point: point, vpMatrix: vpMatrix, viewportSize: viewportSize)
+    }
+
+    /// The part of the segment from `a` to `b` in front of the camera, on screen.
+    private func segment(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> ProjectionUtility.ScreenSegment? {
+        ProjectionUtility.clippedSegmentToScreen(
+            from: a, to: b, vpMatrix: vpMatrix, viewportSize: viewportSize)
     }
 
     /// The view-projection matrix the overlay projects with, built with the renderer's
