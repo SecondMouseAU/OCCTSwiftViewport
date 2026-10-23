@@ -179,10 +179,10 @@ Whether the world-space coordinate axes are rendered.
 #### `axisLength`
 
 ```swift
-public var axisLength: Float  // default: 2.0
+public var axisLength: Float?  // default: nil (sized to the scene)
 ```
 
-Length of each coordinate axis in world units, measured from the origin along +X (red), +Y (green) and +Z (blue).
+Length of each coordinate axis in world units, measured from the origin along +X (red), +Y (green) and +Z (blue). `nil` sizes the axes to the scene every frame: `max(1.5 × reach, 0.5 × diagonal)` of the visible geometry-layer bodies' world bounds, where `reach` is the bounds' largest absolute coordinate. The axes start at the origin, so this makes them poke out of a model that contains it at any scale, and keeps them a visible size beside a model that sits away from it. An empty scene gets 2 units. A value you set always wins. `OffscreenRenderer` resolves `nil` the same way from the bodies it renders.
 
 ---
 
@@ -252,7 +252,7 @@ Fundamental grid spacing in world units (both styles). The renderer snaps to thi
 public var gridSubdivisions: Int  // default: 10
 ```
 
-Factor between grid spacing levels (both styles). In the `.plane` style every `gridSubdivisions`-th line is drawn darker, marking where the next-coarser level's lines fall.
+Factor between grid spacing levels (both styles). In the `.plane` style every `gridSubdivisions`-th line is drawn with more contrast, marking where the next-coarser level's lines fall.
 
 ---
 
@@ -262,17 +262,25 @@ Factor between grid spacing levels (both styles). In the `.plane` style every `g
 public var backgroundColor: SIMD4<Float>  // default: SIMD4<Float>(0.95, 0.95, 0.95, 1.0)
 ```
 
-Viewport background color as linear RGBA with premultiplied-alpha conventions. The default is a near-white light grey. `MetalViewportView` uses it in light and dark mode alike unless `darkModeBackgroundColor` is set.
+Viewport background color in the light appearance, as linear RGBA with premultiplied-alpha conventions. The default is a near-white light grey. In the dark appearance `darkModeBackgroundColor` replaces it, unless that is `nil`.
 
 ---
 
 #### `darkModeBackgroundColor`
 
 ```swift
-public var darkModeBackgroundColor: SIMD4<Float>?  // default: nil
+public var darkModeBackgroundColor: SIMD4<Float>?  // default: ViewportConfiguration.defaultDarkModeBackgroundColor
 ```
 
-Optional background colour `MetalViewportView` uses while the SwiftUI colour scheme is dark. `nil` keeps `backgroundColor` in both schemes. Up to v1.2.2 the view replaced the background with a fixed `(0.12, 0.12, 0.12)` in dark mode whatever was configured; set this to that value to keep the old look. `resolvedBackgroundColor(isDark:)` returns the colour in effect for a scheme.
+Background colour used in the dark appearance. Following dark mode is on by default, with `defaultDarkModeBackgroundColor`, a near-black grey `(0.12, 0.12, 0.12, 1)`.
+
+- **Follow dark mode with your own colour:** set this to it.
+- **Opt out:** set it to `nil`, and `backgroundColor` applies in both appearances.
+- **Force an appearance:** `MetalViewportView` follows the SwiftUI colour scheme of its environment, so `.preferredColorScheme(.light)` or `.environment(\.colorScheme, .dark)` on the view (or an ancestor) pins it.
+
+`resolvedBackgroundColor(isDark:)` returns the colour in effect for an appearance. Headless renders pick their appearance through `OffscreenRenderOptions.appearance` instead; see [Rendering](Rendering.md#offscreenrenderoptions).
+
+Up to v1.2.2 the dark colour was hard-coded and replaced even a custom `backgroundColor`; it is now this configurable field.
 
 ---
 
@@ -572,7 +580,7 @@ public init(
     showViewCube: Bool = true,
     viewCubePosition: ViewCubePosition = .bottomTrailing,
     showAxes: Bool = false,
-    axisLength: Float = 2.0,
+    axisLength: Float? = nil,  // nil → sized to the scene
     axisRadius: Float = 0.02,
     axisStyle: AxisStyle = .cylinder,
     showGrid: Bool = true,
@@ -581,7 +589,7 @@ public init(
     gridBaseSpacing: Float = 1.0,
     gridSubdivisions: Int = 10,
     backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
-    darkModeBackgroundColor: SIMD4<Float>? = nil,
+    darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration.defaultDarkModeBackgroundColor,
     msaaSampleCount: Int = 4,
     enableSilhouettes: Bool = true,
     silhouetteThickness: Float = 1.0,
@@ -909,10 +917,10 @@ Rendering style for the ground grid.
 
 | Case | Behaviour |
 |---|---|
-| `.plane` | Ground plane: a faint translucent fill (depth-tested but not depth-writing, so it only tints what lies behind it) under 1 px grid lines, every `gridSubdivisions`-th line darker. Default. |
+| `.plane` | Ground plane: a faint translucent fill (depth-tested but not depth-writing, so it only tints what lies behind it) under 1 px grid lines, every `gridSubdivisions`-th line with more contrast. Default. |
 | `.dots` | Instanced adaptive dot grid. |
 
-Both styles lie in the XY plane at z = 0 (drawn 0.01 below it so faces resting on the ground win the depth test), use spacing `gridBaseSpacing × gridSubdivisionsⁿ` chosen for the current zoom, centre on the camera pivot, and stop at the `gridSize` square around the origin. Up to v1.2.2 the dot grid was drawn in the XZ plane, standing vertical in the Z-up world, and the `.plane` style, `gridStyle` and `gridSize` were ignored.
+Both styles lie in the XY plane at z = 0 (drawn 0.01 below it so faces resting on the ground win the depth test), use spacing `gridBaseSpacing × gridSubdivisionsⁿ` chosen for the current zoom, centre on the camera pivot, and stop at the `gridSize` square around the origin. Line and dot colours are derived from the background the frame clears to (mixed toward black over a light background, toward white over a dark one), so the grid keeps the same modest contrast in light and dark appearance. Up to v1.2.2 the dot grid was drawn in the XZ plane, standing vertical in the Z-up world, and the `.plane` style, `gridStyle` and `gridSize` were ignored.
 
 ---
 

@@ -65,12 +65,14 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `cameraState` | `CameraState` | `CameraState()` | Camera position and projection |
 | `displayMode` | `DisplayMode` | `.shadedWithEdges` | See [Display modes](#display-modes) |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
-| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear |
+| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear (light appearance) |
+| `darkModeBackgroundColor` | `SIMD4<Float>?` | `(0.12, 0.12, 0.12, 1)` | Dark-appearance background; `nil` = same as light |
+| `appearance` | `RenderAppearance` | `.light` | `.light`, `.dark` or `.system` |
 | `showGrid` | `Bool` | `false` | Ground grid on the XY plane |
 | `showAxes` | `Bool` | `false` | RGB world-space axes |
 | `gridStyle` | `GridStyle` | `.plane` | Line grid with a faint fill, or `.dots` |
 | `gridSize` | `Float` | `100` | Side of the square grid around the origin |
-| `axisLength` | `Float` | `2` | Axis length from the origin |
+| `axisLength` | `Float?` | `nil` | Axis length from the origin; `nil` sizes it to the bodies |
 | `axisRadius` | `Float` | `0.02` | Axis cylinder radius |
 | `axisStyle` | `AxisStyle` | `.cylinder` | Or `.constantScreenWidth` |
 | `msaaSampleCount` | `Int` | `4` | MSAA samples (1, 2, or 4) |
@@ -218,6 +220,14 @@ options.lightingConfiguration = .threePoint     // default: key + fill + back
 options.backgroundColor = SIMD4<Float>(1, 1, 1, 1)       // white
 options.backgroundColor = SIMD4<Float>(0, 0, 0, 1)       // black
 options.backgroundColor = SIMD4<Float>(0.18, 0.18, 0.18, 1)  // mid-grey
+```
+
+Headless renders have no SwiftUI colour scheme to follow, so they use the light background
+unless you choose otherwise:
+
+```swift
+options.appearance = .dark     // darkModeBackgroundColor (default (0.12, 0.12, 0.12, 1))
+options.appearance = .system   // whatever the system appearance is at render time
 ```
 
 ---

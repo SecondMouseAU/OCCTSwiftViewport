@@ -1318,9 +1318,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let worldBox = localBox.transformed(by: body.transform)
             sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
         }
+        let clearColor = renderPassDescriptor.colorAttachments[0].clearColor
+        let gridAxisSettings = GridAxisSettings(
+            configuration: controller.configuration,
+            sceneBounds: sceneBounds,
+            background: SIMD4<Float>(
+                Float(clearColor.red), Float(clearColor.green), Float(clearColor.blue),
+                Float(clearColor.alpha))
+        )
         sceneBounds = GridAxisGeometry.clipBounds(
             sceneBounds: sceneBounds,
-            settings: GridAxisSettings(configuration: controller.configuration),
+            settings: gridAxisSettings,
             cameraState: cameraState,
             showGrid: controller.showGrid,
             showAxes: controller.showAxes
@@ -1703,7 +1711,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // 1. Draw grid
-        let gridAxisSettings = GridAxisSettings(configuration: controller.configuration)
         if controller.showGrid {
             RendererSharedSetup.encodeGrid(
                 encoder: mainEncoder,

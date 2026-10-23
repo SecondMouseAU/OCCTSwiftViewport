@@ -513,7 +513,7 @@ enum RendererSharedSetup {
                 columns: window.columns,
                 dotSize: max(2.0, 4.0 / cameraState.distance),
                 rows: window.rows,
-                dotColor: GridAxisGeometry.dotColor
+                dotColor: settings.gridColors.dot
             )
             encoder.setRenderPipelineState(dotPipeline)
             encoder.setVertexBytes(
@@ -549,7 +549,8 @@ enum RendererSharedSetup {
             encoder.setDepthStencilState(depthState)
 
             if let lines = buffers.gridLines(
-                window: window, subdivisions: settings.gridSubdivisions)
+                window: window, subdivisions: settings.gridSubdivisions,
+                colors: settings.gridColors)
             {
                 encoder.setVertexBuffer(lines.buffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lines.vertexCount)

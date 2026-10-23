@@ -10,7 +10,9 @@ import simd
 /// Grid and axis settings, gathered from `ViewportConfiguration` or `OffscreenRenderOptions`.
 ///
 /// Both renderers build one of these per frame and hand it to `RendererSharedSetup.encodeGrid` /
-/// `encodeAxes`, so the live and headless paths read exactly the same fields.
+/// `encodeAxes`, so the live and headless paths read exactly the same fields. `axisLength` is
+/// already resolved: an explicit length, or one derived from `sceneBounds` (see
+/// `GridAxisGeometry.resolvedAxisLength`).
 struct GridAxisSettings: Sendable, Equatable {
     var gridStyle: GridStyle
     var gridSize: Float
@@ -19,23 +21,45 @@ struct GridAxisSettings: Sendable, Equatable {
     var axisLength: Float
     var axisRadius: Float
     var axisStyle: AxisStyle
+    var gridColors: GridAxisGeometry.GridColors
 
-    init(configuration: ViewportConfiguration) {
+    /// Settings for the live renderer.
+    ///
+    /// `sceneBounds` (the visible bodies' world bounds) sizes an automatic axis length;
+    /// `background` (the colour the frame clears to) sets the grid colours.
+    init(
+        configuration: ViewportConfiguration,
+        sceneBounds: BoundingBox? = nil,
+        background: SIMD4<Float>? = nil
+    ) {
+        gridColors = GridAxisGeometry.GridColors(
+            background: background ?? configuration.backgroundColor)
         gridStyle = configuration.gridStyle
         gridSize = configuration.gridSize
         gridBaseSpacing = configuration.gridBaseSpacing
         gridSubdivisions = configuration.gridSubdivisions
-        axisLength = configuration.axisLength
+        axisLength = GridAxisGeometry.resolvedAxisLength(
+            explicit: configuration.axisLength, sceneBounds: sceneBounds)
         axisRadius = configuration.axisRadius
         axisStyle = configuration.axisStyle
     }
 
-    init(options: OffscreenRenderOptions) {
+    /// Settings for the headless renderer.
+    ///
+    /// `sceneBounds` (the rendered bodies' world bounds) sizes an automatic axis length;
+    /// `background` (the colour the render clears to) sets the grid colours.
+    init(
+        options: OffscreenRenderOptions,
+        sceneBounds: BoundingBox? = nil,
+        background: SIMD4<Float>? = nil
+    ) {
+        gridColors = GridAxisGeometry.GridColors(background: background ?? options.backgroundColor)
         gridStyle = options.gridStyle
         gridSize = options.gridSize
         gridBaseSpacing = options.gridBaseSpacing
         gridSubdivisions = options.gridSubdivisions
-        axisLength = options.axisLength
+        axisLength = GridAxisGeometry.resolvedAxisLength(
+            explicit: options.axisLength, sceneBounds: sceneBounds)
         axisRadius = options.axisRadius
         axisStyle = options.axisStyle
     }
@@ -64,14 +88,32 @@ enum GridAxisGeometry {
     /// Wider than the dot window because lines that stop short read as a hard edge.
     static let lineHalfCount: Int32 = 50
 
-    /// Dot colour for the `.dots` style.
-    static let dotColor = SIMD4<Float>(0.6, 0.6, 0.6, 1.0)
+    /// Grid colours derived from the background they are drawn over.
+    ///
+    /// Each colour is the background mixed toward an "ink" (black over a light background, white
+    /// over a dark one), so the grid keeps the same modest contrast in light and dark appearance
+    /// instead of fixed light-grey lines glaring on a dark background. Over the default light grey
+    /// (0.95) this gives the former minor 0.78 / major 0.57 lines.
+    struct GridColors: Equatable, Sendable {
+        /// Ordinary `.plane` grid lines.
+        var minorLine: SIMD4<Float>
+        /// Every `gridSubdivisions`-th `.plane` line.
+        var majorLine: SIMD4<Float>
+        /// `.dots` grid dots.
+        var dot: SIMD4<Float>
 
-    /// Colour of ordinary grid lines in the `.plane` style.
-    static let minorLineColor = SIMD4<Float>(0.78, 0.78, 0.78, 1.0)
-
-    /// Colour of every `gridSubdivisions`-th line in the `.plane` style.
-    static let majorLineColor = SIMD4<Float>(0.58, 0.58, 0.58, 1.0)
+        init(background: SIMD4<Float>) {
+            let rgb = SIMD3(background.x, background.y, background.z)
+            let luminance = simd_dot(rgb, SIMD3(0.2126, 0.7152, 0.0722))
+            let ink = SIMD3<Float>(repeating: luminance > 0.5 ? 0 : 1)
+            func mixed(_ t: Float) -> SIMD4<Float> {
+                SIMD4(simd_mix(rgb, ink, SIMD3(repeating: t)), 1)
+            }
+            minorLine = mixed(0.18)
+            majorLine = mixed(0.4)
+            dot = mixed(0.45)
+        }
+    }
 
     /// Translucent tint of the `.plane` style's ground fill.
     static let planeFillColor = SIMD4<Float>(0.5, 0.5, 0.5, 0.08)
@@ -213,7 +255,9 @@ enum GridAxisGeometry {
     ///
     /// Every line whose absolute index is a multiple of `subdivisions` is a major line, so major
     /// lines sit exactly where the next-coarser spacing level's lines will be.
-    static func gridLineVertices(window: GridWindow, subdivisions: Int) -> [Float] {
+    static func gridLineVertices(
+        window: GridWindow, subdivisions: Int, colors: GridColors
+    ) -> [Float] {
         let major = Int32(max(subdivisions, 2))
         let (lo, hi) = window.bounds
         let z = gridPlaneZ
@@ -226,13 +270,13 @@ enum GridAxisGeometry {
 
         for i in window.minIndex.x...window.maxIndex.x {
             let x = Float(i) * window.spacing
-            let color = i % major == 0 ? majorLineColor : minorLineColor
+            let color = i % major == 0 ? colors.majorLine : colors.minorLine
             append(SIMD3(x, lo.y, z), color)
             append(SIMD3(x, hi.y, z), color)
         }
         for j in window.minIndex.y...window.maxIndex.y {
             let y = Float(j) * window.spacing
-            let color = j % major == 0 ? majorLineColor : minorLineColor
+            let color = j % major == 0 ? colors.majorLine : colors.minorLine
             append(SIMD3(lo.x, y, z), color)
             append(SIMD3(hi.x, y, z), color)
         }
@@ -254,6 +298,25 @@ enum GridAxisGeometry {
     }
 
     // MARK: - Axis geometry
+
+    /// Automatic axis length when there is no scene to size it from.
+    static let emptySceneAxisLength: Float = 2.0
+
+    /// The axis length to draw: `explicit` when the app set one, otherwise sized to the scene.
+    ///
+    /// The automatic length is `max(1.5 × reach, 0.5 × diagonal)`, where `reach` is the largest
+    /// absolute coordinate of `sceneBounds` on any axis. The axes start at the origin, so a length
+    /// past `reach` is what makes them poke out of a model that contains the origin; the diagonal
+    /// term keeps them visible beside a model that sits away from it. With no scene, or unusable
+    /// bounds, it is `emptySceneAxisLength`.
+    static func resolvedAxisLength(explicit: Float?, sceneBounds: BoundingBox?) -> Float {
+        if let explicit { return explicit }
+        guard let bounds = sceneBounds else { return emptySceneAxisLength }
+        let reach = simd_reduce_max(simd_max(simd_abs(bounds.min), simd_abs(bounds.max)))
+        let length = max(1.5 * reach, 0.5 * bounds.diagonalLength)
+        guard length.isFinite, length > 0 else { return emptySceneAxisLength }
+        return length
+    }
 
     /// World-space radius of the axis cylinders for the current camera.
     ///
@@ -363,7 +426,11 @@ final class GridAxisBuffers {
     /// Three unit cylinders; see `GridAxisGeometry.axisCylinderVertices()`.
     let axisCylinders: MTLBuffer
 
-    private var lineKey: (window: GridAxisGeometry.GridWindow, subdivisions: Int)?
+    private var lineKey:
+        (
+            window: GridAxisGeometry.GridWindow, subdivisions: Int,
+            colors: GridAxisGeometry.GridColors
+        )?
     private var lineBuffer: MTLBuffer?
 
     init?(device: MTLDevice) {
@@ -379,19 +446,21 @@ final class GridAxisBuffers {
         self.axisCylinders = buffer
     }
 
-    /// The `.plane` grid-line buffer for `window`, rebuilt only when the window changes.
+    /// The `.plane` grid-line buffer for `window`, rebuilt only when the window, subdivisions or
+    /// colours change.
     func gridLines(
         window: GridAxisGeometry.GridWindow,
-        subdivisions: Int
+        subdivisions: Int,
+        colors: GridAxisGeometry.GridColors
     ) -> (buffer: MTLBuffer, vertexCount: Int)? {
         let vertexCount = Int(window.columns + window.rows) * 2
         if let key = lineKey, key.window == window, key.subdivisions == subdivisions,
-            let buffer = lineBuffer
+            key.colors == colors, let buffer = lineBuffer
         {
             return (buffer, vertexCount)
         }
         let vertices = GridAxisGeometry.gridLineVertices(
-            window: window, subdivisions: subdivisions)
+            window: window, subdivisions: subdivisions, colors: colors)
         guard
             let buffer = device.makeBuffer(
                 bytes: vertices,
@@ -399,7 +468,7 @@ final class GridAxisBuffers {
                 options: .storageModeShared
             )
         else { return nil }
-        lineKey = (window, subdivisions)
+        lineKey = (window, subdivisions, colors)
         lineBuffer = buffer
         return (buffer, vertexCount)
     }

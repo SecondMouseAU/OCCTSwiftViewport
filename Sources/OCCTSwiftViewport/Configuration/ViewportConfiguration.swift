@@ -135,7 +135,7 @@ public struct SelectionOutlineStyle: Sendable, Hashable {
 /// the `gridSize` square around the origin.
 public enum GridStyle: Sendable {
     /// Ground plane: grid lines over a faint translucent fill, with every
-    /// `gridSubdivisions`-th line drawn darker (default).
+    /// `gridSubdivisions`-th line drawn stronger (default).
     case plane
     /// Adaptive dot grid that snaps spacing levels based on zoom.
     case dots
@@ -250,8 +250,13 @@ public struct ViewportConfiguration: Sendable {
     /// Whether to show coordinate axes.
     public var showAxes: Bool
 
-    /// Axis length in world units, measured from the origin.
-    public var axisLength: Float
+    /// Axis length in world units, measured from the origin, or `nil` (the default) to size the
+    /// axes to the scene.
+    ///
+    /// Automatic length is `max(1.5 × reach, 0.5 × diagonal)` of the visible geometry's world
+    /// bounds, `reach` being its largest absolute coordinate, so the axes poke out of the model
+    /// at any scale; an empty scene gets 2 units. A value set here always wins.
+    public var axisLength: Float?
 
     /// Axis cylinder radius in world units (`.cylinder`), or the radius at the default camera's
     /// zoom (`.constantScreenWidth`).
@@ -272,24 +277,30 @@ public struct ViewportConfiguration: Sendable {
     /// `.infinity` leaves the grid unbounded (it still only covers a window around the pivot).
     public var gridSize: Float
 
-    /// Fundamental grid unit in world units (for `.dots` style).
+    /// Fundamental grid unit in world units (both grid styles).
     public var gridBaseSpacing: Float
 
-    /// Subdivision factor between spacing levels (for `.dots` style).
+    /// Subdivision factor between spacing levels (both grid styles).
     public var gridSubdivisions: Int
 
-    /// Background color (platform-agnostic).
+    /// Background color in light appearance (platform-agnostic).
     ///
-    /// `MetalViewportView` uses it in both light and dark mode unless `darkModeBackgroundColor`
-    /// is set.
+    /// In dark appearance `MetalViewportView` uses `darkModeBackgroundColor` instead, unless that
+    /// is `nil`.
     public var backgroundColor: SIMD4<Float>
 
-    /// Optional background colour `MetalViewportView` uses while the environment's colour scheme
-    /// is dark.
+    /// Background colour used while the appearance is dark, or `nil` to opt out of following
+    /// dark mode.
     ///
-    /// `nil` (the default) uses `backgroundColor` in both schemes. Set it, for example to
-    /// `SIMD4<Float>(0.12, 0.12, 0.12, 1)`, to opt into a separate dark-mode background.
+    /// `MetalViewportView` follows the SwiftUI colour scheme of its environment: system dark mode,
+    /// or whatever the app forces with `.preferredColorScheme(_:)` /
+    /// `.environment(\.colorScheme, _)`. Defaults to `defaultDarkModeBackgroundColor`; set your
+    /// own colour, or `nil` to keep `backgroundColor` in both appearances. `OffscreenRenderOptions`
+    /// carries the same field.
     public var darkModeBackgroundColor: SIMD4<Float>?
+
+    /// The default dark-appearance background, a near-black grey `(0.12, 0.12, 0.12, 1)`.
+    public static let defaultDarkModeBackgroundColor = SIMD4<Float>(0.12, 0.12, 0.12, 1.0)
 
     /// The background colour for the given colour scheme: `darkModeBackgroundColor` when `isDark`
     /// and it is set, otherwise `backgroundColor`.
@@ -447,7 +458,7 @@ public struct ViewportConfiguration: Sendable {
         showViewCube: Bool = true,
         viewCubePosition: ViewCubePosition = .bottomTrailing,
         showAxes: Bool = false,
-        axisLength: Float = 2.0,
+        axisLength: Float? = nil,
         axisRadius: Float = 0.02,
         axisStyle: AxisStyle = .cylinder,
         showGrid: Bool = true,
@@ -456,7 +467,8 @@ public struct ViewportConfiguration: Sendable {
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
         backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
-        darkModeBackgroundColor: SIMD4<Float>? = nil,
+        darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration
+            .defaultDarkModeBackgroundColor,
         msaaSampleCount: Int = 4,
         enableSilhouettes: Bool = true,
         silhouetteThickness: Float = 1.0,

@@ -156,7 +156,7 @@ public struct MetalViewportView: View {
 
     // MARK: - Metal View
 
-    /// The configured background; a dark-mode colour applies only when the configuration sets one.
+    /// `backgroundColor`, or `darkModeBackgroundColor` while the environment is dark (unless `nil`).
     private var canvasBackgroundColor: SIMD4<Float> {
         controller.configuration.resolvedBackgroundColor(isDark: colorScheme == .dark)
     }

@@ -62,7 +62,9 @@ struct GridAxisGeometryTests {
     func gridLinesAreFlatWithMajorLines() throws {
         let window = try #require(
             GridAxisGeometry.gridWindow(pivot: .zero, spacing: 1, halfCount: 12, gridSize: 0))
-        let vertices = GridAxisGeometry.gridLineVertices(window: window, subdivisions: 10)
+        let colors = GridAxisGeometry.GridColors(background: SIMD4(0.95, 0.95, 0.95, 1))
+        let vertices = GridAxisGeometry.gridLineVertices(
+            window: window, subdivisions: 10, colors: colors)
         let stride = GridAxisGeometry.floatsPerVertex
         #expect(vertices.count == Int(window.columns + window.rows) * 2 * stride)
 
@@ -71,7 +73,7 @@ struct GridAxisGeometryTests {
             #expect(vertices[v + 2] == GridAxisGeometry.gridPlaneZ)
             let color = SIMD4(vertices[v + 3], vertices[v + 4], vertices[v + 5], vertices[v + 6])
             // Lines along Y (first half) carry their index in x.
-            if v < vertices.count / 2, color == GridAxisGeometry.majorLineColor {
+            if v < vertices.count / 2, color == colors.majorLine {
                 majorXs.insert(vertices[v])
             }
         }
@@ -126,6 +128,48 @@ struct GridAxisGeometryTests {
         let model = GridAxisGeometry.axisModelMatrix(axis: 1, length: 5, radius: 0.1)
         let tip = model * SIMD4<Float>(1, 1, 1, 1)
         #expect(tip == SIMD4(0.1, 5, 0.1, 1))
+    }
+
+    @Test("Grid colours keep a modest contrast against light and dark backgrounds")
+    func gridColorsFollowBackground() {
+        let light = GridAxisGeometry.GridColors(background: SIMD4(0.95, 0.95, 0.95, 1))
+        #expect(abs(light.minorLine.x - 0.779) < 0.001)
+        #expect(light.majorLine.x < light.minorLine.x)
+
+        let dark = GridAxisGeometry.GridColors(
+            background: ViewportConfiguration.defaultDarkModeBackgroundColor)
+        // Lighter than the background, but nowhere near the light theme's 0.78 glare.
+        #expect(dark.minorLine.x > 0.12 && dark.minorLine.x < 0.35)
+        #expect(dark.majorLine.x > dark.minorLine.x)
+        #expect(dark.dot.w == 1)
+    }
+
+    @Test("Automatic axis length follows the scene; an explicit length wins")
+    func axisLengthFollowsScene() {
+        let model = BoundingBox(min: SIMD3(-10, -4, 0), max: SIMD3(6, 4, 3))
+        #expect(GridAxisGeometry.resolvedAxisLength(explicit: 3, sceneBounds: model) == 3)
+        #expect(
+            GridAxisGeometry.resolvedAxisLength(explicit: nil, sceneBounds: nil)
+                == GridAxisGeometry.emptySceneAxisLength)
+        #expect(
+            abs(GridAxisGeometry.resolvedAxisLength(explicit: nil, sceneBounds: model) - 15) < 1e-4)
+
+        // A model away from the origin: the diagonal term keeps the axes a visible size.
+        let offset = BoundingBox(min: SIMD3(100, 100, 0), max: SIMD3(101, 101, 1))
+        let length = GridAxisGeometry.resolvedAxisLength(explicit: nil, sceneBounds: offset)
+        #expect(abs(length - 151.5) < 1e-3)
+
+        // Degenerate bounds fall back instead of yielding zero or NaN.
+        let point = BoundingBox(min: .zero, max: .zero)
+        #expect(
+            GridAxisGeometry.resolvedAxisLength(explicit: nil, sceneBounds: point)
+                == GridAxisGeometry.emptySceneAxisLength)
+
+        // Offscreen and onscreen settings resolve the same way.
+        let fromOptions = GridAxisSettings(options: OffscreenRenderOptions(), sceneBounds: model)
+        let fromConfig = GridAxisSettings(
+            configuration: ViewportConfiguration(), sceneBounds: model)
+        #expect(fromOptions.axisLength == fromConfig.axisLength)
     }
 
     @Test("Clip-range bounds take in the drawn grid and axes")
@@ -206,15 +250,41 @@ struct GridAxisConfigurationWiringTests {
     @Test("The configured background wins in dark mode unless a dark colour is set")
     func backgroundColorWinsInDarkMode() {
         let custom = SIMD4<Float>(0.2, 0.4, 0.6, 1)
+        let defaultDark = ViewportConfiguration.defaultDarkModeBackgroundColor
+        #expect(defaultDark == SIMD4<Float>(0.12, 0.12, 0.12, 1))
+
+        // Following dark mode is on by default.
         let plain = ViewportConfiguration(backgroundColor: custom)
-        #expect(plain.resolvedBackgroundColor(isDark: true) == custom)
+        #expect(plain.darkModeBackgroundColor == defaultDark)
+        #expect(plain.resolvedBackgroundColor(isDark: true) == defaultDark)
         #expect(plain.resolvedBackgroundColor(isDark: false) == custom)
 
-        let dark = SIMD4<Float>(0.12, 0.12, 0.12, 1)
+        // A custom dark colour.
+        let navy = SIMD4<Float>(0.05, 0.05, 0.2, 1)
         let withDark = ViewportConfiguration(
-            backgroundColor: custom, darkModeBackgroundColor: dark)
-        #expect(withDark.resolvedBackgroundColor(isDark: true) == dark)
+            backgroundColor: custom, darkModeBackgroundColor: navy)
+        #expect(withDark.resolvedBackgroundColor(isDark: true) == navy)
         #expect(withDark.resolvedBackgroundColor(isDark: false) == custom)
+
+        // Opting out: the configured colour wins in both appearances.
+        let optOut = ViewportConfiguration(backgroundColor: custom, darkModeBackgroundColor: nil)
+        #expect(optOut.resolvedBackgroundColor(isDark: true) == custom)
+    }
+
+    @Test("Offscreen renders pick light or dark backgrounds from their appearance")
+    func offscreenAppearance() {
+        let custom = SIMD4<Float>(0.2, 0.4, 0.6, 1)
+        var options = OffscreenRenderOptions(backgroundColor: custom)
+        #expect(options.appearance == .light)
+        #expect(options.resolvedBackgroundColor == custom)
+        options.appearance = .dark
+        #expect(
+            options.resolvedBackgroundColor == ViewportConfiguration.defaultDarkModeBackgroundColor)
+        options.darkModeBackgroundColor = nil
+        #expect(options.resolvedBackgroundColor == custom)
+        #expect(
+            OffscreenRenderOptions().darkModeBackgroundColor
+                == ViewportConfiguration().darkModeBackgroundColor)
     }
 
     @Test("groundPlane cuts at Z = 0 in the Z-up world; yPlane keeps the old Y = 0 cut")
@@ -250,9 +320,11 @@ struct GridAxisRenderingTests {
 
     private var topCamera: CameraState { CameraState(distance: 10) }
 
-    private func offscreen(_ options: OffscreenRenderOptions) -> [UInt8]? {
+    private func offscreen(
+        _ options: OffscreenRenderOptions, bodies: [ViewportBody] = []
+    ) -> [UInt8]? {
         guard let renderer = OffscreenRenderer(),
-            let image = renderer.render(bodies: [], options: options)
+            let image = renderer.render(bodies: bodies, options: options)
         else { return nil }
         return Self.readBGRA(image)
     }
@@ -263,9 +335,11 @@ struct GridAxisRenderingTests {
             backgroundColor: Self.black)
     }
 
-    private func live(_ configuration: ViewportConfiguration) -> [UInt8]? {
+    private func live(
+        _ configuration: ViewportConfiguration, bodies: [ViewportBody] = []
+    ) -> [UInt8]? {
         let controller = ViewportController(configuration: configuration)
-        guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([]))
+        guard let renderer = ViewportRenderer(controller: controller, bodies: .constant(bodies))
         else { return nil }
         return renderer.renderHeadlessBGRA(
             width: Self.size, height: Self.size, backgroundColor: Self.black, frameCount: 2)
@@ -304,7 +378,7 @@ struct GridAxisRenderingTests {
 
     /// Grey grid pixels (lines or dots) clearly above the black background and the faint fill.
     static func gridPixels(_ bgra: [UInt8]) -> [(Int, Int)] {
-        pixels(bgra) { r, g, b in r > 60 && abs(r - g) < 20 && abs(g - b) < 20 }
+        pixels(bgra) { r, g, b in r > 25 && abs(r - g) < 20 && abs(g - b) < 20 }
     }
 
     static func redPixels(_ bgra: [UInt8]) -> [(Int, Int)] {
@@ -328,6 +402,46 @@ struct GridAxisRenderingTests {
             live(ViewportConfiguration(initialCameraState: topCamera, showGrid: true)))
         let rows = Set(Self.gridPixels(bgra).map(\.1))
         #expect(rows.count > Self.size / 2, "grid seen edge-on: only \(rows.count) rows lit")
+    }
+
+    @Test("Default axes grow past a large model; an explicit length stays inside it")
+    func defaultAxesScaleToScene() throws {
+        // A 10 x 10 x 1 slab centred on the origin hides the X axis from a top view at distance 30
+        // unless the axis pokes out past x = 5. Auto length is 7.5; an explicit 2 stays hidden.
+        let slab = ViewportBody.box(
+            id: "slab", width: 10, height: 10, depth: 1, color: SIMD4(0.2, 0.2, 0.8, 1))
+        let camera = CameraState(distance: 30)
+        func red(explicit: Float?, live useLive: Bool) throws -> Int {
+            if useLive {
+                let config = ViewportConfiguration(
+                    initialCameraState: camera, displayMode: .unlit, showAxes: true,
+                    axisLength: explicit, showGrid: false)
+                return Self.redPixels(try #require(live(config, bodies: [slab]))).count
+            }
+            var options = baseOptions()
+            options.cameraState = camera
+            options.displayMode = .unlit
+            options.showAxes = true
+            options.axisLength = explicit
+            return Self.redPixels(try #require(offscreen(options, bodies: [slab]))).count
+        }
+        for useLive in [false, true] {
+            #expect(try red(explicit: nil, live: useLive) > 0, "live=\(useLive): auto axes hidden")
+            #expect(try red(explicit: 2, live: useLive) == 0, "live=\(useLive): explicit 2 visible")
+        }
+    }
+
+    @Test("Offscreen .dark renders the dark background, .light the light one")
+    func offscreenDarkBackground() throws {
+        var options = OffscreenRenderOptions(
+            width: 16, height: 16, cameraState: topCamera,
+            backgroundColor: SIMD4(0.95, 0.95, 0.95, 1))
+        let light = try #require(offscreen(options))
+        options.appearance = .dark
+        let dark = try #require(offscreen(options))
+        // BGRA: check the red channel of the first pixel.
+        #expect(light[2] > 200, "light background \(light[2])")
+        #expect(dark[2] < 60, "dark background \(dark[2])")
     }
 
     @Test("The default axes stop at axisLength instead of running off-screen")
