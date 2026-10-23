@@ -250,7 +250,7 @@ struct DoFAutofocusTests {
         var body = ViewportBody.box(id: "b", width: 1, height: 1, depth: 1, color: [1, 1, 1, 1])
         body.transform = translation(0, 0, -10)
         let d = ViewportRenderer.autoFocusDistance(
-            bodies: [body], cameraPosition: [0, 0, 10], fallback: 1)
+            bodies: [body], cameraState: CameraState(distance: 10))
         #expect(abs(d - 20) < 1e-4, "focused at \(d), expected 20")
     }
 
@@ -262,7 +262,7 @@ struct DoFAutofocusTests {
         var hidden = ViewportBody.box(id: "h", width: 1, height: 1, depth: 1, color: [1, 1, 1, 1])
         hidden.isVisible = false
         let d = ViewportRenderer.autoFocusDistance(
-            bodies: [gizmo, hidden], cameraPosition: [0, 0, 10], fallback: 7)
+            bodies: [gizmo, hidden], cameraState: CameraState(distance: 7))
         #expect(d == 7)
     }
 }

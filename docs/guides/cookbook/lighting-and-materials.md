@@ -203,7 +203,7 @@ body.material = PBRMaterial(
 
 ### Semi-transparent Body
 
-Combine `opacity < 1` with the `.glass` preset (or any material) to produce alpha-blended geometry. The renderer sorts transparent bodies back-to-front, and draws each one's far-facing triangles before its camera-facing ones so its near wall composites over its far wall. `triangleStyles` highlights on a translucent body are drawn with it in that order, so a highlight on a far wall, or on a body behind, is seen through what is in front of it. Translucent surfaces composite colour only: the image stays opaque, so a rendered PNG or a non-opaque view layer does not show through them:
+Combine `opacity < 1` with the `.glass` preset (or any material) to produce alpha-blended geometry. The renderer sorts transparent bodies back-to-front (by the distance of each body's centre from the eye in perspective, by its depth along the line of sight in orthographic), and draws each one's far-facing triangles before its camera-facing ones so its near wall composites over its far wall. `triangleStyles` highlights on a translucent body are drawn with it in that order, so a highlight on a far wall, or on a body behind, is seen through what is in front of it. Translucent surfaces composite colour only: the image stays opaque, so a rendered PNG or a non-opaque view layer does not show through them:
 
 ```swift
 var cover = ViewportBody(

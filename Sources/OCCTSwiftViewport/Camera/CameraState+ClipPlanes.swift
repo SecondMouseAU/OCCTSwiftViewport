@@ -68,8 +68,8 @@ extension CameraState {
     ///
     /// `CameraController` applies this after every camera change when it has a
     /// `sceneBoundsProvider` (`MetalViewportView` sets one), so an orthographic zoom, orbit or
-    /// pan never takes the eye into the model. Call it yourself before rendering a camera you
-    /// built, for example with `OffscreenRenderer`.
+    /// pan never takes the eye into the model. `OffscreenRenderer` applies it to the camera it
+    /// renders (#215). Call it yourself before using a camera you built some other way.
     ///
     /// - Parameter bounds: World-space bounds of the scene, or `nil` when unknown.
     /// - Returns: The camera with its eye in front of `bounds`.

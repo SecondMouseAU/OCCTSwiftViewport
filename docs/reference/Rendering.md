@@ -245,7 +245,7 @@ Thrown by `OffscreenRenderer.renderToPNG(bodies:url:options:)`.
 public final class OffscreenRenderer: Sendable
 ```
 
-Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1, or every body in `.xray`) have their surfaces deferred to a back-to-front sorted pass; their edges still draw. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
+Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1, or every body in `.xray`) have their surfaces deferred to a back-to-front sorted pass; their edges still draw. An orthographic camera (or `explicitOrthoBounds`) has its eye moved back along the line of sight in front of its bodies, overlay bodies and axes, as `CameraState.placingOrthographicEye(inFrontOf:)` does, so an eye built inside the scene does not near-clip it (issue #215). Where the eye is placed changes neither the projection nor the lit shading: in orthographic, lit shading takes its view vector along the line of sight, the same for every pixel, rather than toward the eye (live too). It does change the clip planes, so the edge depth fade and the composite pass (SSAO, silhouettes), which still decodes orthographic depth as perspective depth, can differ. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 
@@ -350,6 +350,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable
 The live Metal render loop. Created by `MetalViewportView` and configured by a `ViewportController`. Implements `MTKViewDelegate` to drive the `MTKView` draw loop. Handles the full rendering pipeline including MSAA, shadow mapping, hardware tessellation (PN triangles on `.enhanced`/`.maximum` quality), mesh shaders (Apple9+ GPU families), SSAO post-processing, TAA, environment map IBL, the GPU pick texture, and per-body features such as transparency, triangle highlights, and render-layer separation.
 
 Most behaviour is configured via `ViewportController` properties rather than directly on this type. The public surface is intentionally narrow.
+
+In orthographic each frame draws the controller's camera with its eye moved back, if need be, in front of the bodies, overlay bodies and axes (`CameraState.placingOrthographicEye(inFrontOf:)`), as `OffscreenRenderer` does (issue #215). Under `MetalViewportView` the controller already keeps the eye there, so this changes nothing; it covers a controller without a `sceneBoundsProvider`, whose `cameraState` keeps its own `distance`.
 
 ### Initializer
 

@@ -68,7 +68,7 @@ let proj = cameraState.projectionMatrix(
 
 `near` sits 1% in front of the nearest corner of the scene's bounding box, measured as depth along the view direction, so neither a face square-on to the camera at the front of the box (a top view of a plate, a flat sketch) nor the near corner of an obliquely viewed scene is clipped by it.
 
-The near plane can't go behind the eye, so an eye inside the scene still cuts it. In orthographic that never has to happen: the picture is `orthographicScale` tall wherever the eye is along the view axis, so orthographic zoom changes only the scale, and `MetalViewportView` keeps the eye in front of the scene (`CameraController.sceneBoundsProvider`). For a camera you build yourself, for example for `OffscreenRenderer`, place the eye first:
+The near plane can't go behind the eye, so an eye inside the scene still cuts it. In orthographic that never has to happen: the picture is `orthographicScale` tall wherever the eye is along the view axis, so orthographic zoom changes only the scale, and `MetalViewportView` keeps the eye in front of the scene (`CameraController.sceneBoundsProvider`): its bodies, the overlay bodies and the axes. `OffscreenRenderer` places the eye of the camera it is given the same way before it draws (issue #215). For a camera you use some other way, place the eye first:
 
 ```swift
 let camera = cameraState.placingOrthographicEye(inFrontOf: sceneBoundingBox)

@@ -414,7 +414,11 @@ public struct ViewportConfiguration: Sendable {
     /// DoF aperture (smaller = shallower depth of field).
     public var dofAperture: Float
 
-    /// DoF focal distance (0 = autofocus on the world-space centre of the visible geometry).
+    /// DoF focal distance, measured along the line of sight from the eye.
+    ///
+    /// 0 autofocuses on the view depth of the world-space centre of the visible geometry. In
+    /// orthographic the composite pass still decodes depth as perspective depth, so the blur
+    /// there does not yet follow it (#215).
     public var dofFocalDistance: Float
 
     /// Maximum blur radius in pixels for DoF.

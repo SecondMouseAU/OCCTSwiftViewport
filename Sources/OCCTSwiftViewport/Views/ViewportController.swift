@@ -153,7 +153,10 @@ public final class ViewportController: ObservableObject {
     /// DoF aperture (smaller = shallower).
     @Published public var dofAperture: Float = 2.8
 
-    /// DoF focal distance (0 = autofocus).
+    /// DoF focal distance along the line of sight from the eye.
+    ///
+    /// 0 autofocuses on the view depth of the visible geometry's centre; see
+    /// `ViewportConfiguration.dofFocalDistance`.
     @Published public var dofFocalDistance: Float = 0
 
     /// Maximum DoF blur radius in pixels.
@@ -195,6 +198,9 @@ public final class ViewportController: ObservableObject {
     ///
     /// Internal so the input router's focus-on-point raycast shares its bounding-box cache.
     lazy var pivotStrategy = PivotStrategy()
+
+    /// Overlay bodies' local bounds by ID, with the generation they were read at.
+    private var overlayBoundsCache: [String: (generation: UInt64, bounds: BoundingBox?)] = [:]
 
     /// Current aspect ratio (updated by MetalViewportView).
     public internal(set) var lastAspectRatio: Float = 1.0
@@ -806,25 +812,61 @@ extension ViewportController {
 
     /// Gives the camera the scene to keep an orthographic eye in front of (issue #211).
     ///
-    /// Sets `CameraController.sceneBoundsProvider` to the bounds of `bodies()`, read from the
-    /// dynamic pivot's per-generation bounding-box cache. `MetalViewportView` calls it with its
-    /// bodies.
+    /// Sets `CameraController.sceneBoundsProvider` to `orthographicEyeBounds(of: bodies())`:
+    /// the bodies, and the axes and overlay bodies drawn with them (#215).
+    /// `MetalViewportView` calls it with its bodies.
     ///
     /// - Parameter bodies: Returns the scene bodies; it is called on each camera change in
     ///   orthographic.
     internal func attachSceneBodies(_ bodies: @escaping @MainActor () -> [ViewportBody]) {
         cameraController.sceneBoundsProvider = { [weak self] in
-            self?.pivotStrategy.sceneBounds(of: bodies())
+            self?.orthographicEyeBounds(of: bodies())
         }
     }
 
     /// The bounds an orthographic eye is kept in front of, or `nil` in perspective.
     ///
     /// `MetalViewportView` watches it, to re-place the eye when the scene changes while the
-    /// camera does not. Read from the per-generation bounding-box cache, so it is cheap.
+    /// camera does not. Read from per-generation bounding-box caches, so it is cheap.
     internal func orthographicSceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
         guard cameraState.isOrthographic else { return nil }
-        return pivotStrategy.sceneBounds(of: bodies)
+        return orthographicEyeBounds(of: bodies)
+    }
+
+    /// Everything a frame draws with `bodies`, for the orthographic eye to stay in front of.
+    ///
+    /// The geometry-layer bodies alone left an overlay widget or the axes that reach toward the
+    /// camera past the model in front of the eye, where the near plane cut them (#215). See
+    /// `RendererSharedSetup.orthographicEyeBounds`, which both renderers place their eye with
+    /// too. None of it depends on the pivot, so a pivot update still never moves the eye.
+    internal func orthographicEyeBounds(of bodies: [ViewportBody]) -> BoundingBox? {
+        pruneOverlayBoundsCache(keeping: bodies)
+        let model = pivotStrategy.sceneBounds(of: bodies)
+        return RendererSharedSetup.orthographicEyeBounds(
+            modelBounds: model, bodies: bodies,
+            settings: GridAxisSettings(configuration: configuration, sceneBounds: model),
+            showAxes: showAxes, localBounds: cachedOverlayBounds(of:))
+    }
+
+    /// An overlay body's local bounds, rescanned only when its generation changes.
+    ///
+    /// `orthographicEyeBounds(of:)` runs on every orthographic camera change; the dynamic
+    /// pivot's cache holds geometry-layer bodies only.
+    private func cachedOverlayBounds(of body: ViewportBody) -> BoundingBox? {
+        if let entry = overlayBoundsCache[body.id], entry.generation == body.generation {
+            return entry.bounds
+        }
+        let bounds = body.boundingBox
+        overlayBoundsCache[body.id] = (body.generation, bounds)
+        return bounds
+    }
+
+    /// Drops cached overlay bounds of bodies no longer in `bodies`, once the cache has grown
+    /// well past them, so removed widgets don't accumulate.
+    private func pruneOverlayBoundsCache(keeping bodies: [ViewportBody]) {
+        guard overlayBoundsCache.count > 2 * bodies.count + 16 else { return }
+        let ids = Set(bodies.map(\.id))
+        overlayBoundsCache = overlayBoundsCache.filter { ids.contains($0.key) }
     }
 
     /// Schedules a dynamic pivot update with a 50ms coalesce delay.
