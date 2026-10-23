@@ -1812,10 +1812,12 @@ public final class OffscreenRenderer: Sendable {
             options.autoSmoothNormals && !body.usesDirectMesh && !body.vertexData.isEmpty
             && !body.indices.isEmpty
         let smoothingKey: Float? = smoothingApplies ? options.normalSmoothingCreaseAngle : nil
-        // Likewise the tessellation patches and meshlets depend on `renderingQuality`.
+        // Likewise the tessellation patches and meshlets depend on `renderingQuality`. A body with
+        // no geometry has no entry and stays a cache hit until its generation changes.
+        let cached = bodyBufferCache[body.id]
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen,
-            bodyBufferCache[body.id]?.smoothingKey == smoothingKey,
-            bodyBufferCache[body.id]?.refinement == refinement
+            cached?.smoothingKey == smoothingKey,
+            cached.map({ $0.refinement == refinement }) ?? true
         {
             return
         }

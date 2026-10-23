@@ -696,8 +696,11 @@ struct OffscreenLiveParityTests {
         }
         let fraction = Double(differing) / Double(Self.width * Self.height)
         print("[offscreen-parity] \(sceneName): \(differing) px differ (\(fraction * 100)%)")
-        // Tessellation only moves a faceted silhouette by a pixel or two, ~0.7% of the frame for
-        // these scenes, so they get a tighter budget that a missing offscreen path would exceed.
+        // The refined scenes match live exactly, so they get a tighter budget. Without offscreen
+        // tessellation (main pass alone, or every pass) `enhanced` and `enhanced-uniform` differ by
+        // 0.7-3% and fail it. The shadow and mesh-shader paths are pinned by
+        // OffscreenTessellationTests instead, since meshlets draw the mesh as given and the shadow
+        // scene's sphere is small.
         let refinedScene = sceneName.hasPrefix("enhanced") || sceneName == "maximum"
         let budget = refinedScene ? 0.002 : 0.01
         #expect(
