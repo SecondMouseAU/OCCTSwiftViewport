@@ -148,6 +148,26 @@ enum DisplayModeScenes {
         ]
     }
 
+    /// An opaque red panel in front of a green panel; with `hiddenEdge`, the back panel carries an
+    /// edge that lies entirely behind the front panel (invisible unless surfaces are see-through).
+    static func panelHidingEdge(hiddenEdge: Bool) -> [ViewportBody] {
+        var back = panel(id: "back", z: -1, half: 3, color: SIMD4<Float>(0.1, 0.9, 0.1, 1))
+        back.edges =
+            hiddenEdge ? [[SIMD3<Float>(-1, 0.3, -0.99), SIMD3<Float>(1, 0.3, -0.99)]] : []
+        return [
+            panel(id: "front", z: 1, half: 2, color: SIMD4<Float>(0.9, 0.1, 0.1, 1)), back,
+        ]
+    }
+
+    /// Largest single-channel difference between two equally sized BGRA buffers.
+    static func maxChannelDelta(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        var delta = 0
+        for i in 0..<min(a.count, b.count) where i % 4 != 3 {
+            delta = max(delta, abs(Int(a[i]) - Int(b[i])))
+        }
+        return delta
+    }
+
     /// (r, g, b) at a pixel of a row-major BGRA buffer, 0–255.
     static func rgb(_ bgra: [UInt8], width: Int, x: Int, y: Int) -> SIMD3<Int> {
         let i = (y * width + x) * 4
@@ -219,7 +239,7 @@ struct OffscreenDisplayModeTests {
             width: size, height: size, cameraState: camera, displayMode: mode,
             xrayOpacity: xrayOpacity,
             lightingConfiguration: DisplayModeScenes.noShadowLighting(), backgroundColor: bg,
-            msaaSampleCount: 1)
+            appearance: .light, msaaSampleCount: 1)
         return renderer.render(bodies: bodies, options: options).map(DisplayModeScenes.bgra)
     }
 
@@ -260,6 +280,29 @@ struct OffscreenDisplayModeTests {
         #expect(
             x.y > o.y + 20, "x-ray centre should let the green back panel through: \(x) vs \(o)")
         #expect(x.x > 40, "x-ray centre should still carry the red front panel, got \(x)")
+    }
+
+    @Test(".xray shows an edge hidden behind another body; .shadedWithEdges doesn't")
+    func xrayShowsHiddenEdge() throws {
+        let camera = DisplayModeScenes.camera()
+        var delta: [DisplayMode: Int] = [:]
+        for mode in [DisplayMode.xray, .shadedWithEdges] {
+            guard
+                let with = render(
+                    DisplayModeScenes.panelHidingEdge(hiddenEdge: true), mode: mode,
+                    camera: camera),
+                let without = render(
+                    DisplayModeScenes.panelHidingEdge(hiddenEdge: false), mode: mode,
+                    camera: camera)
+            else {
+                Issue.record("Metal device unavailable; skipping")
+                return
+            }
+            delta[mode] = DisplayModeScenes.maxChannelDelta(with, without)
+        }
+        #expect((delta[.xray] ?? 0) > 8, "x-ray hides the back edge: \(delta)")
+        #expect(
+            delta[.shadedWithEdges] == 0, "the back edge leaks through an opaque panel: \(delta)")
     }
 
     @Test("OffscreenRenderOptions.xrayOpacity sets how much shows through in .xray")
@@ -393,6 +436,33 @@ struct LiveDisplayModeTests {
         let o = DisplayModeScenes.rgb(opaque.pixels, width: Self.size, x: 48, y: 48)
         #expect(
             x.y > o.y + 20, "x-ray centre should let the green back panel through: \(x) vs \(o)")
+    }
+
+    @Test(
+        ".xray shows an edge hidden behind a surface in the live renderer; .shadedWithEdges doesn't"
+    )
+    func xrayShowsHiddenEdge() throws {
+        let camera = DisplayModeScenes.camera()
+        var delta: [DisplayMode: Int] = [:]
+        for mode in [DisplayMode.xray, .shadedWithEdges] {
+            guard
+                let with = render(
+                    DisplayModeScenes.panelHidingEdge(hiddenEdge: true), mode: mode,
+                    camera: camera),
+                let without = render(
+                    DisplayModeScenes.panelHidingEdge(hiddenEdge: false), mode: mode,
+                    camera: camera)
+            else {
+                Issue.record("Metal device unavailable; skipping")
+                return
+            }
+            delta[mode] = DisplayModeScenes.maxChannelDelta(with.pixels, without.pixels)
+        }
+        #expect((delta[.xray] ?? 0) > 8, "x-ray hides the back edge: \(delta)")
+        // SSAO/silhouettes read depth, so allow a hair of noise but no visible edge.
+        #expect(
+            (delta[.shadedWithEdges] ?? 99) <= 2,
+            "the back edge leaks through an opaque panel: \(delta)")
     }
 
     @Test("ViewportController.xrayOpacity sets how much shows through in .xray, live")
