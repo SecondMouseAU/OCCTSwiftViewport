@@ -162,8 +162,8 @@ public final class CameraController: ObservableObject {
     /// near plane cannot go behind the eye, so an eye inside the model cut its front away. With
     /// a provider set, each change to `cameraState` in orthographic moves the eye back along the
     /// line of sight, if need be, until it is in front of these bounds; the picture does not
-    /// change (issue #211). `MetalViewportView` sets one that reads its bodies. `nil` (the
-    /// default) leaves the eye where `distance` puts it.
+    /// change (issue #211). `MetalViewportView` sets one that reads its bodies when it appears,
+    /// replacing any set before. `nil` (the default) leaves the eye where `distance` puts it.
     public var sceneBoundsProvider: (@MainActor () -> BoundingBox?)? {
         didSet { placeOrthographicEyeInFrontOfScene() }
     }

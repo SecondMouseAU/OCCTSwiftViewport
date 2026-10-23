@@ -251,7 +251,8 @@ cam.scrollZoomSensitivity = 0.25    // exponential scale for scroll delta
 cam.minPanSpeed           = 0       // optional floor, world units per point
 cam.minDistance           = 0.1
 cam.maxDistance           = 10_000  // also bounds orthographicScale (orthographicScaleRange)
-cam.sceneBoundsProvider   = { sceneBounds }  // keeps an ortho eye in front of the scene; MetalViewportView sets it
+cam.sceneBoundsProvider   = { sceneBounds }  // ortho eye stays in front of the scene; for your own view
+                                             // (MetalViewportView sets it on appear, replacing yours)
 cam.enableInertia         = true
 cam.dampingFactor         = 0.1     // velocity lost per 1/60 s: 0 = no damping, 1 = instant stop
 ```

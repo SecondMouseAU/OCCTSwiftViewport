@@ -224,6 +224,22 @@ struct OrthographicFollowupTests {
         }
     }
 
+    @Test("The scene bounds MetalViewportView watches are the bodies' in orthographic only")
+    func orthographicSceneBoundsWatch() {
+        var config = ViewportConfiguration()
+        config.initialCameraState = camera(orthographic: false)
+        let vc = ViewportController(configuration: config)
+        // Perspective: nothing to watch, so a body edit triggers no re-placement.
+        #expect(vc.orthographicSceneBounds(of: [box]) == nil)
+
+        vc.cameraController.animateTo(camera(), duration: 0)
+        #expect(vc.orthographicSceneBounds(of: [box]) == boxBounds)
+        // A moved body changes the watched value, which re-places the eye.
+        var moved = box
+        moved.transform.columns.3 = SIMD4(0, 0, 5, 1)
+        #expect(vc.orthographicSceneBounds(of: [moved]) != boxBounds)
+    }
+
     @Test("An orthographic pivot slide past maxDistance still reaches the surface")
     func orthographicSlideIgnoresMaxDistance() {
         let controller = CameraController(initialState: camera(distance: 10, scale: 3))
@@ -382,9 +398,13 @@ struct OrthographicFollowupTests {
             let i = (y * size + x) * 4
             return pixels[i] > 40 || pixels[i + 1] > 40 || pixels[i + 2] > 40
         }
-        // The line runs through the cut point and halfway along to it.
+        // The line runs through the cut point and a quarter of the way along to it (clear of
+        // the labels)...
         #expect(lit(153, 102) || lit(154, 102) || lit(153, 103), "\(kind): the cut end")
-        #expect(lit(92, 163) || lit(93, 163) || lit(92, 164), "\(kind): the line")
+        #expect(lit(62, 194) || lit(63, 194) || lit(62, 195), "\(kind): the line")
+        // ...and stops there: uncut, it would go on to (3, 3), pixel (224, 32), through here.
+        #expect(
+            !lit(200, 56) && !lit(199, 56) && !lit(200, 55), "\(kind): the line was not cut")
         // No end marker at the cut, 2 px off the line, inside where a marker would be.
         #expect(!lit(155, 103), "\(kind): a marker was drawn at the cut")
         if kind == .distance {
