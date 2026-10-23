@@ -559,6 +559,42 @@ inline bool isClippedBySectionPlanes(float3 worldPosition, constant Uniforms &un
     return false;
 }
 
+// Clip position of an edge vertex at `worldPos`, depth-biased so edges win over the faces they
+// lie on. Shared by wireframe_vertex and pick_line_vertex, so a native edge is pickable wherever
+// it is drawn (#182). Not a constant NDC offset: how much world depth a fixed NDC step spans
+// depends on the near/far range, so with a wide range (the unfitted 0.01/10000 fallback, or near
+// at its far * 1e-4 floor) a constant bias let hidden back edges show through faces (#157).
+// Instead, like quad_edge_vertex, pull the vertex toward the viewer along its own view ray
+// (screen position unchanged) by a fixed fraction of the NDC extent, measured in world units at
+// this depth. The Uniforms carry no viewport size, so the pull is EDGE_BIAS_NDC of NDC height
+// (~3 px at 1000 px tall).
+inline float4 edgeBiasedClipPosition(float4 worldPos, constant Uniforms &uniforms) {
+    constexpr float EDGE_BIAS_NDC = 0.006;
+    float4x4 vp = uniforms.viewProjectionMatrix;
+    float4 clipPosition = vp * worldPos;
+    float4x4 viewMatrix = uniforms.viewMatrix;
+    float3 cameraUp = float3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+    float3 cameraBack = float3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+    bool orthographic = abs(vp[0][3]) + abs(vp[1][3]) + abs(vp[2][3]) < 1e-6;
+    float baseW = max(clipPosition.w, 1e-6);
+    float4 upClipPos = vp * (worldPos + float4(cameraUp, 0.0));
+    float ndcPerWorld = abs(upClipPos.y / max(upClipPos.w, 1e-6) - clipPosition.y / baseW);
+    if (ndcPerWorld > 1e-6) {
+        float3 towardViewer = orthographic
+            ? cameraBack
+            : normalize(uniforms.cameraPosition.xyz - worldPos.xyz);
+        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * (EDGE_BIAS_NDC / ndcPerWorld), 0.0));
+        if (pulledClipPos.w > 1e-6) {
+            float unbiasedDepth = clipPosition.z / baseW;
+            // Never let the bias alone push a vertex in front of the near plane: the near plane
+            // is fitted to the scene bounds, so an edge at the front of the scene sits close to it.
+            float biasedDepth = max(pulledClipPos.z / pulledClipPos.w, min(unbiasedDepth, 0.0));
+            clipPosition.z = biasedDepth * clipPosition.w;
+        }
+    }
+    return clipPosition;
+}
+
 vertex PickVertexOut pick_vertex(
     VertexIn in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]]
@@ -566,6 +602,20 @@ vertex PickVertexOut pick_vertex(
     PickVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
+}
+
+// Edge and arc pick vertex: the same depth bias as wireframe_vertex, so on a tilted face the
+// 1x pick pass resolves the edge the user sees drawn over it, not the face (#182). Faces keep
+// the unbiased pick_vertex.
+vertex PickVertexOut pick_line_vertex(
+    VertexIn in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]]
+) {
+    PickVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
+    out.clipPosition = edgeBiasedClipPosition(worldPos, uniforms);
     out.worldPosition = worldPos.xyz;
     return out;
 }
@@ -849,36 +899,7 @@ vertex WireframeVertexOut wireframe_vertex(
 ) {
     WireframeVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
-    float4x4 vp = uniforms.viewProjectionMatrix;
-    out.clipPosition = vp * worldPos;
-    // Depth bias so edges win over the faces they lie on. Not a constant NDC offset: how much
-    // world depth a fixed NDC step spans depends on the near/far range, so with a wide range
-    // (the unfitted 0.01/10000 fallback, or near at its far * 1e-4 floor) a constant bias let
-    // hidden back edges show through faces (#157). Instead, like quad_edge_vertex, pull the
-    // vertex toward the viewer along its own view ray (screen position unchanged) by a fixed
-    // fraction of the NDC extent, measured in world units at this depth. The Uniforms carry no
-    // viewport size, so the pull is EDGE_BIAS_NDC of NDC height (~3 px at 1000 px tall).
-    constexpr float EDGE_BIAS_NDC = 0.006;
-    float4x4 viewMatrix = uniforms.viewMatrix;
-    float3 cameraUp = float3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-    float3 cameraBack = float3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
-    bool orthographic = abs(vp[0][3]) + abs(vp[1][3]) + abs(vp[2][3]) < 1e-6;
-    float baseW = max(out.clipPosition.w, 1e-6);
-    float4 upClipPos = vp * (worldPos + float4(cameraUp, 0.0));
-    float ndcPerWorld = abs(upClipPos.y / max(upClipPos.w, 1e-6) - out.clipPosition.y / baseW);
-    if (ndcPerWorld > 1e-6) {
-        float3 towardViewer = orthographic
-            ? cameraBack
-            : normalize(uniforms.cameraPosition.xyz - worldPos.xyz);
-        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * (EDGE_BIAS_NDC / ndcPerWorld), 0.0));
-        if (pulledClipPos.w > 1e-6) {
-            float unbiasedDepth = out.clipPosition.z / baseW;
-            // Never let the bias alone push a vertex in front of the near plane: the near plane
-            // is fitted to the scene bounds, so an edge at the front of the scene sits close to it.
-            float biasedDepth = max(pulledClipPos.z / pulledClipPos.w, min(unbiasedDepth, 0.0));
-            out.clipPosition.z = biasedDepth * out.clipPosition.w;
-        }
-    }
+    out.clipPosition = edgeBiasedClipPosition(worldPos, uniforms);
     out.worldPosition = worldPos.xyz;
     return out;
 }

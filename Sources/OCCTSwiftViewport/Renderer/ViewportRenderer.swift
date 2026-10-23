@@ -324,7 +324,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let pickShadedDirectPipeline: MTLRenderPipelineState
     /// Line-primitive pick pipeline for edge picking.
     ///
-    /// Same vertex shader as `pick_vertex`; the fragment emits kind=1 in the pick encoding.
+    /// `pick_line_vertex` carries `wireframe_vertex`'s depth bias, so a native edge wins the pick
+    /// over the face it lies on (issue #182); the fragment emits kind=1 in the pick encoding.
+    /// `pickArcPipeline` uses the same vertex shader.
     private let pickLinePipeline: MTLRenderPipelineState?
     private let pickArcPipeline: MTLRenderPipelineState?
     /// Quad-expanded edge + arc pick pipeline, so the pick footprint matches the visible width.
@@ -481,13 +483,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// Manages the R32Uint pick ID texture (second color attachment).
     private let pickTextureManager: PickTextureManager
-    /// Shared-mode buffer for single-pixel readback of pick ID.
-    private let pickReadbackBuffer: MTLBuffer
-    /// Shared-mode buffer for region readback of pick IDs (issue #90).
+    /// Shared-mode readback buffers for exact and region picks (issue #90).
     ///
-    /// Grown on demand to fit the largest rectangle requested so far; reused below that.
-    private var regionReadbackBuffer: MTLBuffer?
-    private var regionReadbackCapacity: Int = 0
+    /// Each pick takes a buffer no other in-flight pick holds and returns it once its completion
+    /// handler has read it, so overlapping picks never read each other's pixels (issue #184).
+    /// Beyond 1 MB the pool keeps only the most recently returned buffer, so a burst of large
+    /// overlapping region picks does not leave several full-screen readbacks allocated. Internal
+    /// so tests can check reuse.
+    lazy var pickReadbackPool = FrameBufferPool(device: device, maxRetainedBytes: 1 << 20)
     /// Maps objectIndex → bodyID, rebuilt each frame.
     private var currentIndexMap: [Int: String] = [:]
     /// Maps bodyID → PickLayer, rebuilt each frame.
@@ -651,18 +654,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.pickShadedDirectPipeline = pickShadedDirectPipeline
 
-        // 1x line pick pipeline (edge picking) — reuses pick_vertex; fragment emits kind=1.
+        // 1x line pick pipeline (edge picking) — pick_line_vertex applies wireframe_vertex's
+        // depth bias (issue #182); fragment emits kind=1.
         self.pickLinePipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_line", library: library,
-            vertexFunction: "pick_vertex", fragmentFunction: "pick_line_fragment",
+            vertexFunction: "pick_line_vertex", fragmentFunction: "pick_line_fragment",
             colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
 
-        // 1x arc pick pipeline (issue #48) — reuses pick_vertex; fragment emits
-        // kind=1 with the per-draw arc index.
+        // 1x arc pick pipeline (issue #48) — pick_line_vertex, biased like the drawn arc
+        // (issue #182); fragment emits kind=1 with the per-draw arc index.
         self.pickArcPipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_arc", library: library,
-            vertexFunction: "pick_vertex", fragmentFunction: "pick_arc_fragment",
+            vertexFunction: "pick_line_vertex", fragmentFunction: "pick_arc_fragment",
             colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
 
@@ -1108,15 +1112,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.matcapTexture = matcap
 
-        // Picking: texture manager + 4-byte shared readback buffer
+        // Picking: texture manager (readback buffers come from `pickReadbackPool`)
         self.pickTextureManager = PickTextureManager(device: device)
-        guard
-            let readback = device.makeBuffer(
-                length: MemoryLayout<UInt32>.size, options: .storageModeShared)
-        else {
-            return nil
-        }
-        self.pickReadbackBuffer = readback
 
         // Environment map manager (IBL)
         self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
@@ -1313,26 +1310,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // body's generation; otherwise (the body's first frame, or new geometry not yet
         // re-uploaded by `ensureBuffers` further down) computes it from the body, so the frame
         // that first shows a body is fitted too, not drawn with the wide fallback (#157).
-        var sceneBounds: BoundingBox? = nil
-        for body in bodiesBinding.wrappedValue where body.isVisible && body.renderLayer == .geometry
-        {
+        // The shadow frustum below reuses these model bounds, before the grid/axes widen them
+        // for the clip fit (issue #183).
+        let modelBounds = RendererSharedSetup.sceneBounds(of: bodiesBinding.wrappedValue) { body in
             let cached =
-                bodyGeneration[body.id] == body.generation
-                ? bodyBufferCache[body.id]?.localBoundingBox : nil
-            guard let localBox = cached ?? body.boundingBox else { continue }
-            let worldBox = localBox.transformed(by: body.transform)
-            sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
+                self.bodyGeneration[body.id] == body.generation
+                ? self.bodyBufferCache[body.id]?.localBoundingBox : nil
+            return cached ?? body.boundingBox
         }
         let clearColor = renderPassDescriptor.colorAttachments[0].clearColor
         let gridAxisSettings = GridAxisSettings(
             configuration: controller.configuration,
-            sceneBounds: sceneBounds,
+            sceneBounds: modelBounds,
             background: SIMD4<Float>(
                 Float(clearColor.red), Float(clearColor.green), Float(clearColor.blue),
                 Float(clearColor.alpha))
         )
-        sceneBounds = GridAxisGeometry.clipBounds(
-            sceneBounds: sceneBounds,
+        let sceneBounds = GridAxisGeometry.clipBounds(
+            sceneBounds: modelBounds,
             settings: gridAxisSettings,
             cameraState: cameraState,
             showGrid: controller.showGrid,
@@ -1381,14 +1376,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let shadowEnabled = lighting.shadowsEnabled
         let lightVP: simd_float4x4
         if shadowEnabled {
-            // World-space bounds (issue #105): a body's local box has to be transformed before it
-            // can bound the shadow frustum, or a translated body's shadow lands on the wrong
-            // volume — see `RendererSharedSetup.sceneBounds(of:applyingTransforms:)`.
+            // The model bounds above: world space (issue #105), from the cached local boxes
+            // rather than a per-frame vertex rescan, and without overlay bodies (issue #183).
             lightVP = RendererSharedSetup.lightViewProjection(
-                lightDirection: lighting.keyLight.direction,
-                sceneBounds: RendererSharedSetup.sceneBounds(
-                    of: bodiesBinding.wrappedValue, applyingTransforms: true)
-            )
+                lightDirection: lighting.keyLight.direction, sceneBounds: modelBounds)
         } else {
             lightVP = matrix_identity_float4x4
         }
@@ -3417,21 +3408,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let x = max(0, min(pixel.x, pickTextureManager.width - 1))
         let y = max(0, min(pixel.y, pickTextureManager.height - 1))
 
+        let pool = pickReadbackPool
+        guard let readbackBuffer = pool.acquire(byteCount: MemoryLayout<UInt32>.size) else {
+            completion(nil)
+            return
+        }
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let blitEncoder = commandBuffer.makeBlitCommandEncoder()
         else {
+            pool.release(readbackBuffer)
             completion(nil)
             return
         }
 
-        // Blit 1x1 region from private pick texture to shared readback buffer
+        // Blit 1x1 region from private pick texture to this pick's own readback buffer
         blitEncoder.copy(
             from: texture,
             sourceSlice: 0,
             sourceLevel: 0,
             sourceOrigin: MTLOrigin(x: x, y: y, z: 0),
             sourceSize: MTLSize(width: 1, height: 1, depth: 1),
-            to: pickReadbackBuffer,
+            to: readbackBuffer,
             destinationOffset: 0,
             destinationBytesPerRow: MemoryLayout<UInt32>.size,
             destinationBytesPerImage: MemoryLayout<UInt32>.size
@@ -3441,7 +3438,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
         let ambiguousKinds = currentAmbiguousKinds
-        let readbackBuffer = pickReadbackBuffer
 
         // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
         // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
@@ -3453,6 +3449,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // See issue #110.
         commandBuffer.addCompletedHandler { @Sendable _ in
             let rawValue = readbackBuffer.contents().load(as: UInt32.self)
+            pool.release(readbackBuffer)
             let result = PickResult(
                 rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
                 ambiguousKinds: ambiguousKinds)
@@ -3488,8 +3485,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let blitEncoder = commandBuffer.makeBlitCommandEncoder(),
-            // Per-request buffer (tiny: at most 65x65 px): the shared region buffer could be
-            // overwritten by an overlapping pick before this completion handler reads it.
+            // Per-request buffer (tiny: at most 65x65 px), so an overlapping pick cannot overwrite
+            // it before this completion handler reads it.
             let readbackBuffer = device.makeBuffer(length: totalBytes, options: .storageModeShared)
         else {
             completion(nil)
@@ -3537,21 +3534,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         commandBuffer.commit()
     }
 
-    /// Returns (creating or growing if needed) a shared-mode buffer of at least
-    /// `minimumBytes`, reused across calls to avoid reallocating on every region pick.
-    private func ensureRegionReadbackBuffer(minimumBytes: Int) -> MTLBuffer? {
-        if let buffer = regionReadbackBuffer, regionReadbackCapacity >= minimumBytes {
-            return buffer
-        }
-        guard let buffer = device.makeBuffer(length: minimumBytes, options: .storageModeShared)
-        else {
-            return nil
-        }
-        regionReadbackBuffer = buffer
-        regionReadbackCapacity = minimumBytes
-        return buffer
-    }
-
     /// Reads a screen-space rectangle from the pick ID buffer in a single GPU round trip and
     /// returns the de-duplicated set of primitives it touches (issue #90).
     ///
@@ -3569,6 +3551,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///     order of first appearance. Background pixels are excluded, so a rect entirely over
     ///     empty space completes with `[]`. Apply a `PickResultFilter` to the result the same way
     ///     you would a single `performPick` result.
+    ///
+    /// Each call reads back into a buffer of its own, so overlapping region picks (a new one
+    /// issued before an earlier one completes) each get their own rectangle's results.
     public func performRegionPick(
         rect: CGRect, completion: @escaping @Sendable ([PickResult]) -> Void
     ) {
@@ -3594,16 +3579,23 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let bytesPerRow = Self.alignedBytesPerRow(forWidth: w)
         let byteCount = bytesPerRow * h
 
-        guard let readbackBuffer = ensureRegionReadbackBuffer(minimumBytes: byteCount),
-            let commandBuffer = commandQueue.makeCommandBuffer(),
+        // A buffer of this request's own (issue #184): a single shared buffer let an overlapping
+        // region pick blit over this one's pixels before its completion handler read them.
+        let pool = pickReadbackPool
+        guard let readbackBuffer = pool.acquire(byteCount: byteCount) else {
+            completion([])
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let blitEncoder = commandBuffer.makeBlitCommandEncoder()
         else {
+            pool.release(readbackBuffer)
             completion([])
             return
         }
 
-        // Blit the whole rectangle from the private pick texture to the shared readback
-        // buffer in one copy — the batched alternative to N per-pixel blits.
+        // Blit the whole rectangle from the private pick texture to the readback buffer in one
+        // copy — the batched alternative to N per-pixel blits.
         blitEncoder.copy(
             from: pickTexture,
             sourceSlice: 0,
@@ -3633,6 +3625,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
                 rawValues.append(contentsOf: UnsafeBufferPointer(start: rowValues, count: w))
             }
+            pool.release(readbackBuffer)
             let results = Self.decodeRegionPickResults(
                 rawValues, indexMap: indexMap, layerMap: layerMap, ambiguousKinds: ambiguousKinds)
             Task { @MainActor in

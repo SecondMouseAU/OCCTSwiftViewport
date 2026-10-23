@@ -80,8 +80,9 @@ public struct EdgeLineConfiguration: Sendable {
     /// Dash pattern for edges.
     public var dashPattern: EdgeLineDashPattern
     /// Whether to use quad-expanded lines (true) or native Metal lines (false).
-    /// Quad expansion enables variable width and dash patterns.
-
+    ///
+    /// Quad expansion enables variable width and dash patterns. Native lines are always one pixel
+    /// wide and solid, so `width` and `dashPattern` have no effect when this is `false`.
     public var useQuadExpansion: Bool
 
     public init(

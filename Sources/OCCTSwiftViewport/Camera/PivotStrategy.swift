@@ -120,6 +120,17 @@ public final class PivotStrategy {
         return hitPoint + (sceneCenter - hitPoint) * t
     }
 
+    /// Casts `ray` against `bodies` using this strategy's bounding-box cache.
+    ///
+    /// Same defaults as ``SceneRaycast/cast(ray:bodies:clipPlanes:includeWidgets:includeNonPickable:)``,
+    /// but a body's box is only recomputed when its `generation` changes, so focus-on-point does
+    /// not rescan every body's geometry on each double-tap.
+    func raycast(ray: Ray, bodies: [ViewportBody], clipPlanes: [ClipPlane]) -> RaycastHit? {
+        updateCache(bodies: bodies)
+        return SceneRaycast.cast(
+            ray: ray, bodies: bodies, boundingBoxCache: bbCache, clipPlanes: clipPlanes)
+    }
+
     /// Invalidates the bounding box cache.
     public func invalidateCache() {
         bbCache.removeAll()
@@ -139,6 +150,11 @@ public final class PivotStrategy {
 
         for body in bodies {
             activeIDs.insert(body.id)
+            // Hidden and overlay bodies are used by neither the scene bounds nor the raycast, so
+            // they are not scanned (issue #180). A stale entry left from when one was used is
+            // harmless: it is never read, and a body that becomes visible again is refreshed by
+            // its generation check here.
+            guard body.isVisible && body.renderLayer == .geometry else { continue }
 
             // Skip if generation hasn't changed
             if generationCache[body.id] == body.generation { continue }

@@ -33,6 +33,13 @@ public enum SceneRaycast {
     /// (the first ``ClipPlane/maxActivePlanes``), and a world point `p` is clipped when
     /// `dot(normal, p) + distance < 0` (issue #163).
     ///
+    /// By default the cast only tests the bodies a user would orbit around or focus on: hidden
+    /// bodies, ``ViewportBody/isPickable`` `== false` bodies (which GPU picking never reports)
+    /// and widgets are skipped, so the dynamic pivot and focus-on-point never land on a gizmo or
+    /// datum (issue #180). A widget is a body drawn on the ``RenderLayer/overlay`` layer or
+    /// picked on the ``PickLayer/widget`` layer. Pass `includeWidgets` or `includeNonPickable`
+    /// to test those too.
+    ///
     /// - Parameters:
     ///   - ray: The world-space ray to cast.
     ///   - bodies: Scene bodies to test.
@@ -41,12 +48,18 @@ public enum SceneRaycast {
     ///     are skipped.
     ///   - clipPlanes: Section planes to honour, typically `ViewportController.clipPlanes`.
     ///     Defaults to none.
+    ///   - includeWidgets: Also test ``RenderLayer/overlay`` and ``PickLayer/widget`` bodies.
+    ///     Defaults to `false`.
+    ///   - includeNonPickable: Also test bodies with ``ViewportBody/isPickable`` `== false`.
+    ///     Defaults to `false`.
     /// - Returns: The nearest unclipped hit, or `nil` on miss.
     public static func cast(
         ray: Ray,
         bodies: [ViewportBody],
         boundingBoxCache: [String: BoundingBox],
-        clipPlanes: [ClipPlane] = []
+        clipPlanes: [ClipPlane] = [],
+        includeWidgets: Bool = false,
+        includeNonPickable: Bool = false
     ) -> RaycastHit? {
         let planes = ClipPlane.activePlanes(in: clipPlanes).applied
 
@@ -55,7 +68,11 @@ public enum SceneRaycast {
         var candidates: [(body: ViewportBody, localRay: Ray, tScale: Float, aabbEntry: Float)] = []
 
         for body in bodies {
-            guard body.isVisible else { continue }
+            guard
+                isCandidate(
+                    body, includeWidgets: includeWidgets,
+                    includeNonPickable: includeNonPickable)
+            else { continue }
             guard let bb = boundingBoxCache[body.id] else { continue }
             guard let (localRay, tScale) = localRay(ray, transform: body.transform) else {
                 continue
@@ -107,17 +124,35 @@ public enum SceneRaycast {
     ///
     /// Convenience for one-off casts. It walks every body's geometry to build the boxes, so
     /// code that casts repeatedly against the same bodies should keep its own cache and call
-    /// ``cast(ray:bodies:boundingBoxCache:clipPlanes:)`` instead.
+    /// ``cast(ray:bodies:boundingBoxCache:clipPlanes:includeWidgets:includeNonPickable:)``
+    /// instead. Skips the same bodies that overload does, without computing their boxes.
     public static func cast(
         ray: Ray,
         bodies: [ViewportBody],
-        clipPlanes: [ClipPlane] = []
+        clipPlanes: [ClipPlane] = [],
+        includeWidgets: Bool = false,
+        includeNonPickable: Bool = false
     ) -> RaycastHit? {
         var cache: [String: BoundingBox] = [:]
-        for body in bodies where body.isVisible {
+        for body in bodies
+        where isCandidate(
+            body, includeWidgets: includeWidgets, includeNonPickable: includeNonPickable)
+        {
             if let bb = body.boundingBox { cache[body.id] = bb }
         }
-        return cast(ray: ray, bodies: bodies, boundingBoxCache: cache, clipPlanes: clipPlanes)
+        return cast(
+            ray: ray, bodies: bodies, boundingBoxCache: cache, clipPlanes: clipPlanes,
+            includeWidgets: includeWidgets, includeNonPickable: includeNonPickable)
+    }
+
+    /// Whether `body` takes part in a cast: visible, and pickable and not a widget unless the
+    /// caller opted in to those.
+    static func isCandidate(
+        _ body: ViewportBody, includeWidgets: Bool, includeNonPickable: Bool
+    ) -> Bool {
+        body.isVisible
+            && (includeWidgets || (body.renderLayer != .overlay && body.pickLayer != .widget))
+            && (includeNonPickable || body.isPickable)
     }
 
     /// Whether `point` is on the removed side of any of `planes`.

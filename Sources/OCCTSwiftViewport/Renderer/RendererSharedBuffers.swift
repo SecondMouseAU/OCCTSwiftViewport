@@ -289,15 +289,29 @@ enum RendererSharedBuffers {
 /// renderer calls from the frame's command-buffer completion handler. So the CPU never rewrites a
 /// buffer the GPU may still be reading, however many frames are in flight. Released buffers are
 /// reused, so a steady scene settles at one buffer per frame in flight.
+///
+/// `maxRetainedBytes` bounds what the pool keeps once a burst of concurrent requests is over: a
+/// release that takes the free buffers over it drops the largest *other* free buffers until they
+/// fit. The buffer just released is always kept, so one oversized request still reuses its buffer
+/// next time; only the extra copies a burst left behind are freed.
 final class FrameBufferPool: @unchecked Sendable {
 
     private let device: MTLDevice
+    private let maxRetainedBytes: Int
     private let lock = NSLock()
     private var free: [MTLBuffer] = []
     private(set) var allocatedCount = 0
 
-    init(device: MTLDevice) {
+    init(device: MTLDevice, maxRetainedBytes: Int = .max) {
         self.device = device
+        self.maxRetainedBytes = maxRetainedBytes
+    }
+
+    /// Total bytes of the free buffers the pool is holding for reuse.
+    var retainedBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return free.reduce(0) { $0 + $1.length }
     }
 
     /// A buffer of at least `byteCount` bytes that no in-flight frame is using.
@@ -319,7 +333,12 @@ final class FrameBufferPool: @unchecked Sendable {
     func release(_ buffer: MTLBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        free.append(buffer)
+        var others = free.sorted { $0.length > $1.length }
+        var total = others.reduce(buffer.length) { $0 + $1.length }
+        while total > maxRetainedBytes, !others.isEmpty {
+            total -= others.removeFirst().length
+        }
+        free = others + [buffer]
     }
 
     /// Releases `buffer` when `commandBuffer` completes.

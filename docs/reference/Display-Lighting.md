@@ -241,7 +241,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `ambientColor` | `SIMD3<Float>` | `(1,1,1)` | Tint multiplied into the hemisphere ambient |
 | `shadowsEnabled` | `Bool` | `true` | Master switch for the shadow-map pass |
 | `shadowSoftness` | `Float` | `0.3` | **Deprecated, ignored.** PCSS softness comes from `shadowLightSize` |
-| `shadowMapSize` | `Int` | `2048` | Shadow map resolution in pixels (width = height) |
+| `shadowMapSize` | `Int` | `2048` | Shadow map resolution in pixels (width = height), spread over the world-space bounds of the visible `.geometry`-layer bodies; `.overlay` bodies neither cast into nor enlarge the shadow frustum |
 | `shadowIntensity` | `Float` | `0.4` | Opacity of cast shadows (0 = invisible, 1 = opaque) |
 | `shadowBias` | `Float` | `0.005` | Depth bias to prevent shadow acne |
 | `specularPower` | `Float` | `64.0` | **Deprecated, ignored.** Shading is GGX; set the body's `roughness` (or `PBRMaterial.roughness`) to tighten highlights |

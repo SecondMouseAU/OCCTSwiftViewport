@@ -228,6 +228,8 @@ func castRay(_ ray: Ray,
 
 For a one-off cast, `SceneRaycast.cast(ray:bodies:clipPlanes:)` builds the cache for you.
 
+Like the GPU pick pass, the cast skips bodies with `isPickable == false`, and it also skips widgets: bodies on the `.overlay` render layer or the `.widget` pick layer (gizmos, datum planes), so a raycast lands on the model rather than on a widget in front of it. Pass `includeWidgets: true` or `includeNonPickable: true` to test them too.
+
 `RaycastHit` gives you `bodyID: String`, `point: SIMD3<Float>` (world-space), and `distance: Float` from the ray origin.
 
 ### Full tap-to-world-point example
