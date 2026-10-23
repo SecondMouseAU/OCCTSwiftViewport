@@ -176,15 +176,14 @@ extension ViewportController {
 
     /// Moves the orbit pivot to the nearest surface under `ndc`, raycasting `inputSceneBodies`.
     ///
-    /// Does nothing when the ray misses, since there is then no point to focus on.
+    /// Does nothing when the ray misses, since there is then no point to focus on. Geometry
+    /// removed by `clipPlanes` is skipped, so a sectioned model focuses on the visible cut
+    /// (issue #163).
     private func focus(atNDC ndc: SIMD2<Float>) {
-        let bodies = inputSceneBodies
-        var boxes: [String: BoundingBox] = [:]
-        for body in bodies where body.isVisible {
-            if let box = body.boundingBox { boxes[body.id] = box }
-        }
         let ray = Ray.fromCamera(ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio)
-        guard let hit = SceneRaycast.cast(ray: ray, bodies: bodies, boundingBoxCache: boxes)
+        guard
+            let hit = SceneRaycast.cast(
+                ray: ray, bodies: inputSceneBodies, clipPlanes: clipPlanes)
         else { return }
         focusOn(point: hit.point, animated: true)
     }

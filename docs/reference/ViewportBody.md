@@ -27,7 +27,7 @@ public struct ViewportBody: Identifiable, Sendable
 
 A renderable body for the Metal viewport. Holds interleaved vertex/normal data, triangle indices, optional polyline edges, analytic arcs, point-cloud vertices, per-triangle highlight styles, a PBR material, and rendering/picking metadata. The renderer reads all of these; the consumer creates and mutates `ViewportBody` values and hands them to `ViewportController`.
 
-Every call to `init` increments a global generation counter. The renderer compares `generation` between frames to know whether GPU buffers must be re-uploaded, avoiding expensive vertex-data diffing.
+Every call to `init`, and every assignment or in-place mutation of a geometry field, takes the next value of a global generation counter. The renderer compares `generation` between frames to know whether GPU buffers must be re-uploaded, avoiding expensive vertex-data diffing.
 
 ### Vertex data layout
 
@@ -161,7 +161,7 @@ let body = ViewportBody.directMesh(
 
 - **Opt-in.** Nothing changes unless you call `directMesh(...)`. Bodies built with `init(vertexData:)` keep the interleaved path and all existing behaviour.
 - **`NormalSmoothing` is skipped.** A direct body renders the normals you supply, verbatim. This is the point: OCCT's analytic per-vertex normals are already correct, and re-deriving them is wasted work. It also means `ViewportConfiguration.autoSmoothNormals` does **not** apply to direct bodies — if your source normals are flat/faceted, either smooth them yourself or use the interleaved path.
-- **`vertexData` is left empty**; `vertices` is populated with the reshaped positions so bounding box, `CameraState.fit(to:)`, and CPU raycasting (`SceneRaycast`) all work.
+- **`vertexData` is left empty**; `vertices` is populated with the reshaped positions (for vertex picking). `boundingBox`, `CameraState.fit(to:)` and CPU raycasting (`SceneRaycast`) read `meshPositions` directly, so a direct body built through `init(meshPositions:meshNormals:)` without `vertices` works too.
 - **Tessellation and mesh shaders are skipped** for direct bodies (`renderingQuality = .enhanced` has no effect on them).
 - **Pick caveat:** because `vertices` holds *mesh* vertices, a direct body does not carry separate B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast, and edge *display* all work.
 
@@ -181,7 +181,15 @@ Unique identifier for this body. Used as the dictionary key in `ViewportControll
 
 #### `generation: UInt64`
 
-Monotonically increasing tag assigned at init time. The renderer compares this between frames; a changed value triggers a full GPU buffer re-upload. Read-only (`let`).
+Monotonically increasing tag. `init` assigns one, and so does every assignment or in-place mutation of a geometry field: `vertexData`, `indices`, `edges`, `arcs`, `faceIndices`, `edgeIndices`, `vertices`, `vertexIndices`, `vertexColors`, `meshPositions`, `meshNormals`. Both renderers (and `PivotStrategy`'s bounding-box cache) compare it with the value they cached for the body's `id`; a changed value triggers a full GPU buffer re-upload. So mutating geometry on an existing body and handing it back is enough:
+
+```swift
+var body = bodies[0]
+body.vertexData = deformed   // new generation
+bodies[0] = body             // next frame re-uploads this body's buffers
+```
+
+Appearance and placement fields (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, ...) leave it unchanged, since they are read every frame. Copies share a generation until one of them is mutated. Read-only (`public private(set)`); the counter is thread-safe, so bodies can be built and mutated off the main actor.
 
 #### `vertexData: [Float]`
 

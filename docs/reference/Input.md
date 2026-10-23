@@ -144,7 +144,7 @@ case tap(ndc: SIMD2<Float>, count: Int)
 A tap or click at `ndc` (normalized-device coordinates). By default a double-tap (`count >= 2`) does nothing. When the app opts in, the router checks two things in order:
 
 1. If `GestureConfiguration.resetViewTriggers` contains `.doubleTap`, or on macOS a `.doubleClick(modifiers:)` whose modifiers match those held, it calls `reset(animated: true)`, which animates back to `ViewportConfiguration.initialCameraState`.
-2. Otherwise, for an unmodified double-tap, it runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS). `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit; a miss does nothing. `.resetView` resets, as a shorthand for the matching trigger. Anything else, including the default `.none`, ignores the double-tap.
+2. Otherwise, for an unmodified double-tap, it runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS). `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit, skipping geometry removed by `clipPlanes`; a miss does nothing. `.resetView` resets, as a shorthand for the matching trigger. Anything else, including the default `.none`, ignores the double-tap.
 
 `MetalViewportView` dispatches the real tap location for double-taps on iOS / visionOS. On macOS it forwards the click count and the modifier keys held, so a double-click arrives as `count: 2`. A `.tap` event you dispatch yourself carries no modifiers, so it only matches `.doubleClick(modifiers: [])`. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
 

@@ -28,17 +28,28 @@ public enum SceneRaycast {
     /// inverse of `body.transform`, and the hit point and distance come back in world space.
     /// Bodies whose transform is not invertible are skipped.
     ///
+    /// Hits on geometry removed by a section plane are skipped and the search continues behind
+    /// them, matching the GPU pick pass: only the enabled planes the renderer applies count
+    /// (the first ``ClipPlane/maxActivePlanes``), and a world point `p` is clipped when
+    /// `dot(normal, p) + distance < 0` (issue #163).
+    ///
     /// - Parameters:
     ///   - ray: The world-space ray to cast.
     ///   - bodies: Scene bodies to test.
     ///   - boundingBoxCache: Pre-computed **local-space** bounding boxes keyed by body ID (as
-    ///     returned by `ViewportBody.boundingBox`, before `transform`).
-    /// - Returns: The nearest hit, or `nil` on miss.
+    ///     returned by `ViewportBody.boundingBox`, before `transform`). Bodies without an entry
+    ///     are skipped.
+    ///   - clipPlanes: Section planes to honour, typically `ViewportController.clipPlanes`.
+    ///     Defaults to none.
+    /// - Returns: The nearest unclipped hit, or `nil` on miss.
     public static func cast(
         ray: Ray,
         bodies: [ViewportBody],
-        boundingBoxCache: [String: BoundingBox]
+        boundingBoxCache: [String: BoundingBox],
+        clipPlanes: [ClipPlane] = []
     ) -> RaycastHit? {
+        let planes = ClipPlane.activePlanes(in: clipPlanes).applied
+
         // Broadphase: collect (body, local ray, world-units-per-local-t, world aabbEntry) for
         // visible bodies whose local-space box the ray hits.
         var candidates: [(body: ViewportBody, localRay: Ray, tScale: Float, aabbEntry: Float)] = []
@@ -65,52 +76,96 @@ public enum SceneRaycast {
             // Early-out: no triangle in this body can be closer
             if aabbEntry > bestDistance { break }
 
-            let indexCount = body.indices.count
-            guard indexCount >= 3 else { continue }
-
-            // Position accessor for either layout: interleaved bodies carry stride-6 `vertexData`;
-            // direct-mesh bodies (Option A) carry de-interleaved positions reshaped into `vertices`
-            // and leave `vertexData` empty. Reading the wrong one here would index an empty array.
-            let stride = 6
-            let direct = body.vertexData.isEmpty
-            func position(_ idx: Int) -> SIMD3<Float> {
-                if direct {
-                    return body.vertices[idx]
-                }
-                return SIMD3<Float>(
-                    body.vertexData[idx * stride],
-                    body.vertexData[idx * stride + 1],
-                    body.vertexData[idx * stride + 2]
-                )
-            }
+            guard let positions = TrianglePositions(body) else { continue }
+            let indices = body.indices
+            // Whole triangles only: a trailing partial triple would read past the end.
+            let indexCount = indices.count - indices.count % 3
 
             var i = 0
             while i < indexCount {
-                let i0 = Int(body.indices[i])
-                let i1 = Int(body.indices[i + 1])
-                let i2 = Int(body.indices[i + 2])
+                defer { i += 3 }
+                // Skip triangles with out-of-range indices rather than trapping.
+                guard let v0 = positions[indices[i]],
+                    let v1 = positions[indices[i + 1]],
+                    let v2 = positions[indices[i + 2]],
+                    let localT = localRay.intersectsTriangle(v0: v0, v1: v1, v2: v2)
+                else { continue }
 
-                let v0 = position(i0)
-                let v1 = position(i1)
-                let v2 = position(i2)
-
-                if let localT = localRay.intersectsTriangle(v0: v0, v1: v1, v2: v2),
-                    localT * tScale < bestDistance
-                {
-                    let t = localT * tScale
-                    bestDistance = t
-                    bestHit = RaycastHit(
-                        bodyID: body.id,
-                        point: ray.origin + ray.direction * t,
-                        distance: t
-                    )
-                }
-
-                i += 3
+                let t = localT * tScale
+                guard t < bestDistance else { continue }
+                let point = ray.origin + ray.direction * t
+                if isClipped(point, by: planes) { continue }
+                bestDistance = t
+                bestHit = RaycastHit(bodyID: body.id, point: point, distance: t)
             }
         }
 
         return bestHit
+    }
+
+    /// Casts a ray against the given bodies, computing their bounding boxes on the spot.
+    ///
+    /// Convenience for one-off casts. It walks every body's geometry to build the boxes, so
+    /// code that casts repeatedly against the same bodies should keep its own cache and call
+    /// ``cast(ray:bodies:boundingBoxCache:clipPlanes:)`` instead.
+    public static func cast(
+        ray: Ray,
+        bodies: [ViewportBody],
+        clipPlanes: [ClipPlane] = []
+    ) -> RaycastHit? {
+        var cache: [String: BoundingBox] = [:]
+        for body in bodies where body.isVisible {
+            if let bb = body.boundingBox { cache[body.id] = bb }
+        }
+        return cast(ray: ray, bodies: bodies, boundingBoxCache: cache, clipPlanes: clipPlanes)
+    }
+
+    /// Whether `point` is on the removed side of any of `planes`.
+    ///
+    /// Same test as `isClippedBySectionPlanes` in `Shaders.metal`.
+    static func isClipped(_ point: SIMD3<Float>, by planes: [ClipPlane]) -> Bool {
+        planes.contains { simd_dot($0.normal, point) + $0.distance < 0 }
+    }
+
+    /// Reads a body's triangle-vertex positions from whichever layout the renderer draws.
+    ///
+    /// Direct-mesh bodies (``ViewportBody/usesDirectMesh``) draw `meshPositions` (stride 3),
+    /// interleaved bodies draw `vertexData` (stride 6). `vertices` is the fallback for a body
+    /// with neither. Reading the wrong one indexed an empty array (issue #167).
+    private struct TrianglePositions {
+        private enum Source {
+            case stride3([Float])
+            case stride6([Float])
+            case points([SIMD3<Float>])
+        }
+        private let source: Source
+
+        init?(_ body: ViewportBody) {
+            if body.usesDirectMesh {
+                source = .stride3(body.meshPositions)
+            } else if !body.vertexData.isEmpty {
+                source = .stride6(body.vertexData)
+            } else if !body.vertices.isEmpty {
+                source = .points(body.vertices)
+            } else {
+                return nil
+            }
+        }
+
+        /// The position of vertex `index`, or `nil` when it is out of range.
+        subscript(index: UInt32) -> SIMD3<Float>? {
+            let i = Int(index)
+            switch source {
+            case .stride3(let data):
+                guard i * 3 + 2 < data.count else { return nil }
+                return SIMD3<Float>(data[i * 3], data[i * 3 + 1], data[i * 3 + 2])
+            case .stride6(let data):
+                guard i * 6 + 2 < data.count else { return nil }
+                return SIMD3<Float>(data[i * 6], data[i * 6 + 1], data[i * 6 + 2])
+            case .points(let points):
+                return i < points.count ? points[i] : nil
+            }
+        }
     }
 
     /// Maps a world-space ray into a body's local space.

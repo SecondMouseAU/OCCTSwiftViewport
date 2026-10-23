@@ -11,8 +11,9 @@ import simd
 /// Fragments where `dot(normal, point) + distance < 0` are discarded.
 ///
 /// Every pass that draws scene geometry applies the test, the GPU pick pass included, so
-/// clipped geometry is neither visible nor pickable. The shadow map, CPU `SceneRaycast` and
-/// `OffscreenRenderer` do not apply clip planes.
+/// clipped geometry is neither visible nor pickable. CPU `SceneRaycast` skips clipped hits when
+/// passed the planes, which the dynamic pivot does. The shadow map and `OffscreenRenderer` do
+/// not apply clip planes.
 ///
 /// ## Example
 ///

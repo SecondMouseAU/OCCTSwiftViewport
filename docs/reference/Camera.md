@@ -452,7 +452,7 @@ Seeds pan inertia. Same semantics as `setAngularVelocity`.
 
 ## PivotStrategy
 
-`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. When the camera is zoomed out it returns the scene center (the world-space union of the bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too); when zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
+`PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. When the camera is zoomed out it returns the scene center (the world-space union of the visible `.geometry`-layer bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too; hidden and `.overlay` bodies are left out); when zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
 
 `ViewportController` owns a `PivotStrategy` and drives it automatically. You only need to interact with it directly for custom viewport integrations.
 
@@ -466,18 +466,19 @@ public init()
 
 ---
 
-### `func computePivot(cameraState:bodies:aspectRatio:config:) -> SIMD3<Float>?`
+### `func computePivot(cameraState:bodies:aspectRatio:config:clipPlanes:) -> SIMD3<Float>?`
 
 ```swift
 public func computePivot(
     cameraState: CameraState,
     bodies: [ViewportBody],
     aspectRatio: Float,
-    config: DynamicPivotConfiguration
+    config: DynamicPivotConfiguration,
+    clipPlanes: [ClipPlane] = []
 ) -> SIMD3<Float>?
 ```
 
-Returns the recommended pivot, or `nil` when `config.isEnabled` is `false` or no scene geometry exists. The caller (typically `ViewportController`) should feed the result to `CameraController.adjustPivot(to:duration:)`.
+Returns the recommended pivot, or `nil` when `config.isEnabled` is `false` or no scene geometry exists. The view-centre raycast skips geometry removed by `clipPlanes`, so a sectioned model pivots on what is drawn; `ViewportController` passes its own `clipPlanes`. The caller (typically `ViewportController`) should feed the result to `CameraController.adjustPivot(to:duration:)`.
 
 ---
 
@@ -487,7 +488,7 @@ Returns the recommended pivot, or `nil` when `config.isEnabled` is `false` or no
 public func invalidateCache()
 ```
 
-Forces the bounding-box cache to be rebuilt on the next `computePivot` call. Call when bodies are added or removed from the scene.
+Forces the bounding-box cache to be rebuilt on the next `computePivot` call. Rarely needed: the cache is keyed on each body's `generation`, which changes whenever its geometry is replaced or mutated, and entries for bodies no longer passed in are pruned.
 
 ---
 

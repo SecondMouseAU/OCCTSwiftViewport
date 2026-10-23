@@ -170,7 +170,7 @@ public final class OffscreenRenderer: Sendable
 
 Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1) are deferred to a back-to-front sorted pass. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
 
-The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes.
+The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 
 > **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass. Per-body `isPickable` flags and stencil-based selection outlines are not available in the headless path.
 

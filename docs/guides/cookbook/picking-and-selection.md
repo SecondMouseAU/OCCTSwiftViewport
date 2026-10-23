@@ -220,10 +220,13 @@ func castRay(_ ray: Ray,
     return SceneRaycast.cast(
         ray: ray,
         bodies: bodies,
-        boundingBoxCache: bbCache
+        boundingBoxCache: bbCache,
+        clipPlanes: controller.clipPlanes  // skip geometry a section plane removed
     )
 }
 ```
+
+For a one-off cast, `SceneRaycast.cast(ray:bodies:clipPlanes:)` builds the cache for you.
 
 `RaycastHit` gives you `bodyID: String`, `point: SIMD3<Float>` (world-space), and `distance: Float` from the ray origin.
 

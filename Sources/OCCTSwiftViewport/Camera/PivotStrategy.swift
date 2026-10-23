@@ -62,12 +62,15 @@ public final class PivotStrategy {
     ///   - bodies: Visible scene bodies.
     ///   - aspectRatio: Viewport width / height.
     ///   - config: Dynamic pivot configuration.
+    ///   - clipPlanes: Section planes in effect. The view-centre raycast skips geometry they
+    ///     remove, so the pivot lands on what is actually drawn (issue #163). Defaults to none.
     /// - Returns: The computed pivot, or `nil` if disabled or no geometry is visible.
     public func computePivot(
         cameraState: CameraState,
         bodies: [ViewportBody],
         aspectRatio: Float,
-        config: DynamicPivotConfiguration
+        config: DynamicPivotConfiguration,
+        clipPlanes: [ClipPlane] = []
     ) -> SIMD3<Float>? {
         guard config.isEnabled else { return nil }
 
@@ -90,7 +93,8 @@ public final class PivotStrategy {
 
         // Cast ray through view center
         let ray = Ray.throughViewCenter(cameraState: cameraState, aspectRatio: aspectRatio)
-        let hit = SceneRaycast.cast(ray: ray, bodies: bodies, boundingBoxCache: bbCache)
+        let hit = SceneRaycast.cast(
+            ray: ray, bodies: bodies, boundingBoxCache: bbCache, clipPlanes: clipPlanes)
 
         // When the raycast misses geometry:
         // - Fully zoomed out: safe to use scene center (user sees the whole scene)
@@ -156,9 +160,12 @@ public final class PivotStrategy {
     }
 
     /// World-space union of the cached bounds of `bodies`, each moved by its current `transform`.
+    ///
+    /// Hidden and `.overlay` bodies are left out, as in the renderer's scene bounds, so a hidden
+    /// part or an always-on-top widget doesn't drag the zoomed-out pivot off the visible model.
     private func sceneBoundingBox(bodies: [ViewportBody]) -> BoundingBox? {
         var result: BoundingBox?
-        for body in bodies {
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
             guard let bb = bbCache[body.id]?.transformed(by: body.transform) else { continue }
             if let existing = result {
                 result = existing.union(bb)
