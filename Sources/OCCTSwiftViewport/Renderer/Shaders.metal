@@ -36,7 +36,7 @@ struct Uniforms {
     uint     clipPlaneCount;           // number of active clip planes (0–4)
     uint     unlit;                    // 1 = unlit/flat-colour (skip lighting + tone map),
                                        // 2 = faceted (light with per-triangle face normals)
-    float2   _clipPad;                // padding to 16-byte alignment
+    float2   _clipPad;                 // padding to 16-byte alignment
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).

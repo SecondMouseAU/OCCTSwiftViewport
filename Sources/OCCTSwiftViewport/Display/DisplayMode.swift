@@ -32,8 +32,10 @@ public enum DisplayMode: String, CaseIterable, Sendable {
 
     /// X-ray mode: see-through surfaces with edges.
     ///
-    /// Every geometry-layer surface is drawn in the translucent pass at no more than
-    /// ``xraySurfaceOpacity``, without writing depth, so bodies and edges behind it show through.
+    /// Every geometry-layer surface is drawn in the translucent pass at no more than the x-ray
+    /// opacity setting (`ViewportController.xrayOpacity` / `OffscreenRenderOptions.xrayOpacity`,
+    /// default ``defaultXRayOpacity``), without writing depth, so bodies and edges behind it show
+    /// through.
     case xray
 
     /// Rendered: currently draws exactly like `.shaded`.
@@ -97,20 +99,34 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     /// Whether this mode draws every surface translucent.
     ///
     /// `true` only for `.xray`: the renderers then route all geometry-layer surfaces through the
-    /// sorted, depth-write-off translucent pass at ``surfaceOpacity(forMaterialOpacity:)``.
+    /// sorted, depth-write-off translucent pass at
+    /// ``surfaceOpacity(forMaterialOpacity:xrayOpacity:)``.
     public var usesTransparency: Bool {
         self == .xray
     }
 
-    /// Opacity ceiling for surfaces in `.xray` mode.
-    public static let xraySurfaceOpacity: Float = 0.4
+    /// Default opacity ceiling for surfaces in `.xray` mode.
+    ///
+    /// The default of both `ViewportConfiguration.xrayOpacity` (and so
+    /// `ViewportController.xrayOpacity`) and `OffscreenRenderOptions.xrayOpacity`.
+    public static let defaultXRayOpacity: Float = 0.4
+
+    /// Clamps an x-ray opacity setting to `0...1`.
+    ///
+    /// A non-finite value (NaN or infinity) falls back to ``defaultXRayOpacity``.
+    public static func clampedXRayOpacity(_ opacity: Float) -> Float {
+        guard opacity.isFinite else { return defaultXRayOpacity }
+        return min(max(opacity, 0), 1)
+    }
 
     /// The opacity a surface with the given material opacity is drawn with in this mode.
     ///
     /// Unchanged in every mode except one that ``usesTransparency``, which caps it at
-    /// ``xraySurfaceOpacity``.
-    public func surfaceOpacity(forMaterialOpacity opacity: Float) -> Float {
-        usesTransparency ? min(opacity, Self.xraySurfaceOpacity) : opacity
+    /// `xrayOpacity` (clamped with ``clampedXRayOpacity(_:)``).
+    public func surfaceOpacity(
+        forMaterialOpacity opacity: Float, xrayOpacity: Float = defaultXRayOpacity
+    ) -> Float {
+        usesTransparency ? min(opacity, Self.clampedXRayOpacity(xrayOpacity)) : opacity
     }
 
     /// Whether a body's edges are drawn, and stamped into the pick buffer, in this mode.

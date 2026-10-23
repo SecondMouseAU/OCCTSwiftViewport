@@ -63,10 +63,13 @@ controller.displayMode = .unlit
 
 #### `xray`
 
-See-through surfaces with edges. Every geometry-layer body's surface goes through the sorted translucent pass (issue #53's back-to-front, depth-test-on / depth-write-off pass) at `min(material opacity, DisplayMode.xraySurfaceOpacity)` (0.4), so bodies and edges behind a surface show through it. Edges are drawn opaque before the surfaces, so they stay crisp and are only tinted by the surfaces in front of them. Overlay-layer bodies are unaffected. Selected bodies keep their tint and selection outline. In the pick buffer surfaces stay pickable (the nearest one wins) and so do edges; see [Picking](Picking.md#display-mode-and-pick-content).
+See-through surfaces with edges. Every geometry-layer body's surface goes through the sorted translucent pass (issue #53's back-to-front, depth-test-on / depth-write-off pass) at `min(material opacity, xrayOpacity)`, so bodies and edges behind a surface show through it. Edges are drawn opaque before the surfaces, so they stay crisp and are only tinted by the surfaces in front of them. Overlay-layer bodies are unaffected. Selected bodies keep their tint and selection outline. In the pick buffer surfaces stay pickable (the nearest one wins) and so do edges; see [Picking](Picking.md#display-mode-and-pick-content).
+
+`xrayOpacity` is a setting, default `DisplayMode.defaultXRayOpacity` (0.4), clamped to `0...1`. Change it live with `ViewportController.xrayOpacity` (seeded from `ViewportConfiguration.xrayOpacity`); headless renders take `OffscreenRenderOptions.xrayOpacity`, which has the same default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
 
 ```swift
 controller.displayMode = .xray
+controller.xrayOpacity = 0.25   // more see-through
 ```
 
 #### `rendered`
@@ -153,21 +156,31 @@ if controller.displayMode.usesTransparency {
 }
 ```
 
-#### `xraySurfaceOpacity`
+#### `defaultXRayOpacity`
 
 ```swift
-public static let xraySurfaceOpacity: Float  // 0.4
+public static let defaultXRayOpacity: Float  // 0.4
 ```
 
-The opacity ceiling for surfaces in `.xray`.
+The default opacity ceiling for surfaces in `.xray`. It is the default of `ViewportConfiguration.xrayOpacity` (which seeds `ViewportController.xrayOpacity`) and of `OffscreenRenderOptions.xrayOpacity`, so live and headless renders match unless you change one.
 
-#### `surfaceOpacity(forMaterialOpacity:)`
+#### `clampedXRayOpacity(_:)`
 
 ```swift
-public func surfaceOpacity(forMaterialOpacity opacity: Float) -> Float
+public static func clampedXRayOpacity(_ opacity: Float) -> Float
 ```
 
-The opacity a surface with the given material opacity is drawn with in this mode: unchanged, except in a mode that `usesTransparency`, where it's capped at `xraySurfaceOpacity`. A body whose result is below 1 is drawn in the translucent pass.
+Clamps an x-ray opacity to `0...1`; NaN or infinity becomes `defaultXRayOpacity`. Every `xrayOpacity` setter applies it.
+
+#### `surfaceOpacity(forMaterialOpacity:xrayOpacity:)`
+
+```swift
+public func surfaceOpacity(
+    forMaterialOpacity opacity: Float, xrayOpacity: Float = defaultXRayOpacity
+) -> Float
+```
+
+The opacity a surface with the given material opacity is drawn with in this mode: unchanged, except in a mode that `usesTransparency`, where it's capped at the (clamped) `xrayOpacity`. A body whose result is below 1 is drawn in the translucent pass.
 
 #### `drawsEdges(bodyHasMesh:)`
 

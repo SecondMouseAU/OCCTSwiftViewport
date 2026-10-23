@@ -129,6 +129,14 @@ Current camera state (rotation, distance, pivot, projection). Read-only from out
 
 Current display mode (e.g. `.shaded`, `.wireframe`, `.shadedWithEdges`). Writable; cycles via `cycleDisplayMode()`.
 
+#### `xrayOpacity`
+
+```swift
+@Published public var xrayOpacity: Float
+```
+
+Opacity ceiling for surfaces in `.xray` mode, adjustable live (bind it to a `Slider`). Starts at `configuration.xrayOpacity` (default `DisplayMode.defaultXRayOpacity`, 0.4) and is clamped to `0...1` on set; NaN or infinity resets it to the default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
+
 #### `showViewCube`
 
 ```swift

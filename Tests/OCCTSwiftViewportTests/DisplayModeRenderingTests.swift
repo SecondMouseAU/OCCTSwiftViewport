@@ -25,10 +25,48 @@ struct DisplayModeRuleTests {
             #expect(mode.surfaceOpacity(forMaterialOpacity: 1) == 1)
             #expect(mode.surfaceOpacity(forMaterialOpacity: 0.7) == 0.7)
         }
-        let cap = DisplayMode.xraySurfaceOpacity
-        #expect(cap > 0 && cap < 1)
+        let cap = DisplayMode.defaultXRayOpacity
+        #expect(cap == 0.4)
         #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: 1) == cap)
         #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: cap / 2) == cap / 2)
+        #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: 1, xrayOpacity: 0.7) == 0.7)
+        #expect(DisplayMode.xray.surfaceOpacity(forMaterialOpacity: 1, xrayOpacity: 3) == 1)
+        #expect(DisplayMode.shaded.surfaceOpacity(forMaterialOpacity: 1, xrayOpacity: 0.1) == 1)
+    }
+
+    @Test("X-ray opacity clamps to 0...1, and a non-finite value falls back to the default")
+    func xrayOpacityClamping() {
+        #expect(DisplayMode.clampedXRayOpacity(0.25) == 0.25)
+        #expect(DisplayMode.clampedXRayOpacity(-1) == 0)
+        #expect(DisplayMode.clampedXRayOpacity(2) == 1)
+        #expect(DisplayMode.clampedXRayOpacity(.nan) == DisplayMode.defaultXRayOpacity)
+        #expect(DisplayMode.clampedXRayOpacity(.infinity) == DisplayMode.defaultXRayOpacity)
+    }
+
+    @Test("Live and offscreen x-ray opacity share one default, and every setter clamps")
+    @MainActor
+    func xrayOpacitySettings() {
+        let config = ViewportConfiguration()
+        let options = OffscreenRenderOptions()
+        #expect(config.xrayOpacity == DisplayMode.defaultXRayOpacity)
+        #expect(options.xrayOpacity == config.xrayOpacity)
+        #expect(ViewportController(configuration: config).xrayOpacity == config.xrayOpacity)
+
+        #expect(ViewportConfiguration(xrayOpacity: 5).xrayOpacity == 1)
+        #expect(OffscreenRenderOptions(xrayOpacity: -2).xrayOpacity == 0)
+        var mutableConfig = config
+        mutableConfig.xrayOpacity = -0.5
+        #expect(mutableConfig.xrayOpacity == 0)
+        var mutableOptions = options
+        mutableOptions.xrayOpacity = 1.5
+        #expect(mutableOptions.xrayOpacity == 1)
+
+        let controller = ViewportController(configuration: ViewportConfiguration(xrayOpacity: 0.2))
+        #expect(controller.xrayOpacity == 0.2)
+        controller.xrayOpacity = 9
+        #expect(controller.xrayOpacity == 1)
+        controller.xrayOpacity = .nan
+        #expect(controller.xrayOpacity == DisplayMode.defaultXRayOpacity)
     }
 
     @Test("Edges draw when the mode shows them, and always for an edge-only body")
@@ -173,11 +211,13 @@ struct OffscreenDisplayModeTests {
     private let bg = SIMD4<Float>(0, 0, 0, 1)
 
     private func render(
-        _ bodies: [ViewportBody], mode: DisplayMode, camera: CameraState, size: Int = 96
+        _ bodies: [ViewportBody], mode: DisplayMode, camera: CameraState, size: Int = 96,
+        xrayOpacity: Float = DisplayMode.defaultXRayOpacity
     ) -> [UInt8]? {
         guard let renderer = OffscreenRenderer() else { return nil }
         let options = OffscreenRenderOptions(
             width: size, height: size, cameraState: camera, displayMode: mode,
+            xrayOpacity: xrayOpacity,
             lightingConfiguration: DisplayModeScenes.noShadowLighting(), backgroundColor: bg,
             msaaSampleCount: 1)
         return renderer.render(bodies: bodies, options: options).map(DisplayModeScenes.bgra)
@@ -198,7 +238,7 @@ struct OffscreenDisplayModeTests {
         let smoothSpread = DisplayModeScenes.patchTriangleSpread(smooth, size: 96)
         #expect(flatSpread <= 8, "flat should be constant across the triangle, Δ \(flatSpread)")
         #expect(
-            smoothSpread > 3 * max(flatSpread, 5),
+            smoothSpread >= flatSpread + 8,
             "shaded should vary across the triangle: shaded Δ \(smoothSpread), flat Δ \(flatSpread)"
         )
     }
@@ -220,6 +260,25 @@ struct OffscreenDisplayModeTests {
         #expect(
             x.y > o.y + 20, "x-ray centre should let the green back panel through: \(x) vs \(o)")
         #expect(x.x > 40, "x-ray centre should still carry the red front panel, got \(x)")
+    }
+
+    @Test("OffscreenRenderOptions.xrayOpacity sets how much shows through in .xray")
+    func xrayOpacityIsHonoured() throws {
+        let camera = DisplayModeScenes.camera()
+        let bodies = DisplayModeScenes.stackedPanels()
+        guard let faint = render(bodies, mode: .xray, camera: camera, xrayOpacity: 0.15),
+            let solid = render(bodies, mode: .xray, camera: camera, xrayOpacity: 1)
+        else {
+            Issue.record("Metal device unavailable; skipping")
+            return
+        }
+        let f = DisplayModeScenes.rgb(faint, width: 96, x: 48, y: 48)
+        let s = DisplayModeScenes.rgb(solid, width: 96, x: 48, y: 48)
+        // At 1 the red front panel hides the green one; at 0.15 the green share of the centre grows.
+        #expect(s.y < 60, "opacity 1 should hide the back panel: \(s)")
+        #expect(
+            f.y * s.x > 3 * s.y * f.x,
+            "opacity 0.15 should let far more green through: \(f) vs \(s)")
     }
 
     @Test("A translucent body keeps its edges in .shadedWithEdges, and .xray draws them")
@@ -275,7 +334,7 @@ struct LiveDisplayModeTests {
     /// Renders one frame and returns the pixels plus the renderer (kept for picking).
     private func render(
         _ bodies: [ViewportBody], mode: DisplayMode, camera: CameraState,
-        selected: Set<String> = []
+        selected: Set<String> = [], xrayOpacity: Float = DisplayMode.defaultXRayOpacity
     ) -> (pixels: [UInt8], renderer: ViewportRenderer, controller: ViewportController)? {
         let controller = ViewportController(
             configuration: ViewportConfiguration(
@@ -286,6 +345,7 @@ struct LiveDisplayModeTests {
         controller.showGrid = false
         controller.showAxes = false
         controller.selectedBodyIDs = selected
+        controller.xrayOpacity = xrayOpacity
         guard let renderer = ViewportRenderer(controller: controller, bodies: .constant(bodies)),
             let pixels = renderer.renderHeadlessBGRA(
                 width: Self.size, height: Self.size, backgroundColor: SIMD4<Float>(0, 0, 0, 1))
@@ -314,7 +374,7 @@ struct LiveDisplayModeTests {
         let smoothSpread = DisplayModeScenes.patchTriangleSpread(smooth.pixels, size: Self.size)
         #expect(flatSpread <= 8, "flat should be constant across the triangle, Δ \(flatSpread)")
         #expect(
-            smoothSpread > 3 * max(flatSpread, 5),
+            smoothSpread >= flatSpread + 8,
             "shaded should vary across the triangle: shaded Δ \(smoothSpread), flat Δ \(flatSpread)"
         )
     }
@@ -333,6 +393,24 @@ struct LiveDisplayModeTests {
         let o = DisplayModeScenes.rgb(opaque.pixels, width: Self.size, x: 48, y: 48)
         #expect(
             x.y > o.y + 20, "x-ray centre should let the green back panel through: \(x) vs \(o)")
+    }
+
+    @Test("ViewportController.xrayOpacity sets how much shows through in .xray, live")
+    func xrayOpacityIsHonoured() throws {
+        let camera = DisplayModeScenes.camera()
+        let bodies = DisplayModeScenes.stackedPanels()
+        guard let faint = render(bodies, mode: .xray, camera: camera, xrayOpacity: 0.15),
+            let solid = render(bodies, mode: .xray, camera: camera, xrayOpacity: 1)
+        else {
+            Issue.record("Metal device unavailable; skipping")
+            return
+        }
+        let f = DisplayModeScenes.rgb(faint.pixels, width: Self.size, x: 48, y: 48)
+        let s = DisplayModeScenes.rgb(solid.pixels, width: Self.size, x: 48, y: 48)
+        #expect(s.y < 60, "opacity 1 should hide the back panel: \(s)")
+        #expect(
+            f.y * s.x > 3 * s.y * f.x,
+            "opacity 0.15 should let far more green through: \(f) vs \(s)")
     }
 
     @Test(

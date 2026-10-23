@@ -109,10 +109,21 @@ controller.displayMode = .unlit
 
 See-through surfaces with edges, so internal structure and bodies behind
 others show through the model. Every surface is drawn translucent, at no more
-than `DisplayMode.xraySurfaceOpacity` (0.4), in the sorted translucent pass that
-bodies with opacity below 1 use in every mode; edges are drawn opaque.
+than the x-ray opacity setting (default 0.4), in the sorted translucent pass
+that bodies with opacity below 1 use in every mode; edges are drawn opaque.
 `usesTransparency` is `true` only for this mode. Surfaces and edges both stay
 pickable (the nearest surface wins). Keyboard shortcut: **X**.
+
+Tune how see-through it is with `ViewportController.xrayOpacity` (clamped to
+`0...1`; lower is more see-through). Set the starting value with
+`ViewportConfiguration(xrayOpacity:)`, and use
+`OffscreenRenderOptions.xrayOpacity` for headless renders. All three default to
+`DisplayMode.defaultXRayOpacity`.
+
+```swift
+controller.displayMode = .xray
+Slider(value: $controller.xrayOpacity, in: 0...1)  // live, e.g. in a settings panel
+```
 
 ### `.rendered`
 

@@ -104,6 +104,16 @@ Geometry display mode (shaded, wireframe, hidden-line, etc.). See [`DisplayMode`
 
 ---
 
+#### `xrayOpacity`
+
+```swift
+public var xrayOpacity: Float  // default: DisplayMode.defaultXRayOpacity (0.4)
+```
+
+Opacity ceiling for surfaces in `.xray` mode, clamped to `0...1` on set (and in the initializer) by `DisplayMode.clampedXRayOpacity(_:)`. Seeds `ViewportController.xrayOpacity`, which is what the renderer reads; change that one to tune it live.
+
+---
+
 #### `lightingConfiguration`
 
 ```swift
@@ -574,6 +584,7 @@ public init(
     defaultFieldOfView: Float? = nil,  // nil → keep initialCameraState.fieldOfView
     gestureConfiguration: GestureConfiguration = .default,
     displayMode: DisplayMode = .shaded,
+    xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
     lightingConfiguration: LightingConfiguration = .threePoint,
     showViewCube: Bool = true,
     viewCubePosition: ViewCubePosition = .bottomTrailing,

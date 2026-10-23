@@ -78,6 +78,19 @@ public struct OffscreenRenderOptions: Sendable {
     public var height: Int
     public var cameraState: CameraState
     public var displayMode: DisplayMode
+
+    /// Opacity ceiling for surfaces in `.xray` mode, `0...1`.
+    ///
+    /// Defaults to `DisplayMode.defaultXRayOpacity`, the same default as
+    /// `ViewportConfiguration.xrayOpacity`, so a headless render matches the live viewport.
+    /// Clamped on set with `DisplayMode.clampedXRayOpacity(_:)`.
+    public var xrayOpacity: Float = DisplayMode.defaultXRayOpacity {
+        didSet {
+            let clamped = DisplayMode.clampedXRayOpacity(xrayOpacity)
+            if clamped != xrayOpacity { xrayOpacity = clamped }
+        }
+    }
+
     public var lightingConfiguration: LightingConfiguration
     /// Background colour in the light appearance.
     public var backgroundColor: SIMD4<Float>
@@ -159,6 +172,7 @@ public struct OffscreenRenderOptions: Sendable {
         height: Int = 768,
         cameraState: CameraState = CameraState(),
         displayMode: DisplayMode = .shadedWithEdges,
+        xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
         lightingConfiguration: LightingConfiguration = .threePoint,
         backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
         darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration
@@ -184,6 +198,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.height = height
         self.cameraState = cameraState
         self.displayMode = displayMode
+        self.xrayOpacity = DisplayMode.clampedXRayOpacity(xrayOpacity)
         self.lightingConfiguration = lightingConfiguration
         self.backgroundColor = backgroundColor
         self.darkModeBackgroundColor = darkModeBackgroundColor
@@ -638,6 +653,7 @@ public final class OffscreenRenderer: Sendable {
 
         // Bodies
         let displayMode = options.displayMode
+        let xrayOpacity = options.xrayOpacity
         // Translucent bodies (issue #53) are deferred to a sorted back-to-front pass.
         var transparentBodies: [(body: ViewportBody, buffers: BodyBuffersOffscreen)] = []
         for body in bodies where body.isVisible {
@@ -654,7 +670,8 @@ public final class OffscreenRenderer: Sendable {
             // body keeps its edges (and `.xray`, which makes every surface translucent, has them).
             let defersSurface =
                 body.renderLayer == .geometry && hasMesh
-                && displayMode.surfaceOpacity(forMaterialOpacity: body.effectiveMaterial.opacity)
+                && displayMode.surfaceOpacity(
+                    forMaterialOpacity: body.effectiveMaterial.opacity, xrayOpacity: xrayOpacity)
                     < 1.0
             if defersSurface {
                 transparentBodies.append((body, buffers))
@@ -769,7 +786,7 @@ public final class OffscreenRenderer: Sendable {
                 uniforms.modelMatrix = t.body.transform
                 var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: 0)
                 bodyUniforms.color.w = displayMode.surfaceOpacity(
-                    forMaterialOpacity: bodyUniforms.color.w)
+                    forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
                 // Direct-mesh bodies (Option A) bind position@0 + normal@2 via directMeshPipeline;
                 // both pipelines share the same alpha-blend config so compositing is identical.
                 if let nb = t.buffers.normalBuffer {

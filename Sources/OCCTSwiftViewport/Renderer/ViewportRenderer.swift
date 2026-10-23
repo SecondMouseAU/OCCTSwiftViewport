@@ -1472,6 +1472,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let bodies = bodiesBinding.wrappedValue
         let displayMode = controller.displayMode
+        let xrayOpacity = controller.xrayOpacity
 
         // Build index map for picking: objectIndex → bodyID
         var indexMap: [Int: String] = [:]
@@ -1797,7 +1798,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let defersSurface =
                 body.renderLayer == .geometry
                 && buffers.vertexBuffer != nil && buffers.indexCount > 0
-                && displayMode.surfaceOpacity(forMaterialOpacity: body.effectiveMaterial.opacity)
+                && displayMode.surfaceOpacity(
+                    forMaterialOpacity: body.effectiveMaterial.opacity, xrayOpacity: xrayOpacity)
                     < 1.0
             if defersSurface {
                 transparentDraws.append((body, buffers, bodyObjectIndex))
@@ -1945,7 +1947,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 var bodyUniforms = BodyUniforms(
                     body: d.body, objectIndex: d.objectIndex, isSelected: selState)
                 bodyUniforms.color.w = displayMode.surfaceOpacity(
-                    forMaterialOpacity: bodyUniforms.color.w)
+                    forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
                 // Selected/hovered bodies mark the stencil, as in the opaque pass, so the
                 // selection outline below draws a ring around them instead of a filled silhouette.
                 if selState > 0 {
