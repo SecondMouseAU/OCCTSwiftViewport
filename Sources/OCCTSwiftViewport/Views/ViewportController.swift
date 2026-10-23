@@ -434,10 +434,13 @@ public final class ViewportController: ObservableObject {
     // MARK: - Projection Mode
 
     /// Toggles between perspective and orthographic projection.
+    ///
+    /// The view keeps its size at the pivot: orthographic takes the height the perspective view
+    /// showed there, and perspective takes the distance that shows the orthographic height.
     public func toggleProjection() {
-        var state = cameraState
-        state.isOrthographic.toggle()
-        animateTo(state, duration: 0.3)
+        animateTo(
+            cameraController.switchedProjection(toOrthographic: !cameraState.isOrthographic),
+            duration: 0.3)
     }
 
     // MARK: - Picking
@@ -792,15 +795,24 @@ extension ViewportController {
     }
 
     /// Schedules a dynamic pivot update with a 50ms coalesce delay.
-    internal func scheduleDynamicPivotUpdate(bodies: [ViewportBody]) {
+    ///
+    /// - Parameters:
+    ///   - delay: The coalesce delay in seconds.
+    ///   - bodies: Returns the scene bodies. It is called when the update runs, not when it is
+    ///     scheduled, so a body added, moved or removed within the delay is raycast as it is
+    ///     then, not as it was when the gesture ended (issue #208).
+    internal func scheduleDynamicPivotUpdate(
+        delay: TimeInterval = 0.05,
+        bodies: @escaping @MainActor @Sendable () -> [ViewportBody]
+    ) {
         pivotWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                self?.updateDynamicPivot(bodies: bodies)
+                self?.updateDynamicPivot(bodies: bodies())
             }
         }
         pivotWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 }
 

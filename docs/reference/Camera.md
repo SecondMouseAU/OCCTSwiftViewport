@@ -178,7 +178,7 @@ Returns a copy of the state whose pivot and distance (or `orthographicScale`) ar
 public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1) -> CameraState?
 ```
 
-Convenience overload. Unions the bounding boxes of all visible bodies and calls the `BoundingBox` overload. Returns `nil` when no visible body has geometry.
+Convenience overload. Unions the world-space bounding boxes of the visible bodies, each moved by its `transform`, and calls the `BoundingBox` overload. `.overlay`-layer bodies (gizmos, manipulators) are left out, as in the renderer's scene bounds, unless no visible geometry-layer body has any. Returns `nil` when no visible body has geometry. Before issue #208 the boxes were taken in body-local space and overlays counted, so a moved body or an off-model widget gave the wrong fit.
 
 ```swift
 if let fitted = controller.cameraState.fit(to: bodies, aspectRatio: aspect) {
@@ -208,7 +208,7 @@ Constructs a state that positions the camera at `position` looking toward `targe
 public func interpolated(to target: CameraState, t: Float) -> CameraState
 ```
 
-Returns a state interpolated between `self` (t = 0) and `target` (t = 1). Uses SLERP for rotation and linear interpolation for all scalar/vector fields. `isOrthographic` switches at t = 0.5. Used internally by `CameraController` animations.
+Returns a state interpolated between `self` (t = 0) and `target` (t = 1). Uses SLERP for rotation and linear interpolation for all scalar/vector fields. `isOrthographic` switches at t = 0.5. When the two differ in projection, the start's unused value (`orthographicScale` in perspective, `distance` in orthographic) is first set to the one that shows the same height at the pivot, so the switch at t = 0.5 no longer jumps the view in size. Used internally by `CameraController` animations.
 
 ---
 
@@ -450,7 +450,7 @@ Animates smoothly to `target` using SLERP for rotation and an ease-out (1 − (1
 public func animateTo(_ view: StandardView, duration: Float = 0.3)
 ```
 
-Convenience overload that preserves the current `pivot`, `distance`, `fieldOfView`, and `orthographicScale` while snapping to the standard view's orientation and projection type.
+Convenience overload that preserves the current `pivot`, `distance`, `fieldOfView`, and `orthographicScale` while snapping to the standard view's orientation and projection type. When the view is in the other projection (the axis views are orthographic, the isometric ones perspective), it keeps the height shown at the pivot instead: going orthographic, `orthographicScale` becomes `2 · distance · tan(fieldOfView / 2)`; going perspective, `distance` becomes `orthographicScale / (2 · tan(fieldOfView / 2))`, within `[minDistance, maxDistance]`. Previously the other projection's last value was kept, the default scale of 10 the first time, so pressing a face view jumped the view in size.
 
 ---
 
@@ -577,7 +577,7 @@ public init(
 
 - **`isEnabled`**: set to `false` to use a fixed pivot at all times.
 - **`animationDuration`**: how long the pivot glide animation takes (seconds).
-- **`zoomThreshold`**: `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (the scene centre's depth on the line of sight) from "zoomed in" (raycast hit). Default `0.5`.
+- **`zoomThreshold`**: `cameraDistance / sceneDiagonalLength` ratio that separates "zoomed out" (the scene centre's depth on the line of sight) from "zoomed in" (raycast hit). Default `0.5`. In orthographic the camera distance is `orthographicScale / (2 · tan(fieldOfView / 2))`, the distance at which perspective shows the same height, since orthographic zoom changes the scale and the pivot slide changes `distance` without changing the view. Before issue #208 `distance` was used in both, so an orthographic zoom could stay on the wrong side of the threshold.
 - **`blendBand`**: fraction of `zoomThreshold` used as the width of the smoothstep blend zone between the two pivot strategies. Default `0.3`.
 
 ---
@@ -596,7 +596,7 @@ Duration of the pivot-glide animation in seconds.
 
 ### `var zoomThreshold: Float`
 
-Zoom-ratio crossover point (camera distance / scene diagonal).
+Zoom-ratio crossover point (camera distance / scene diagonal; in orthographic, the distance at which perspective shows `orthographicScale`).
 
 ---
 

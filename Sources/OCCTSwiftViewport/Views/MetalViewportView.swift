@@ -281,7 +281,7 @@ public struct MetalViewportView: View {
                         cursorNDC: SIMD2<Float>(nx, ny),
                         aspectRatio: aspect
                     ))
-                controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                controller.scheduleDynamicPivotUpdate { bodies }
             }
             let onMouseDown: (CGPoint, CGSize, Int, ViewportModifierKeys) -> Void = {
                 location, viewSize, clickCount, modifiers in
@@ -303,7 +303,7 @@ public struct MetalViewportView: View {
             }
             let onDragEnd: (SIMD2<Float>, ViewportModifierKeys) -> Void = { velocity, modifiers in
                 controller.dispatch(.dragEnded(velocity: velocity, modifiers: modifiers))
-                controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                controller.scheduleDynamicPivotUpdate { bodies }
             }
             let onMagnify: (CGFloat, CGPoint, CGSize) -> Void = { scale, cursor, viewSize in
                 guard viewSize.width > 0, viewSize.height > 0 else { return }
@@ -317,7 +317,7 @@ public struct MetalViewportView: View {
             }
             let onMagnifyEnd: () -> Void = {
                 controller.dispatch(.pinchEnded)
-                controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                controller.scheduleDynamicPivotUpdate { bodies }
             }
             let onRotate: (Float) -> Void = { radians in
                 controller.dispatch(.rotateChanged(radians: radians))
@@ -385,7 +385,7 @@ public struct MetalViewportView: View {
                                     Float(velocity.width), Float(velocity.height))
                             ))
                     }
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                    controller.scheduleDynamicPivotUpdate { bodies }
                 },
                 onPinch: { scale, centroid, viewSize in
                     // Toward where the fingers are now, not where the pinch began (#204).
@@ -397,7 +397,7 @@ public struct MetalViewportView: View {
                 },
                 onPinchEnded: {
                     controller.dispatch(.pinchEnded)
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                    controller.scheduleDynamicPivotUpdate { bodies }
                 },
                 onRotate: { radians in
                     controller.dispatch(.rotateChanged(radians: Float(radians)))
@@ -440,7 +440,7 @@ public struct MetalViewportView: View {
                 }
                 .onEnded { value in
                     apply(touchDrags.dragEnded(velocity: value.velocity))
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                    controller.scheduleDynamicPivotUpdate { bodies }
                 }
         }
 

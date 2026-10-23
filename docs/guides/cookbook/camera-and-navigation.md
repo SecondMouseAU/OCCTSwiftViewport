@@ -72,7 +72,7 @@ let proj = cameraState.projectionMatrix(
 
 ## Fitting the camera to geometry
 
-`fit(to:aspectRatio:padding:)` returns a **new** `CameraState` with the pivot moved to the bounding-box centre and the distance (perspective) or `orthographicScale` (orthographic) adjusted so the bounding sphere fills the view. `padding` is a multiplier: `1.1` gives 10 % breathing room.
+`fit(to:aspectRatio:padding:)` returns a **new** `CameraState` with the pivot moved to the bounding-box centre and the distance (perspective) or `orthographicScale` (orthographic) adjusted so the bounding sphere fills the view. `padding` is a multiplier: `1.1` gives 10 % breathing room. The `[ViewportBody]` overload uses each visible body's world-space bounds (its `transform` applied) and leaves out `.overlay` widgets unless nothing else is visible.
 
 ```swift
 // Fit to an explicit bounding box
@@ -170,7 +170,7 @@ All animated moves go through `CameraController.animateTo(_:duration:)`, which:
 2. Runs a `Timer` at `CameraController.preferredFramesPerSecond` (default 120, set from `ViewportConfiguration.preferredFramesPerSecond`). Progress is time-based, so the rate affects smoothness only.
 3. Applies an ease-out curve (`t = 1 - (1 - progress)³`) at each tick.
 4. SLERPs `rotation` via `simd_slerp`; linearly interpolates `distance`, `pivot`, `fieldOfView`, and `orthographicScale` (and the deprecated, unused `panOffset`).
-5. Snaps `isOrthographic` at the midpoint.
+5. Snaps `isOrthographic` at the midpoint. When the projections differ, the start's unused value (`orthographicScale` in perspective, `distance` in orthographic) is first matched to the height it shows, so the snap doesn't jump the view in size.
 
 ```swift
 // Direct state animation through the controller
@@ -312,7 +312,7 @@ let viewport = ViewportController(configuration: config)
 
 `PivotStrategy` adjusts the orbit centre automatically as the user zooms:
 
-- **Zoomed out** (`distance / sceneDiagonalLength > zoomThreshold + halfBand`): orbit around the point on the line of sight at the scene centre's depth.
+- **Zoomed out** (`distance / sceneDiagonalLength > zoomThreshold + halfBand`): orbit around the point on the line of sight at the scene centre's depth. In orthographic the distance is `orthographicScale / (2 · tan(fieldOfView / 2))`, where perspective would show the same height, so an orthographic zoom crosses the threshold as a perspective one does.
 - **Zoomed in** (below threshold): orbit around the raycast hit point at the screen centre.
 - **Blend zone**: smoothstep between the two over `blendBand × zoomThreshold`.
 
@@ -329,7 +329,7 @@ public struct DynamicPivotConfiguration: Sendable {
 }
 ```
 
-Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller schedules updates automatically with a 50 ms coalesce delay after each orbit/zoom event; no manual calls needed.
+Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller schedules updates automatically with a 50 ms coalesce delay after each orbit/zoom event; no manual calls needed. The update reads the bodies binding when it runs, so a body edited during the delay is raycast as it is then (issue #208).
 
 A pivot change never moves the view. Every pivot the strategy returns is on the line of sight through the centre of the view, and the controller slides the pivot along it, changing only `distance`, so the camera's position and orientation stay exactly where the gesture left them, momentum or not. Before issue #200 the distance was kept, and the camera slid toward or away from the model after each gesture. Before issue #204 the zoomed-out pivot was the scene centre itself, off the line of sight whenever the user had panned, so releasing a pan slid the view back to centre the model.
 
@@ -347,7 +347,7 @@ viewport.focusOn(point: pickResult.worldPosition, distance: 5.0, animated: true)
 ## Projection toggle
 
 ```swift
-// Toggle perspective ↔ orthographic (animated)
+// Toggle perspective ↔ orthographic (animated), keeping the view's size at the pivot
 viewport.toggleProjection()
 
 // Or set directly and animate
@@ -355,6 +355,8 @@ var state = viewport.cameraState
 state.isOrthographic = true
 viewport.animateTo(state, duration: 0.3)
 ```
+
+`toggleProjection()` and the standard views keep the height shown at the pivot: orthographic takes `orthographicScale = 2 · distance · tan(fieldOfView / 2)` and perspective takes the matching distance. Setting `isOrthographic` yourself, as in the second example, uses whatever `orthographicScale` the state holds.
 
 ---
 
