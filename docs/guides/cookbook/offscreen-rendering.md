@@ -76,7 +76,7 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `cameraState` | `CameraState` | `.isometric` | Camera position and projection |
 | `displayMode` | `DisplayMode` | `.shaded` | See [Display modes](#display-modes) |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
-| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear (light appearance) |
+| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, sRGB display values (light appearance) |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `(0.12, 0.12, 0.12, 1)` | Dark-appearance background; `nil` = same as light |
 | `appearance` | `RenderAppearance` | `.system` | `.system` (follows the OS, like onscreen), `.light` or `.dark` |
 | `showGrid` | `Bool` | `true` | Ground grid on the XY plane |
@@ -233,7 +233,14 @@ options.lightingConfiguration = .flat           // ambient-only, no shadows
 options.lightingConfiguration = .threePoint     // default: key + fill + back
 ```
 
-`backgroundColor` is a linear-space RGBA `SIMD4<Float>`. Common values:
+Lit surfaces are lit in linear space and ACES tone mapped with the
+configuration's `exposure` and `whitePoint`, exactly as in the live viewport, so
+the same scene and settings produce the same surface colours offscreen and on
+screen. The SSAO / silhouette composite darkens that image in linear space and
+does not tone map again. Unlit bodies, edges, grid, axes and the background are
+not tone mapped.
+
+`backgroundColor` is an sRGB (display) RGBA `SIMD4<Float>`, written to the image as given. Common values:
 
 ```swift
 options.backgroundColor = SIMD4<Float>(1, 1, 1, 1)       // white

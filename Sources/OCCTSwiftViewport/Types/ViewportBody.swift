@@ -57,7 +57,7 @@ public enum BodyPrimitiveKind: Sendable, Hashable {
 /// (16 bytes × triangle count) and gives the renderer a uniform layout for
 /// `[[primitive_id]]`-indexed lookup.
 public struct TriangleStyle: Hashable, Sendable {
-    /// Highlight colour composited over the triangle's base shading, in linear RGBA.
+    /// Highlight colour composited over the triangle's base shading, as sRGB (display) RGBA.
     ///
     /// Alpha doubles as the on/off switch: 0 leaves the triangle untouched, and any alpha
     /// above 0 composites this colour over the base shading at that triangle.
@@ -218,7 +218,10 @@ public struct ViewportBody: Identifiable, Sendable {
     /// style buffer for a body whose `generation` (and so geometry) is unchanged.
     private(set) var triangleStylesGeneration: UInt64
 
-    /// Base colour in linear RGBA, used for shading when no `material` is set.
+    /// Base colour as sRGB (display) RGBA, used for shading when no `material` is set.
+    ///
+    /// Lit modes decode it to linear, light and tone map in linear, and encode back to sRGB;
+    /// `.unlit` draws it as given.
     ///
     /// The alpha channel doubles as opacity: any value below 1 moves the body out of the
     /// opaque pass into the depth-sorted transparent one (issue #53).

@@ -270,7 +270,7 @@ Factor between grid spacing levels (both styles). In the `.plane` style every `g
 public var backgroundColor: SIMD4<Float>  // default: SIMD4<Float>(0.95, 0.95, 0.95, 1.0)
 ```
 
-Viewport background color in the light appearance, as linear RGBA with premultiplied-alpha conventions. The default is a near-white light grey. In the dark appearance `darkModeBackgroundColor` replaces it, unless that is `nil`.
+Viewport background color in the light appearance, as sRGB (display) RGBA with premultiplied-alpha conventions, drawn as given. The default is a near-white light grey. In the dark appearance `darkModeBackgroundColor` replaces it, unless that is `nil`.
 
 ---
 
@@ -807,7 +807,7 @@ Colour and width of the outline ring the live renderer draws around a selected o
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `color` | `SIMD3<Float>` | — | Outline colour, linear RGB. |
+| `color` | `SIMD3<Float>` | — | Outline colour, sRGB (display) RGB. |
 | `width` | `Float` | `3.0` | Outline width in drawable pixels. `0` hides the outline. |
 
 | Preset | Colour | Width |

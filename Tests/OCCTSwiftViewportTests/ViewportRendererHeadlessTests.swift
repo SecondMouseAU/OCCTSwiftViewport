@@ -6,7 +6,7 @@
 // `ViewportRenderer.renderHeadlessBGRA(...)` drives the exact `encodeFrame(into:)` the live
 // `MTKView` path drives — shadow map, skybox, grid, axes, opaque + transparent surfaces, arcs,
 // point clouds, per-triangle highlights, selection outline, overlays, the R32Uint pick pass, TAA
-// resolve and the SSAO/silhouette/tone-map composite. Hashing a fixed battery of deterministic
+// resolve and the SSAO/silhouette composite. Hashing a fixed battery of deterministic
 // scenes therefore pins the live renderer's real output, which previously could only be eyeballed
 // on a device (see PR #102's "what was not verified" section).
 //

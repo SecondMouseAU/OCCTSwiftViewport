@@ -125,7 +125,7 @@ extension ViewportRenderer {
     ///
     /// Every pass `draw(in:)` runs — shadow map, skybox, grid, axes, opaque and transparent
     /// surfaces, arcs, point clouds, highlights, selection outline, overlays, the pick texture,
-    /// TAA resolve and the SSAO/tone-map composite — runs here too, because both entry points call
+    /// TAA resolve and the SSAO/silhouette composite — runs here too, because both entry points call
     /// the same `encodeFrame(into:)`. Render more than one frame to warm up TAA history.
     ///
     /// - Returns: Row-major BGRA8 bytes, or `nil` if the targets or command buffers cannot be made.
