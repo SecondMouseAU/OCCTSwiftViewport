@@ -65,7 +65,7 @@ public struct ClipPlane: Sendable, Equatable {
     /// A clip plane that cuts at Z = 0 (removes geometry below the ground plane).
     ///
     /// The world is Z-up (the turntable orbits Z and the grid lies in the XY plane), so the ground
-    /// is Z = 0 and this equals `zPlane`. Up to v1.2.2 it cut at Y = 0; use `yPlane` for that.
+    /// is Z = 0 and this equals `zPlane`. Up to v1.2.3 it cut at Y = 0; use `yPlane` for that.
     public static let groundPlane = ClipPlane(normal: SIMD3(0, 0, 1), distance: 0)
 
     /// A clip plane that cuts at Y = 0 (removes geometry on the negative-Y side).

@@ -278,7 +278,7 @@ Background colour used in the dark appearance. Following dark mode is on by defa
 
 `resolvedBackgroundColor(isDark:)` returns the colour in effect for an appearance. Headless renders pick their appearance through `OffscreenRenderOptions.appearance` instead; see [Rendering](Rendering.md#offscreenrenderoptions).
 
-Up to v1.2.2 the dark colour was hard-coded and replaced even a custom `backgroundColor`; it is now this configurable field.
+Up to v1.2.3 the dark colour was hard-coded and replaced even a custom `backgroundColor`; it is now this configurable field.
 
 ---
 
@@ -918,7 +918,7 @@ Rendering style for the ground grid.
 | `.plane` | Ground plane: a faint translucent fill (depth-tested but not depth-writing, so it only tints what lies behind it) under 1 px grid lines, every `gridSubdivisions`-th line with more contrast. Default. |
 | `.dots` | Instanced adaptive dot grid. |
 
-Both styles lie in the XY plane at z = 0 (drawn 0.01 below it so faces resting on the ground win the depth test), use spacing `gridBaseSpacing × gridSubdivisionsⁿ` chosen for the current zoom, centre on the camera pivot, and stop at the `gridSize` square around the origin. Line and dot colours are derived from the background the frame clears to (mixed toward black over a light background, toward white over a dark one), so the grid keeps the same modest contrast in light and dark appearance. Up to v1.2.2 the dot grid was drawn in the XZ plane, standing vertical in the Z-up world, and the `.plane` style, `gridStyle` and `gridSize` were ignored.
+Both styles lie in the XY plane at z = 0 (drawn 0.01 below it so faces resting on the ground win the depth test), use spacing `gridBaseSpacing × gridSubdivisionsⁿ` chosen for the current zoom, centre on the camera pivot, and stop at the `gridSize` square around the origin. Line and dot colours are derived from the background the frame clears to (mixed toward black over a light background, toward white over a dark one), so the grid keeps the same modest contrast in light and dark appearance. Up to v1.2.3 the dot grid was drawn in the XZ plane, standing vertical in the Z-up world, and the `.plane` style, `gridStyle` and `gridSize` were ignored.
 
 ---
 
@@ -1102,7 +1102,7 @@ uniforms.clipPlane = plane.asFloat4
 public static let groundPlane: ClipPlane
 ```
 
-Ground plane of the Z-up world: discards all geometry below Z = 0 (the same plane as `.zPlane`). Up to v1.2.2 this cut at Y = 0; use `.yPlane` for that.
+Ground plane of the Z-up world: discards all geometry below Z = 0 (the same plane as `.zPlane`). Up to v1.2.3 this cut at Y = 0; use `.yPlane` for that.
 
 #### `.yPlane`
 
