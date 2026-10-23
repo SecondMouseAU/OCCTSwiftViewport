@@ -191,7 +191,7 @@ matters.
 | `.shadedWithEdges` (default) | yes | yes | yes |
 | `.flat` | yes | no | yes (per-triangle face normals) |
 | `.unlit` | yes | no | **no** |
-| `.xray` | yes (see-through, at most `xrayOpacity`, default 0.4) | yes | yes |
+| `.xray` | yes (see-through, at most `xrayOpacity`, default 0.2) | yes | yes |
 | `.rendered` | yes | no | yes (identical to `.shaded`) |
 
 ### `.unlit` — faithful diagnostic colour renders

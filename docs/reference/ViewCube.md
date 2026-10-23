@@ -146,7 +146,7 @@ public struct NavigationCubeView: View
 
 Geometry and hit-testing are handled by `NavigationCube`; the view observes `ViewportController` for camera state changes. On macOS, hovering highlights the region under the cursor using `onContinuousHover`.
 
-**Orbit direction:** The cube acts as a camera proxy, so dragging it rotates the camera *around* the model — the opposite sign to viewport grab-the-model drag.
+**Orbit direction:** Dragging the cube turns the view the same way a drag in the viewport does, following `GestureConfiguration.dragRotation`. With the default `.rotateObject` the cube face under the finger, and the model with it, turns with the drag on both axes.
 
 ### `init(controller:)`
 
@@ -154,7 +154,7 @@ Geometry and hit-testing are handled by `NavigationCube`; the view observes `Vie
 public init(controller: ViewportController)
 ```
 
-Creates a `NavigationCubeView` tied to `controller`. The view calls `controller.handleOrbit` and `controller.endOrbit` for drag orbiting, and `controller.goToRegion(_:)` for tap snaps.
+Creates a `NavigationCubeView` tied to `controller`. The view orbits through the same signed drag path as the viewport (which ends in `controller.handleOrbit` and `controller.endOrbit`), and `controller.goToRegion(_:)` for tap snaps.
 
 ```swift
 // Place in the top-trailing corner of the viewport

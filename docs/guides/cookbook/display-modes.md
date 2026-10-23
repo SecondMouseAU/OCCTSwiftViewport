@@ -109,7 +109,7 @@ controller.displayMode = .unlit
 
 See-through surfaces with edges, so internal structure and bodies behind
 others show through the model. Every surface is drawn translucent, at no more
-than the x-ray opacity setting (default 0.4), in the sorted translucent pass
+than the x-ray opacity setting (default 0.2), in the sorted translucent pass
 that bodies with opacity below 1 use in every mode; edges are drawn opaque.
 `usesTransparency` is `true` only for this mode. Surfaces and edges both stay
 pickable (the nearest surface wins). Keyboard shortcut: **X**.

@@ -30,11 +30,13 @@ public enum RotationStyle: String, CaseIterable, Sendable {
     /// "up" should always be up.
     case turntable
 
-    /// First-person style rotation - camera-centric.
+    /// First-person style rotation: yaw and pitch.
     ///
-    /// Horizontal drag rotates left/right (yaw).
-    /// Vertical drag looks up/down (pitch).
-    /// Similar to first-person game controls.
+    /// Horizontal drag yaws about world Z; vertical drag pitches about the camera's right vector.
+    /// The camera position is still `pivot + distance` along its back vector, so this turns about
+    /// the pivot like the other styles rather than in place. The drag direction follows
+    /// `GestureConfiguration.dragRotation`; `.orbitCamera` gives the mouse-look feel of
+    /// first-person game controls (drag right, look right).
     ///
     /// Best for: Walk-through visualizations, VR-style navigation.
     case firstPerson

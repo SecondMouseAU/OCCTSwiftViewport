@@ -31,15 +31,38 @@ public struct GestureConfiguration: Sendable {
 
     // MARK: - Orbit direction
 
-    /// Inverts horizontal orbit, so a left or right drag turns the model the opposite way.
+    /// Which way an orbiting drag turns the view.
     ///
-    /// Which direction feels correct is a user expectation, not a correctness question: some
-    /// people read the gesture as "grab the model and drag it", with the object following the
-    /// finger, rather than as the camera orbiting around a stationary model.
+    /// Default ``DragRotationConvention/rotateObject``.
+    ///
+    /// Applies to every drag that resolves to `.orbit`: the iOS / visionOS one-finger (or
+    /// two-finger) drag, the macOS mouse drag, the navigation cube, and the release momentum of
+    /// each. `invertOrbitHorizontal` and `invertOrbitVertical` flip single axes on top of it.
+    public var dragRotation: DragRotationConvention
+
+    /// Flips the horizontal orbit direction on top of `dragRotation` (default `false`).
+    ///
+    /// Kept for source compatibility. Prefer `dragRotation`, which sets both axes at once; this
+    /// remains a per-axis override. Before `dragRotation` existed the horizontal axis defaulted
+    /// to the camera-orbit direction, and some apps set this to `true` to get the
+    /// object-follows-finger feel. That is now the default, so such apps should drop the flag.
     public var invertOrbitHorizontal: Bool
 
-    /// Invert vertical orbit (up/down drag).
+    /// Flips the vertical orbit direction on top of `dragRotation` (default `false`).
     public var invertOrbitVertical: Bool
+
+    /// Signs applied to an orbiting drag delta (points, y down) before it reaches
+    /// `CameraController.orbit(deltaX:deltaY:)`.
+    ///
+    /// `CameraController.orbit` itself turns the model with the drag on both axes, so
+    /// `.rotateObject` is `(1, 1)` and `.orbitCamera` is `(-1, -1)`; each invert flag then
+    /// negates its axis. The drag, its momentum and the navigation cube all use these signs.
+    public var orbitDragSigns: SIMD2<Float> {
+        let base: Float = dragRotation == .rotateObject ? 1 : -1
+        return SIMD2(
+            invertOrbitHorizontal ? -base : base,
+            invertOrbitVertical ? -base : base)
+    }
 
     // MARK: - Inertia
 
@@ -144,6 +167,7 @@ public struct GestureConfiguration: Sendable {
         zoomSensitivity: Float = 1.0,
         scrollZoomSensitivity: Float = 0.25,
         minPanSpeed: Float = 0.001,
+        dragRotation: DragRotationConvention = .rotateObject,
         invertOrbitHorizontal: Bool = false,
         invertOrbitVertical: Bool = false,
         enableInertia: Bool = true,
@@ -166,6 +190,7 @@ public struct GestureConfiguration: Sendable {
         self.zoomSensitivity = zoomSensitivity
         self.scrollZoomSensitivity = scrollZoomSensitivity
         self.minPanSpeed = minPanSpeed
+        self.dragRotation = dragRotation
         self.invertOrbitHorizontal = invertOrbitHorizontal
         self.invertOrbitVertical = invertOrbitVertical
         self.enableInertia = enableInertia
@@ -185,6 +210,11 @@ public struct GestureConfiguration: Sendable {
     }
 
     // MARK: - Presets
+
+    // Every preset turns the model with the drag (`dragRotation = .rotateObject`). That is how
+    // Blender's middle-mouse orbit and Fusion 360's orbit behave (the near side of the model
+    // follows the pointer on both axes), as do Shapr3D, Onshape and SolidWorks; none of them
+    // defaults to the camera-orbit direction.
 
     /// Default gesture configuration (Shapr3D-style).
     public static let `default` = GestureConfiguration()
@@ -234,6 +264,27 @@ public struct GestureConfiguration: Sendable {
         if modifiers.contains(.option) { return optionDrag }
         return mouseDrag
     }
+}
+
+// MARK: - Drag Rotation Convention
+
+/// How an orbiting drag maps onto the view: turn the model under the finger, or move the camera.
+///
+/// The two differ only in sign. With `.rotateObject` a drag to the right carries the near side of
+/// the model to the right and a drag up carries it up, as if the finger were turning the object.
+/// With `.orbitCamera` the drag moves the camera around the pivot instead, so the model appears
+/// to turn the opposite way on both axes.
+///
+/// The convention holds for every `RotationStyle`. `.firstPerson` in this library keeps the camera
+/// at `pivot + distance` and so also turns about the pivot: `.rotateObject` gives the touch
+/// "drag the scene" feel there and `.orbitCamera` the desktop mouse-look feel (drag right, look
+/// right).
+public enum DragRotationConvention: String, CaseIterable, Sendable {
+    /// Grab and turn the model: its near side follows the drag on both axes (default).
+    case rotateObject
+
+    /// Move the camera around the pivot: the model appears to turn against the drag.
+    case orbitCamera
 }
 
 // MARK: - View Reset Trigger

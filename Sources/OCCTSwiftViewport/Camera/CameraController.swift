@@ -177,6 +177,12 @@ public final class CameraController: ObservableObject {
 
     /// Performs orbit rotation based on drag delta.
     ///
+    /// The deltas are screen points with y down, and the model turns with them in every
+    /// `rotationStyle`: a positive `deltaX` carries the near side of the model right, a negative
+    /// `deltaY` (an upward drag) carries it up. `ViewportController` applies
+    /// `GestureConfiguration.orbitDragSigns` before calling this, which is how
+    /// `DragRotationConvention.orbitCamera` reverses it.
+    ///
     /// - Parameters:
     ///   - deltaX: Horizontal drag in points
     ///   - deltaY: Vertical drag in points
@@ -209,9 +215,11 @@ public final class CameraController: ObservableObject {
 
         let deltaRotation = simd_quatf(angle: angle, axis: normalizedAxis)
 
-        // Apply rotation
+        // The axis is in camera (screen) space, so compose on the right. Composing on the left
+        // treated it as a world axis: correct only from the top view, and from the front view a
+        // horizontal drag rolled the picture instead of turning the model.
         var newState = cameraState
-        newState.rotation = simd_normalize(deltaRotation * cameraState.rotation)
+        newState.rotation = simd_normalize(cameraState.rotation * deltaRotation)
         cameraState = newState
     }
 

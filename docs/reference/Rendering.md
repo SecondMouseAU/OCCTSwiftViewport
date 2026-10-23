@@ -95,7 +95,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `height` | `Int` | `768` | Output image height in pixels. |
 | `cameraState` | `CameraState` | `.isometric` | Camera pose, projection, and FOV. |
 | `displayMode` | `DisplayMode` | `.shaded` | Visual representation style. |
-| `xrayOpacity` | `Float` | `DisplayMode.defaultXRayOpacity` (0.4) | Surface opacity ceiling in `.xray`; mirrors `ViewportConfiguration.xrayOpacity`. Clamped to `0...1`. |
+| `xrayOpacity` | `Float` | `DisplayMode.defaultXRayOpacity` (0.2) | Surface opacity ceiling in `.xray`; mirrors `ViewportConfiguration.xrayOpacity`. Clamped to `0...1`. |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, SSAO (`enableSSAO`, on in `.threePoint`), and the composite's tone mapping (`exposure`, `whitePoint`). Image-based lighting and the skybox (`drawBackground`) use the map named by `environmentMapURL` / `environmentMapData`; see [Parity with the live viewport](#parity-with-the-live-viewport). |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1.0)` | RGBA background colour in the light appearance, linear space. |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `ViewportConfiguration.defaultDarkModeBackgroundColor` | Background in the dark appearance; `nil` uses `backgroundColor` for both. Matches `ViewportConfiguration.darkModeBackgroundColor`. |

@@ -48,7 +48,7 @@ The camera state loaded when the viewport first appears. Changing this after the
 public var rotationStyle: RotationStyle  // default: .turntable
 ```
 
-Controls how drag gestures orbit the camera. See [`RotationStyle`](Camera.md#rotationstyle) on the Camera page.
+Controls how drag gestures orbit the camera. See [`RotationStyle`](Camera.md#rotationstyle) on the Camera page. Which way a drag turns the model is set separately, by `gestureConfiguration.dragRotation` (default `.rotateObject`: the model turns with the finger on both axes, in every rotation style).
 
 ---
 
@@ -88,7 +88,7 @@ Vertical field of view in degrees for the initial perspective camera. When set, 
 public var gestureConfiguration: GestureConfiguration  // default: .default
 ```
 
-Platform-specific gesture mapping. See [`GestureConfiguration`](Input.md#gestureconfiguration).
+Platform-specific gesture mapping, including the drag direction (`dragRotation`). See [`GestureConfiguration`](Input.md#gestureconfiguration) and [Drag direction](Input.md#drag-direction-dragrotation).
 
 ---
 
@@ -107,7 +107,7 @@ Geometry display mode (shaded, wireframe, hidden-line, etc.). See [`DisplayMode`
 #### `xrayOpacity`
 
 ```swift
-public var xrayOpacity: Float  // default: DisplayMode.defaultXRayOpacity (0.4)
+public var xrayOpacity: Float  // default: DisplayMode.defaultXRayOpacity (0.2)
 ```
 
 Opacity ceiling for surfaces in `.xray` mode, clamped to `0...1` on set (and in the initializer) by `DisplayMode.clampedXRayOpacity(_:)`. Seeds `ViewportController.xrayOpacity`, which is what the renderer reads; change that one to tune it live.

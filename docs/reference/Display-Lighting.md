@@ -65,11 +65,11 @@ controller.displayMode = .unlit
 
 See-through surfaces with edges. Every geometry-layer body's surface goes through the sorted translucent pass (issue #53's back-to-front, depth-test-on / depth-write-off pass) at `min(material opacity, xrayOpacity)`, so bodies and edges behind a surface show through it. Edges are drawn opaque before the surfaces, so they stay crisp and are only tinted by the surfaces in front of them. Overlay-layer bodies are unaffected. Selected bodies keep their tint and selection outline. In the pick buffer surfaces stay pickable (the nearest one wins) and so do edges; see [Picking](Picking.md#display-mode-and-pick-content).
 
-`xrayOpacity` is a setting, default `DisplayMode.defaultXRayOpacity` (0.4), clamped to `0...1`. Change it live with `ViewportController.xrayOpacity` (seeded from `ViewportConfiguration.xrayOpacity`); headless renders take `OffscreenRenderOptions.xrayOpacity`, which has the same default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
+`xrayOpacity` is a setting, default `DisplayMode.defaultXRayOpacity` (0.2), clamped to `0...1`. Change it live with `ViewportController.xrayOpacity` (seeded from `ViewportConfiguration.xrayOpacity`); headless renders take `OffscreenRenderOptions.xrayOpacity`, which has the same default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
 
 ```swift
 controller.displayMode = .xray
-controller.xrayOpacity = 0.25   // more see-through
+controller.xrayOpacity = 0.1    // more see-through than the 0.2 default
 ```
 
 #### `rendered`
@@ -159,7 +159,7 @@ if controller.displayMode.usesTransparency {
 #### `defaultXRayOpacity`
 
 ```swift
-public static let defaultXRayOpacity: Float  // 0.4
+public static let defaultXRayOpacity: Float  // 0.2
 ```
 
 The default opacity ceiling for surfaces in `.xray`. It is the default of `ViewportConfiguration.xrayOpacity` (which seeds `ViewportController.xrayOpacity`) and of `OffscreenRenderOptions.xrayOpacity`, so live and headless renders match unless you change one.
