@@ -204,19 +204,54 @@ public struct CameraState: Hashable, Codable, Sendable {
         return copy
     }
 
-    /// Convenience: fits to the union of all visible bodies' bounding boxes.
+    /// Returns a copy in the given projection that shows the same height at the pivot.
     ///
-    /// Returns `nil` if no body has geometry.
+    /// Perspective shows `2 · distance · tan(fieldOfView / 2)` at the pivot's depth and
+    /// orthographic shows `orthographicScale` everywhere. Switching to orthographic sets the
+    /// scale to the perspective height; switching to perspective sets the distance to the one
+    /// that shows the orthographic height, keeping the pivot. Without this, a switch kept
+    /// whatever scale or distance the other projection last had, so the view jumped in size.
+    /// A copy already in `orthographic` is returned as it is.
+    func matchingFraming(orthographic: Bool) -> CameraState {
+        guard orthographic != isOrthographic else { return self }
+        let span = 2 * tan(fieldOfView * .pi / 360)
+        var copy = self
+        copy.isOrthographic = orthographic
+        guard span.isFinite, span > 1e-4 else { return copy }
+        if orthographic {
+            copy.orthographicScale = distance * span
+        } else {
+            copy.distance = orthographicScale / span
+        }
+        return copy
+    }
+
+    /// Convenience: fits to the world-space union of the visible bodies' bounding boxes.
+    ///
+    /// Each body's box is moved by its `transform`, so a moved or instanced body is framed where
+    /// it is drawn. Hidden bodies are left out, and so are `.overlay`-layer bodies (gizmos,
+    /// manipulators), as in the renderer's scene bounds, unless the scene has nothing else to
+    /// frame (issue #208).
+    ///
+    /// Returns `nil` if no visible body has geometry.
     public func fit(to bodies: [ViewportBody], aspectRatio: Float, padding: Float = 1.1)
         -> CameraState?
     {
+        guard
+            let bounds = Self.worldBounds(of: bodies, layer: .geometry)
+                ?? Self.worldBounds(of: bodies, layer: .overlay)
+        else { return nil }
+        return fit(to: bounds, aspectRatio: aspectRatio, padding: padding)
+    }
+
+    /// World-space union of the bounds of the visible `bodies` in `layer`.
+    private static func worldBounds(of bodies: [ViewportBody], layer: RenderLayer) -> BoundingBox? {
         var union: BoundingBox?
-        for body in bodies where body.isVisible {
-            guard let bb = body.boundingBox else { continue }
+        for body in bodies where body.isVisible && body.renderLayer == layer {
+            guard let bb = body.boundingBox?.transformed(by: body.transform) else { continue }
             union = union?.union(bb) ?? bb
         }
-        guard let bounds = union else { return nil }
-        return fit(to: bounds, aspectRatio: aspectRatio, padding: padding)
+        return union
     }
 
     /// Creates a camera state looking at a target from a position.
@@ -246,8 +281,19 @@ public struct CameraState: Hashable, Codable, Sendable {
     ///   - target: The target camera state
     ///   - t: Interpolation factor (0 = self, 1 = target)
     /// - Returns: Interpolated camera state
+    /// When the two states differ in projection, the projection switches at `t = 0.5`. The
+    /// receiver's unused value (`orthographicScale` in perspective, `distance` in orthographic)
+    /// is first matched to the height it shows, which does not change it at `t = 0`, so the
+    /// switch does not jump the view in size.
     public func interpolated(to target: CameraState, t: Float) -> CameraState {
         let clampedT = simd_clamp(t, 0, 1)
+        if isOrthographic != target.isOrthographic {
+            var start = matchingFraming(orthographic: !isOrthographic)
+            start.isOrthographic = isOrthographic
+            if start != self {
+                return start.interpolated(to: target, t: clampedT)
+            }
+        }
 
         var result = CameraState(
             rotation: simd_slerp(rotation, target.rotation, clampedT),

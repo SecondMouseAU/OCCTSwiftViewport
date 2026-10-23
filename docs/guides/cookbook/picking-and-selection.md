@@ -287,7 +287,7 @@ if let screenPt = ProjectionUtility.worldToScreen(
 }
 ```
 
-`worldToScreen` returns `nil` when the point is behind the camera. `worldToNDC` gives the same result in NDC space when you need to stay in normalized coordinates.
+`worldToScreen` returns `nil` when the point is behind the camera (in orthographic, nearer than the near plane). `worldToNDC` gives the same result in NDC space when you need to stay in normalized coordinates.
 
 ---
 

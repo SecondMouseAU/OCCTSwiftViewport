@@ -675,14 +675,38 @@ public final class CameraController: ObservableObject {
     /// - Parameters:
     ///   - view: Target standard view
     ///   - duration: Animation duration in seconds
+    /// Keeps the pivot and the view's size: a view in the other projection (the axis views are
+    /// orthographic, the isometric ones perspective) gets the scale or distance that shows the
+    /// same height at the pivot, as `switchedProjection(toOrthographic:)` does.
     public func animateTo(_ view: StandardView, duration: Float = 0.3) {
+        let framed = switchedProjection(toOrthographic: view.isOrthographic)
         let target = view.cameraState(
-            pivot: cameraState.pivot,
-            distance: cameraState.distance,
-            fieldOfView: cameraState.fieldOfView,
-            orthographicScale: cameraState.orthographicScale
+            pivot: framed.pivot,
+            distance: framed.distance,
+            fieldOfView: framed.fieldOfView,
+            orthographicScale: framed.orthographicScale
         )
         animateTo(target, duration: duration)
+    }
+
+    /// The current camera state switched to the given projection, showing the same height at
+    /// the pivot.
+    ///
+    /// Switching to orthographic sets `orthographicScale` to the height the perspective view
+    /// shows at the pivot; switching to perspective sets `distance` to the one that shows the
+    /// orthographic height, within `minDistance...maxDistance`. The state is returned unchanged
+    /// when it is already in that projection.
+    func switchedProjection(toOrthographic orthographic: Bool) -> CameraState {
+        guard orthographic != cameraState.isOrthographic else { return cameraState }
+        var state = cameraState.matchingFraming(orthographic: orthographic)
+        if orthographic {
+            let range = orthographicScaleRange
+            state.orthographicScale = min(
+                range.upperBound, max(range.lowerBound, state.orthographicScale))
+        } else {
+            state.distance = min(maxDistance, max(minDistance, state.distance))
+        }
+        return state
     }
 
     /// Cancels any in-progress animation.

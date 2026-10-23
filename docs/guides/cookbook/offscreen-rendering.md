@@ -121,8 +121,10 @@ let bounds = BoundingBox(min: SIMD3(-5, 0, -5), max: SIMD3(5, 10, 5))
 let camera = CameraState.isometric.fit(to: bounds, aspectRatio: 4.0 / 3.0, padding: 1.15)
 ```
 
-The convenience overload that accepts `[ViewportBody]` unions the bounding boxes
-of all visible bodies and returns `nil` when no body has geometry:
+The convenience overload that accepts `[ViewportBody]` unions the world-space
+bounding boxes of the visible bodies (each body's `transform` applied), leaves out
+`.overlay` widgets unless nothing else is visible, and returns `nil` when no body
+has geometry:
 
 ```swift
 if let camera = CameraState.front.fit(to: bodies, aspectRatio: Float(width) / Float(height)) {

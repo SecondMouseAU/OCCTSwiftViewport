@@ -18,7 +18,9 @@ public struct DynamicPivotConfiguration: Sendable {
     ///
     /// Measured as `cameraDistance / sceneDiagonalLength`, so it is scene-size independent:
     /// above the threshold the camera is "zoomed out" and orbits the whole scene, below it the
-    /// camera orbits whatever is under the cursor.
+    /// camera orbits whatever is under the cursor. Under an orthographic camera the distance is
+    /// the one at which a perspective camera shows the same height,
+    /// `orthographicScale / (2 tan(fieldOfView / 2))`.
     public var zoomThreshold: Float
 
     /// Fraction of `zoomThreshold` used for the smoothstep blend band.
@@ -94,7 +96,7 @@ public final class PivotStrategy {
         let sceneDepth = simd_dot(sceneBB.center - cameraState.position, forward)
         guard sceneDepth > 0 else { return nil }
         let sceneCenter = cameraState.position + forward * sceneDepth
-        let zoomRatio = cameraState.distance / diagonal
+        let zoomRatio = Self.zoomDistance(of: cameraState) / diagonal
         let halfBand = config.zoomThreshold * config.blendBand * 0.5
 
         // Fully zoomed out: orbit about the scene's depth.
@@ -194,6 +196,20 @@ public final class PivotStrategy {
             }
         }
         return result
+    }
+
+    /// The camera distance the zoom decision measures.
+    ///
+    /// Perspective: `distance`. Orthographic zoom changes `orthographicScale` and leaves
+    /// `distance` alone, so measuring `distance` there never saw an orthographic zoom and the
+    /// pivot never reached the raycast branch (issue #208). It uses the distance at which the
+    /// perspective camera would show the same height instead, `orthographicScale / (2 tan(fov/2))`,
+    /// so `zoomThreshold` means the same framing in both projections.
+    static func zoomDistance(of cameraState: CameraState) -> Float {
+        guard cameraState.isOrthographic else { return cameraState.distance }
+        let halfFovTan = tan(cameraState.fieldOfView * .pi / 180 * 0.5)
+        guard halfFovTan.isFinite, halfFovTan > 1e-4 else { return cameraState.distance }
+        return cameraState.orthographicScale / (2 * halfFovTan)
     }
 
     private func smoothstep(edge0: Float, edge1: Float, x: Float) -> Float {

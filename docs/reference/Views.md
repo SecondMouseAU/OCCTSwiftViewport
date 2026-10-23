@@ -373,7 +373,7 @@ Resets the camera to the initial state defined by `configuration.initialCameraSt
 public func toggleProjection()
 ```
 
-Toggles between perspective and orthographic projection, animated over 0.3 s.
+Toggles between perspective and orthographic projection, animated over 0.3 s. The view keeps its size at the pivot: orthographic takes the height the perspective view showed there, and perspective takes the distance that shows the orthographic height (clamped to the camera controller's distance range). Before issue #208 the other projection's last scale or distance was kept, so the view jumped in size.
 
 #### `handleOrbit(translation:)`
 

@@ -568,7 +568,7 @@ public static func worldToScreen(
 ) -> CGPoint?
 ```
 
-Projects a world-space point to a screen-space `CGPoint`. Returns `nil` if the point is behind the camera (`clip.w ≤ 0.001`). The returned point uses a top-left origin with Y increasing downward (UIKit / AppKit window convention).
+Projects a world-space point to a screen-space `CGPoint`. Returns `nil` if the point is behind the camera, decided by view-space depth: under a perspective matrix that is `clip.w ≤ 0.001`; under an orthographic one, where `w` is always 1, it is NDC z < 0, nearer than the near plane, which is how the renderer clips it. Before issue #208 only `w` was checked, so a point behind an orthographic camera was still projected, mirrored onto the view, and the measurement overlay drew it. The returned point uses a top-left origin with Y increasing downward (UIKit / AppKit window convention).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -597,7 +597,7 @@ public static func worldToNDC(
 ) -> SIMD3<Float>?
 ```
 
-Projects a world-space point to normalized device coordinates `(x, y ∈ [-1, 1], z for depth)`. Returns `nil` when the point is behind the camera. Useful when you need NDC before the final screen-space mapping (e.g. to pass back into `Ray.fromCamera`).
+Projects a world-space point to normalized device coordinates `(x, y ∈ [-1, 1], z for depth)`. Returns `nil` when the point is behind the camera, by the same view-space depth test as `worldToScreen`. Useful when you need NDC before the final screen-space mapping (e.g. to pass back into `Ray.fromCamera`).
 
 ### `static func distance(_:_:) -> Float`
 
