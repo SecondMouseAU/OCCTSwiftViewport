@@ -5,6 +5,12 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **`OffscreenRenderOptions.msaaSampleCount` is honoured** (issue #134). `OffscreenRenderer` built every
+  main-pass pipeline for a hard-coded 4 samples and always made multisample textures. A count of `1`,
+  documented as "disabled", aborted on Metal validation (`sampleCount must be > 1 for multisample
+  textures`), and any count other than 4 mismatched the pipelines. Pipelines are now built per sample
+  count and cached (4 at init, others on first use). A count of 1 draws straight into the readback
+  texture, and unsupported counts round down to one the device supports.
 - **Dash patterns now apply to edge-only bodies** (wires, sketches, sampled curves). The quad edge
   fragment shader returned the body colour for them before reaching the dash test, so they always drew
   solid; v1.2.2 documented this as a limitation. The dash test now runs first for every edge.
@@ -15,6 +21,8 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   behaviour change.
 
 ### Tests
+- `OffscreenSampleCountTests` (new): sample-count mapping, and a render at 1, 2, 4 and 8 samples on one
+  renderer (#134).
 - `NeighborhoodPickTests` (new, 14 cases): clamping at texture edges, and best-hit selection (vertex over
   edge over face, nearest of the same kind, 2D distance, ties, unknown bodies, layer map).
 - `EdgeDashRenderingTests` (new, 3 cases): headless renders counting dashes along a line, for an
