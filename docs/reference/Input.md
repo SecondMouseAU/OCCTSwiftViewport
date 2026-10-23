@@ -9,7 +9,7 @@ These types form the platform-neutral input pipeline for OCCTSwiftViewport. Nati
 
 ## Topics
 
-- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [GestureAction](#gestureaction)
+- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [View reset](#view-reset) · [GestureAction](#gestureaction)
 
 ---
 
@@ -55,7 +55,7 @@ Primary pointer drag ended. `velocity` is the release velocity in points per sec
 case twoFingerPanChanged(translation: SIMD2<Float>)
 ```
 
-Two-finger pan (iOS) changed. `translation` is the accumulated translation of the gesture in points since it began, matching the coordinate convention of `UIPanGestureRecognizer.translation(in:)`.
+Two-finger drag (iOS / visionOS) changed. `translation` is the incremental translation in points since the previous event (the recognizer's translation is reset after each event). The router applies it as `GestureConfiguration.twoFingerDrag`: `.pan` (default), `.orbit` or `.zoom`; any other action ignores the gesture.
 
 ---
 
@@ -65,7 +65,7 @@ Two-finger pan (iOS) changed. `translation` is the accumulated translation of th
 case twoFingerPanEnded(velocity: SIMD2<Float>)
 ```
 
-Two-finger pan ended. `velocity` seeds pan inertia.
+Two-finger drag ended. `velocity` seeds pan or orbit inertia, matching `twoFingerDrag`.
 
 ---
 
@@ -75,7 +75,7 @@ Two-finger pan ended. `velocity` seeds pan inertia.
 case pinchChanged(scale: Float)
 ```
 
-Pinch changed. `scale` is an incremental scale ratio relative to the previous event — `1.0` means no change. Zoom is applied toward the view centre.
+Pinch changed. `scale` is an incremental scale ratio relative to the previous event — `1.0` means no change. Zoom is applied toward the view centre, with the scale raised to `GestureConfiguration.zoomSensitivity`. The router zooms only while the platform's pinch mapping (`pinchGesture`, or `trackpadPinch` on macOS) is `.zoom`; any other action ignores the pinch.
 
 ---
 
@@ -85,7 +85,7 @@ Pinch changed. `scale` is an incremental scale ratio relative to the previous ev
 case pinchAtChanged(scale: Float, centerNDC: SIMD2<Float>, aspectRatio: Float)
 ```
 
-Pinch changed with a known gesture centre in normalized-device coordinates (NDC, −1…+1 on each axis). Zoom is applied toward `centerNDC` rather than the view centre, matching the behaviour of mainstream CAD and map applications. `aspectRatio` is `viewWidth / viewHeight` and is required to convert the NDC position into world space correctly.
+Pinch changed with a known gesture centre in normalized-device coordinates (NDC, −1…+1 on each axis). Zoom is applied toward `centerNDC` rather than the view centre, matching the behaviour of mainstream CAD and map applications. `aspectRatio` is `viewWidth / viewHeight` and is required to convert the NDC position into world space correctly. `zoomSensitivity` and the `pinchGesture` / `trackpadPinch` mapping apply as for `.pinchChanged`.
 
 ```swift
 // Zoom toward the mid-point between two fingers
@@ -131,7 +131,7 @@ Two-finger rotation gesture ended.
 case scroll(delta: Float, cursorNDC: SIMD2<Float>, aspectRatio: Float)
 ```
 
-Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive values zoom in. Zoom is applied toward `cursorNDC` so that the point under the cursor stays fixed, matching the behaviour of `.pinchAtChanged`. `aspectRatio` serves the same purpose as in that case.
+Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive values zoom in. Zoom is applied toward `cursorNDC` so that the point under the cursor stays fixed, matching the behaviour of `.pinchAtChanged`. `aspectRatio` serves the same purpose as in that case. The router zooms only while `GestureConfiguration.scrollWheel` is `.zoom`; any other action ignores scrolling.
 
 ---
 
@@ -141,7 +141,12 @@ Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive val
 case tap(ndc: SIMD2<Float>, count: Int)
 ```
 
-A tap or click at `ndc` (normalized-device coordinates). When `count >= 2` the router calls `reset(animated: true)` to return the camera to its default view. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
+A tap or click at `ndc` (normalized-device coordinates). By default a double-tap (`count >= 2`) does nothing. When the app opts in, the router checks two things in order:
+
+1. If `GestureConfiguration.resetViewTriggers` contains `.doubleTap`, or on macOS a `.doubleClick(modifiers:)` whose modifiers match those held, it calls `reset(animated: true)`, which animates back to `ViewportConfiguration.initialCameraState`.
+2. Otherwise, for an unmodified double-tap, it runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS). `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit; a miss does nothing. `.resetView` resets, as a shorthand for the matching trigger. Anything else, including the default `.none`, ignores the double-tap.
+
+`MetalViewportView` dispatches the real tap location for double-taps on iOS / visionOS. On macOS it forwards the click count and the modifier keys held, so a double-click arrives as `count: 2`. A `.tap` event you dispatch yourself carries no modifiers, so it only matches `.doubleClick(modifiers: [])`. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
 
 ---
 
@@ -233,7 +238,7 @@ Configuration for gesture handling in the viewport. Controls sensitivity, orbit-
 public static let `default` = GestureConfiguration()
 ```
 
-Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch zooms; double-tap/click resets.
+Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch and scroll zoom. Nothing resets the view and double-tap/click does nothing until the app opts in (see [View reset](#view-reset)).
 
 #### `.blender`
 
@@ -279,7 +284,7 @@ Starting point for visionOS spatial (indirect pinch + look) input in a window or
 |---|---|---|---|
 | `orbitSensitivity` | `Float` | `0.005` | Orbit turn rate in radians per drag point. |
 | `panSensitivity` | `Float` | `0.005` | Pan speed multiplier. |
-| `zoomSensitivity` | `Float` | `1.0` | Pinch/drag-zoom multiplier. |
+| `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch and drag-zoom magnification: `2` zooms twice as fast (in log terms), `0.5` half as fast. |
 | `scrollZoomSensitivity` | `Float` | `0.25` | Scroll-wheel zoom multiplier. |
 | `minPanSpeed` | `Float` | `0.001` | Minimum pan speed floor; prevents stalling when zoomed very close. |
 
@@ -303,7 +308,7 @@ public var enableInertia: Bool    // default true
 public var dampingFactor: Float   // default 0.1
 ```
 
-`enableInertia` enables post-gesture momentum. `dampingFactor` controls how quickly momentum decays: `0` means no damping (perpetual spin); `1` means instant stop. The `.visionOS` preset uses `0.15`.
+`enableInertia` enables post-gesture momentum. `dampingFactor` controls how quickly momentum decays: `0` means no damping (perpetual spin); `1` means instant stop. It is the fraction of velocity lost per 1/60 s, applied in proportion to elapsed time, so momentum coasts the same at 60 Hz, at 120 Hz, or when timer ticks coalesce. The `.visionOS` preset uses `0.15`.
 
 ---
 
@@ -313,8 +318,16 @@ public var dampingFactor: Float   // default 0.1
 public var singleFingerDrag: GestureAction  // default .orbit
 public var twoFingerDrag:    GestureAction  // default .pan
 public var pinchGesture:     GestureAction  // default .zoom
-public var doubleTap:        GestureAction  // default .focusOnPoint
+public var doubleTap:        GestureAction  // default .none
 ```
+
+These also apply on visionOS. Each field supports a subset of `GestureAction`; any other value makes the router ignore that gesture, so `.none` disables it:
+
+| Field | Supported actions |
+|---|---|
+| `singleFingerDrag`, `twoFingerDrag` | `.orbit`, `.pan`, `.zoom` |
+| `pinchGesture` | `.zoom` |
+| `doubleTap` | `.focusOnPoint`, `.resetView` |
 
 ---
 
@@ -327,8 +340,76 @@ public var optionDrag:    GestureAction  // default .zoom
 public var commandDrag:   GestureAction  // default .select
 public var scrollWheel:   GestureAction  // default .zoom
 public var trackpadPinch: GestureAction  // default .zoom
-public var doubleClick:   GestureAction  // default .focusOnPoint
+public var doubleClick:   GestureAction  // default .none
 ```
+
+| Field | Supported actions |
+|---|---|
+| `mouseDrag`, `shiftDrag`, `optionDrag`, `commandDrag` | `.orbit`, `.pan`, `.zoom` (`.select` leaves the drag to the app) |
+| `scrollWheel`, `trackpadPinch` | `.zoom` |
+| `doubleClick` (unmodified) | `.focusOnPoint`, `.resetView` |
+
+`doubleTap` and `doubleClick` defaulted to `.focusOnPoint` in earlier releases, but nothing read them, and a double-tap on iOS always reset the view. Both now default to `.none`, and a double-tap no longer resets unless the app opts in. Bind view reset with `resetViewTriggers` (below); `.resetView` on these fields remains as a shorthand.
+
+---
+
+### View reset
+
+```swift
+public var resetViewTriggers: [ViewResetTrigger]  // default []
+```
+
+The inputs that reset the camera to `ViewportConfiguration.initialCameraState`. The list is empty by default, so nothing resets the view unless the app opts in. No preset ships a binding. List several triggers to cover more than one platform or input style.
+
+```swift
+var gestures = GestureConfiguration.default
+gestures.resetViewTriggers = [
+    .keyCombination(key: "h", modifiers: [.command, .shift]),  // ⇧⌘H on macOS
+    .doubleTap,                                                // iPhone / iPad
+]
+```
+
+The reset action itself is the public `ViewportController.reset(animated:)`. An app can call it from its own menu item, toolbar button or `.keyboardShortcut` instead of, or as well as, configuring a trigger.
+
+#### `ViewResetTrigger`
+
+```swift
+public enum ViewResetTrigger: Sendable, Hashable {
+    case keyCombination(key: Character, modifiers: ViewportModifierKeys)
+    case doubleClick(modifiers: ViewportModifierKeys)
+    case doubleTap
+}
+```
+
+| Case | Fires on |
+|---|---|
+| `.keyCombination(key:modifiers:)` | `key` pressed with exactly `modifiers` held. `key` is the unshifted character and compares case-insensitively, so Shift+H is `.keyCombination(key: "h", modifiers: [.shift])`. On macOS, `MetalViewportView` handles these itself. Key equivalents (combinations with ⌘) work while the viewport's window is key. Other keys work while the viewport has focus, and when such a trigger is configured, clicking the viewport makes it first responder. The view claims keys only when a key trigger is configured. On other platforms, forward keys to `ViewportController.handleKeyCombination(_:modifiers:)`. |
+| `.doubleClick(modifiers:)` | A macOS double-click with exactly `modifiers` held. Use `[]` for a plain double-click. |
+| `.doubleTap` | An iOS / visionOS double-tap. |
+
+#### `handleKeyCombination(_:modifiers:)`
+
+```swift
+@discardableResult
+public func handleKeyCombination(_ key: Character, modifiers: ViewportModifierKeys) -> Bool
+```
+
+A method on `ViewportController`. It resets the camera if a `.keyCombination` trigger matches, and returns `true` if it did, so the caller can stop passing the key on.
+
+```swift
+// iPad with a hardware keyboard
+.onKeyPress { press in
+    let key = press.characters.first ?? " "
+    var modifiers: ViewportModifierKeys = []
+    if press.modifiers.contains(.shift) { modifiers.insert(.shift) }
+    if press.modifiers.contains(.control) { modifiers.insert(.control) }
+    if press.modifiers.contains(.option) { modifiers.insert(.option) }
+    if press.modifiers.contains(.command) { modifiers.insert(.command) }
+    return controller.handleKeyCombination(key, modifiers: modifiers) ? .handled : .ignored
+}
+```
+
+The helpers `GestureConfiguration.resetsView(onKey:modifiers:)`, `resetsView(onDoubleClickWith:)` and `resetsViewOnDoubleTap` expose the same matching for custom input layers.
 
 ---
 
@@ -348,14 +429,15 @@ public init(
     singleFingerDrag:     GestureAction = .orbit,
     twoFingerDrag:        GestureAction = .pan,
     pinchGesture:         GestureAction = .zoom,
-    doubleTap:            GestureAction = .focusOnPoint,
+    doubleTap:            GestureAction = .none,
     mouseDrag:            GestureAction = .orbit,
     shiftDrag:            GestureAction = .pan,
     optionDrag:           GestureAction = .zoom,
     commandDrag:          GestureAction = .select,
     scrollWheel:          GestureAction = .zoom,
     trackpadPinch:        GestureAction = .zoom,
-    doubleClick:          GestureAction = .focusOnPoint
+    doubleClick:          GestureAction = .none,
+    resetViewTriggers:    [ViewResetTrigger] = []
 )
 ```
 
@@ -399,7 +481,7 @@ The set of named actions that a gesture or modifier-key combination can trigger.
 | `.zoom` | Zoom in or out. |
 | `.select` | Select objects under the pointer (handled outside the camera router). |
 | `.focusOnPoint` | Focus the camera on the point under the cursor. |
-| `.resetView` | Reset the camera to its default view. |
+| `.resetView` | Reset the camera to `initialCameraState` (honoured by `doubleTap` / `doubleClick`; prefer `resetViewTriggers`). |
 | `.none` | No action — the gesture is ignored. |
 
 `GestureAction` conforms to `CaseIterable`, so you can enumerate all cases to populate a preference UI.

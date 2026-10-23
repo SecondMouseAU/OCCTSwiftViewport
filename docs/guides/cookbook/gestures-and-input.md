@@ -30,7 +30,7 @@ Native platform gesture recognisers (iOS drag/pinch/rotate; macOS mouse/scroll) 
 | Shift+drag (macOS) | Pan |
 | Option+drag (macOS) | Zoom |
 | Command+drag (macOS) | Select |
-| Double-tap / double-click | Focus on point |
+| Double-tap / double-click | Nothing (opt in; see [Resetting the view](#resetting-the-view)) |
 
 ### `.blender` — Blender style
 
@@ -73,11 +73,7 @@ config.gestureConfiguration = .blender
 let controller = ViewportController(configuration: config)
 ```
 
-You can swap the preset at runtime — the controller re-reads `configuration.gestureConfiguration` on every event:
-
-```swift
-controller.configuration.gestureConfiguration = .fusion360
-```
+`ViewportController.configuration` is a `let`, so the mapping is fixed once the controller exists. To offer a different preset, create a new controller with the new configuration.
 
 ---
 
@@ -89,15 +85,52 @@ All sensitivity values are properties on `GestureConfiguration`. Start from a pr
 var gestures = GestureConfiguration.default
 gestures.orbitSensitivity = 0.008         // radians per point (default 0.005)
 gestures.panSensitivity = 0.005           // multiplier (default 0.005)
-gestures.zoomSensitivity = 1.2            // pinch scale multiplier (default 1.0)
+gestures.zoomSensitivity = 1.2            // pinch / drag-zoom exponent (default 1.0)
 gestures.scrollZoomSensitivity = 0.4      // scroll-wheel zoom (default 0.25)
 gestures.enableInertia = true             // momentum after release (default true)
 gestures.dampingFactor = 0.1             // 0 = frictionless, 1 = instant stop (default 0.1)
 gestures.invertOrbitHorizontal = true     // "grab model" feel vs "orbit camera" (default false)
 gestures.invertOrbitVertical = false      // (default false)
 
-controller.configuration.gestureConfiguration = gestures
+// Every gesture can be remapped; `.none` disables it.
+gestures.twoFingerDrag = .orbit           // two fingers orbit instead of pan
+gestures.scrollWheel = .none              // ignore the scroll wheel
+gestures.doubleTap = .focusOnPoint        // re-centre on the tapped surface (default .none)
+gestures.doubleClick = .focusOnPoint
+
+var config = ViewportConfiguration()
+config.gestureConfiguration = gestures
+let controller = ViewportController(configuration: config)
 ```
+
+To change sensitivity on a live controller, set the matching property on `controller.cameraController` (for example `orbitSensitivity`). The action mappings are read from the configuration and cannot change after init.
+
+---
+
+## Resetting the view
+
+No gesture resets the camera unless you opt in. Pick the trigger that suits your app's UX (a key combination, a double-click with optional modifiers, or a double-tap) and list it in `resetViewTriggers`:
+
+```swift
+var gestures = GestureConfiguration.default
+gestures.resetViewTriggers = [
+    .keyCombination(key: "h", modifiers: [.command, .shift]),  // ⇧⌘H (macOS)
+    .doubleClick(modifiers: [.option]),                        // ⌥ double-click (macOS)
+    .doubleTap,                                                // iOS / visionOS
+]
+var config = ViewportConfiguration()
+config.gestureConfiguration = gestures
+let controller = ViewportController(configuration: config)
+```
+
+The reset goes to `ViewportConfiguration.initialCameraState`. The action is the public `controller.reset(animated:)`, so you can also bind it to a menu command:
+
+```swift
+Button("Reset View") { controller.reset() }
+    .keyboardShortcut("h", modifiers: [.command, .shift])
+```
+
+None of the presets ships a reset binding. Blender's Home key and Fusion 360's Home view frame or restore a saved view rather than returning to a fixed start pose, so no binding is a faithful match.
 
 ---
 
@@ -112,7 +145,7 @@ controller.configuration.gestureConfiguration = gestures
 | `.zoom` | Dolly in/out |
 | `.select` | Initiates a pick (observational — picking runs on its own renderer path) |
 | `.focusOnPoint` | Recentres the pivot under the cursor |
-| `.resetView` | Resets to default camera pose |
+| `.resetView` | Resets to `initialCameraState` (prefer `resetViewTriggers`) |
 | `.none` | No-op |
 
 ---
@@ -155,7 +188,7 @@ let action = controller.configuration.gestureConfiguration.dragAction(for: modif
 |---|---|---|
 | `.dragChanged(delta:modifiers:)` | point delta + modifiers | Mouse drag / single-finger |
 | `.dragEnded(velocity:modifiers:)` | release velocity + modifiers | Drag release (inertia) |
-| `.twoFingerPanChanged(translation:)` | cumulative translation | Two-finger pan |
+| `.twoFingerPanChanged(translation:)` | incremental translation | Two-finger drag (`twoFingerDrag`) |
 | `.twoFingerPanEnded(velocity:)` | release velocity | Two-finger release |
 | `.pinchChanged(scale:)` | incremental scale ratio (1.0 = no change) | Pinch gesture |
 | `.pinchAtChanged(scale:centerNDC:aspectRatio:)` | scale + pinch centre in NDC | Pinch-to-zoom at cursor |
@@ -165,7 +198,7 @@ let action = controller.configuration.gestureConfiguration.dragAction(for: modif
 | `.scroll(delta:cursorNDC:aspectRatio:)` | scroll amount + cursor NDC | Scroll wheel |
 | `.tap(ndc:count:)` | NDC position + tap count | Tap / click |
 
-NDC coordinates are in the range −1…+1 on each axis. A double-tap (`count >= 2`) resets the view; single taps are observational via `dispatch` (picking runs on a separate renderer path).
+NDC coordinates are in the range −1…+1 on each axis. A double-tap (`count >= 2`) does nothing by default. It resets the view if `resetViewTriggers` lists a matching `.doubleTap` / `.doubleClick(modifiers:)`, and otherwise runs `doubleTap` (`doubleClick` on macOS), for example `.focusOnPoint` to move the pivot onto the surface under the tap. Single taps are observational via `dispatch` (picking runs on a separate renderer path).
 
 ---
 

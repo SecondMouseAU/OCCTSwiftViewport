@@ -136,7 +136,7 @@ Menu("Views") {
 | Left | `l` |
 | Isometric (front-right) | `i` |
 
-These are automatically handled by `ViewportController.handleKeyPress(_:)`.
+Forward key presses to `ViewportController.handleKeyPress(_:modifiers:)` to run them. A press with ⌘, ⌃ or ⌥ held is ignored, so app shortcuts such as ⌘F still reach the app.
 
 ### Building a CameraState directly from a StandardView
 
@@ -157,7 +157,7 @@ viewport.animateTo(state, duration: 0.3)
 All animated moves go through `CameraController.animateTo(_:duration:)`, which:
 
 1. Captures `animationStart` and `animationTarget`.
-2. Runs a 60 FPS `Timer`.
+2. Runs a `Timer` at `CameraController.preferredFramesPerSecond` (default 120, set from `ViewportConfiguration.preferredFramesPerSecond`). Progress is time-based, so the rate affects smoothness only.
 3. Applies an ease-out curve (`t = 1 - (1 - progress)³`) at each tick.
 4. SLERPs `rotation` via `simd_slerp`; linearly interpolates `distance`, `pivot`, `fieldOfView`, `orthographicScale`, and `panOffset`.
 5. Snaps `isOrthographic` at the midpoint.
@@ -221,14 +221,14 @@ viewport.handleRoll(angle: rotationGesture.rotation)
 ```swift
 let cam = viewport.cameraController
 cam.orbitSensitivity      = 0.005   // radians per point
-cam.panSensitivity        = 0.002   // world-units per point, scaled by distance
-cam.zoomSensitivity       = 1.0     // pinch factor multiplier
-cam.scrollZoomSensitivity = 0.1     // exponential scale for scroll delta
+cam.panSensitivity        = 0.005   // world-units per point, scaled by distance
+cam.zoomSensitivity       = 1.0     // exponent on pinch / drag-zoom magnification
+cam.scrollZoomSensitivity = 0.25    // exponential scale for scroll delta
 cam.minPanSpeed           = 0.001   // floor preventing imperceptible pan when close
 cam.minDistance           = 0.1
 cam.maxDistance           = 10_000
 cam.enableInertia         = true
-cam.dampingFactor         = 0.1     // 0 = no damping, 1 = instant stop
+cam.dampingFactor         = 0.1     // velocity lost per 1/60 s: 0 = no damping, 1 = instant stop
 ```
 
 ---

@@ -14,6 +14,7 @@ import SwiftUI
         let renderer: ViewportRenderer
         let backgroundColor: SIMD4<Float>
         var sampleCount: Int = 4
+        var preferredFramesPerSecond: Int = 120
 
         func makeUIView(context: Context) -> MTKView {
             let view = MTKView()
@@ -23,7 +24,7 @@ import SwiftUI
             view.depthStencilPixelFormat = .depth32Float_stencil8
             view.sampleCount = sampleCount
             view.clearColor = mtlClearColor(from: backgroundColor)
-            view.preferredFramesPerSecond = 60
+            view.preferredFramesPerSecond = preferredFramesPerSecond
             view.isMultipleTouchEnabled = true
             return view
         }
@@ -38,7 +39,17 @@ import SwiftUI
     /// MTKView subclass that captures scroll wheel and mouse-down events on macOS.
     class ScrollCaptureMTKView: MTKView {
         var onScrollWheel: ((CGFloat, CGPoint, CGSize) -> Void)?
-        var onMouseDown: ((CGPoint, CGSize) -> Void)?
+        /// Mouse down: location in view coords, view size, `NSEvent.clickCount` (2 for the second
+        /// click of a double-click) and the modifier keys held.
+        var onMouseDown: ((CGPoint, CGSize, Int, ViewportModifierKeys) -> Void)?
+        /// A key typed with the view focused, or a key equivalent sent through the window.
+        ///
+        /// Returns `true` if handled. `nil` (the default) leaves every key to the responder chain.
+        var onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)?
+        /// Whether a click makes this view first responder (off by default).
+        ///
+        /// Plain (non-⌘) key triggers then reach `keyDown` without relying on implicit focus.
+        var takesKeyFocusOnClick = false
         /// Incremental drag delta in points (y down) since the previous event.
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         /// Drag finished; velocity in points/second (y down).
@@ -59,6 +70,23 @@ import SwiftUI
 
         override var acceptsFirstResponder: Bool { true }
 
+        override func keyDown(with event: NSEvent) {
+            if handleKeyCombination(event) { return }
+            super.keyDown(with: event)
+        }
+
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            handleKeyCombination(event) || super.performKeyEquivalent(with: event)
+        }
+
+        /// Offers a key-down event to `onKeyCombination`, keyed by its unshifted character.
+        func handleKeyCombination(_ event: NSEvent) -> Bool {
+            guard let onKeyCombination, event.type == .keyDown, !event.isARepeat,
+                let key = event.characters(byApplyingModifiers: [])?.first
+            else { return false }
+            return onKeyCombination(key, ViewportModifierKeys(event.modifierFlags))
+        }
+
         override func scrollWheel(with event: NSEvent) {
             // Precise devices (trackpads, Magic Mouse) report PIXEL deltas: ±60/event during a flick,
             // ~10× a wheel line tick. Normalize so one "unit" means the same zoom on every device;
@@ -73,7 +101,12 @@ import SwiftUI
         override func mouseDown(with event: NSEvent) {
             let locationInView = convert(event.locationInWindow, from: nil)
             let viewSize = bounds.size
-            onMouseDown?(locationInView, viewSize)
+            if takesKeyFocusOnClick, window?.firstResponder !== self {
+                window?.makeFirstResponder(self)
+            }
+            onMouseDown?(
+                locationInView, viewSize, event.clickCount,
+                ViewportModifierKeys(event.modifierFlags))
             // Do NOT call super: it starts an NSView mouse-tracking loop.
             // Drags are handled natively below (SwiftUI gestures stopped firing over
             // this view on macOS 27, issue #127).
@@ -165,8 +198,11 @@ import SwiftUI
         let renderer: ViewportRenderer
         let backgroundColor: SIMD4<Float>
         var sampleCount: Int = 4
+        var preferredFramesPerSecond: Int = 120
         var onScrollWheel: ((CGFloat, CGPoint, CGSize) -> Void)?
-        var onMouseDown: ((CGPoint, CGSize) -> Void)?
+        var onMouseDown: ((CGPoint, CGSize, Int, ViewportModifierKeys) -> Void)?
+        var onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)?
+        var takesKeyFocusOnClick = false
         var onDrag: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onDragEnd: ((SIMD2<Float>, ViewportModifierKeys) -> Void)?
         var onMagnify: ((CGFloat, CGPoint, CGSize) -> Void)?
@@ -182,9 +218,11 @@ import SwiftUI
             view.depthStencilPixelFormat = .depth32Float_stencil8
             view.sampleCount = sampleCount
             view.clearColor = mtlClearColor(from: backgroundColor)
-            view.preferredFramesPerSecond = 60
+            view.preferredFramesPerSecond = preferredFramesPerSecond
             view.onScrollWheel = onScrollWheel
             view.onMouseDown = onMouseDown
+            view.onKeyCombination = onKeyCombination
+            view.takesKeyFocusOnClick = takesKeyFocusOnClick
             install(on: view)
             return view
         }
@@ -194,6 +232,8 @@ import SwiftUI
             if let scView = nsView as? ScrollCaptureMTKView {
                 scView.onScrollWheel = onScrollWheel
                 scView.onMouseDown = onMouseDown
+                scView.onKeyCombination = onKeyCombination
+                scView.takesKeyFocusOnClick = takesKeyFocusOnClick
                 install(on: scView)
             }
         }

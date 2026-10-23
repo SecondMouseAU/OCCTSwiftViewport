@@ -46,6 +46,7 @@ public struct MetalViewportView: View {
     @ObservedObject private var controller: ViewportController
     @Binding private var bodies: [ViewportBody]
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
 
     @State private var renderer: ViewportRenderer?
 
@@ -93,7 +94,11 @@ public struct MetalViewportView: View {
                                     handlePickAt(value.location, viewSize: geometry.size)
                                 }
                         )
-                        .gesture(doubleTapGesture)
+                        // Only when something uses it: an attached double-tap holds back every
+                        // single-tap pick until the second-tap window has passed.
+                        .gesture(
+                            doubleTapGesture(viewSize: geometry.size),
+                            including: controller.usesDoubleTap ? .all : .subviews)
                     #endif
 
                 if controller.showViewCube {
@@ -186,24 +191,27 @@ public struct MetalViewportView: View {
     ///
     /// Deriving it from the drawable rather than the screen gives the exact ratio the GPU is
     /// using, and avoids `UIScreen`/`NSScreen` entirely, which matters because the former does
-    /// not exist on visionOS. Falls back to a per-platform default until the first frame has
-    /// established a drawable size.
+    /// not exist on visionOS. Until the first frame has established a drawable size it falls
+    /// back to the environment's `displayScale`, the scale of the screen this view is on.
     private func nativeScaleFactor(viewSize: CGSize) -> CGFloat {
         if let drawable = renderer?.lastDrawableSize,
             drawable.width > 0, viewSize.width > 0
         {
             return drawable.width / viewSize.width
         }
-        #if os(macOS)
-            return NSScreen.main?.backingScaleFactor ?? 2.0
-        #else
-            return 2.0
-        #endif
+        return displayScale > 0 ? displayScale : 1
     }
 
-    private func handlePickAt(_ location: CGPoint, viewSize: CGSize) {
-        guard controller.configuration.pickingConfiguration.isEnabled else { return }
-        guard let pixel = viewToPixel(location, viewSize: viewSize) else { return }
+    /// Dispatches a tap or click to the input router, then picks at it.
+    ///
+    /// `count` is the tap count: 1 for a single tap, 2 for the second click of a macOS
+    /// double-click. `modifiers` are the keys held (macOS). The router interprets doubles via
+    /// `GestureConfiguration.resetViewTriggers` and `doubleClick`.
+    private func handlePickAt(
+        _ location: CGPoint, viewSize: CGSize, count: Int = 1,
+        modifiers: ViewportModifierKeys = []
+    ) {
+        guard viewSize.width > 0, viewSize.height > 0 else { return }
 
         // Compute NDC from tap location for sub-body selection
         let ndcX = Float(location.x / viewSize.width) * 2.0 - 1.0
@@ -216,9 +224,15 @@ public struct MetalViewportView: View {
         #endif
         let ndc = SIMD2<Float>(ndcX, ndcY)
 
-        // Observational only: routes nothing for a single tap, but surfaces taps
-        // on the input-event stream (e.g. for a HUD input inspector).
-        controller.dispatch(.tap(ndc: ndc, count: 1))
+        // A single tap routes nothing but surfaces on the input-event stream (e.g. for a HUD
+        // input inspector); a double runs a matching resetViewTriggers entry or doubleClick.
+        // The modifiers ride along for `.doubleClick(modifiers:)` triggers. Dispatched before
+        // the picking guard so it still works with picking disabled.
+        if count >= 2 { controller.inputSceneBodies = bodies }
+        controller.dispatch(.tap(ndc: ndc, count: count), tapModifiers: modifiers)
+
+        guard controller.configuration.pickingConfiguration.isEnabled else { return }
+        guard let pixel = viewToPixel(location, viewSize: viewSize) else { return }
 
         let ctrl = controller
         let snapshot = bodies
@@ -278,9 +292,16 @@ public struct MetalViewportView: View {
                     ))
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
             }
-            let onMouseDown: (CGPoint, CGSize) -> Void = { location, viewSize in
-                handlePickAt(location, viewSize: viewSize)
+            let onMouseDown: (CGPoint, CGSize, Int, ViewportModifierKeys) -> Void = {
+                location, viewSize, clickCount, modifiers in
+                handlePickAt(location, viewSize: viewSize, count: clickCount, modifiers: modifiers)
             }
+            // Only claim keys when a key-combination trigger is configured, so by default every
+            // key still goes to the responder chain untouched.
+            let onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)? =
+                controller.wantsViewportKeyEvents
+                ? { key, modifiers in controller.handleKeyCombination(key, modifiers: modifiers) }
+                : nil
             let onDrag: (SIMD2<Float>, ViewportModifierKeys) -> Void = { delta, modifiers in
                 controller.dispatch(.dragChanged(delta: delta, modifiers: modifiers))
             }
@@ -312,8 +333,11 @@ public struct MetalViewportView: View {
                 renderer: renderer,
                 backgroundColor: canvasBackgroundColor,
                 sampleCount: renderer.pipelineSampleCount,
+                preferredFramesPerSecond: controller.configuration.preferredFramesPerSecond,
                 onScrollWheel: onScrollWheel,
                 onMouseDown: onMouseDown,
+                onKeyCombination: onKeyCombination,
+                takesKeyFocusOnClick: controller.wantsViewportKeyFocus,
                 onDrag: onDrag,
                 onDragEnd: onDragEnd,
                 onMagnify: onMagnify,
@@ -328,7 +352,8 @@ public struct MetalViewportView: View {
             MetalViewRepresentable(
                 renderer: renderer,
                 backgroundColor: canvasBackgroundColor,
-                sampleCount: renderer.pipelineSampleCount
+                sampleCount: renderer.pipelineSampleCount,
+                preferredFramesPerSecond: controller.configuration.preferredFramesPerSecond
             )
         }
     #endif
@@ -421,10 +446,13 @@ public struct MetalViewportView: View {
                 }
         }
 
-        private var doubleTapGesture: some Gesture {
-            TapGesture(count: 2)
-                .onEnded {
-                    controller.dispatch(.tap(ndc: .zero, count: 2))
+        private func doubleTapGesture(viewSize: CGSize) -> some Gesture {
+            // Spatial, so a `.focusOnPoint` double-tap knows where the user tapped.
+            SpatialTapGesture(count: 2)
+                .onEnded { value in
+                    controller.inputSceneBodies = bodies
+                    controller.dispatch(
+                        .tap(ndc: pinchCenterNDC(value.location, viewSize), count: 2))
                 }
         }
     #endif
