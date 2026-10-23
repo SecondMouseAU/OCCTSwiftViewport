@@ -457,7 +457,7 @@ When `true`, crease-aware normal smoothing is applied to each body's mesh when i
 public var normalSmoothingCreaseAngle: Float  // default: 0.524  (~30°, in radians)
 ```
 
-Crease angle threshold for `autoSmoothNormals`. Adjacent face normals that differ by more than this angle are treated as a hard edge and kept sharp. Only meaningful when `autoSmoothNormals == true`.
+Crease angle threshold for `autoSmoothNormals`, and for the PN-triangle tessellation of `.enhanced` (and `.maximum` on a GPU without mesh shaders; the mesh-shader path draws no PN patches). Adjacent face normals that differ by more than this angle are treated as a hard edge and kept sharp; a tessellated patch edge whose end normals differ by more stays flat instead of bulging. It used to be a fixed 30° for tessellation, so a coarse mesh (an 8-segment sphere, say) never rounded; raising the angle rounds one (#202). Raise it with care: with `autoSmoothNormals` on it also smooths shading across edges up to that angle (a box's 90° edges at 1.6 rad), and on meshes with per-face vertices a rounded edge can pull away from a neighbouring flat one, opening a crack along it. Fixed for the controller's lifetime, like the rest of the configuration.
 
 ---
 
@@ -713,8 +713,17 @@ Controls the tessellation tier used by `ViewportRenderer` and, through `Offscree
 | Case | Description |
 |---|---|
 | `.standard` | Finer CPU-side tessellation combined with crease-aware normal smoothing. No GPU hardware tessellation. Runs on all supported hardware. |
-| `.enhanced` | Everything in `.standard`, plus GPU hardware tessellation using PN triangles (Phong tessellation). Requires an Apple3+ GPU; silently falls back to `.standard` on earlier hardware. |
-| `.maximum` | Everything in `.enhanced`, plus mesh shaders with per-meshlet culling. Requires Apple9+ / M3+; falls back to `.enhanced` when unavailable. |
+| `.enhanced` | Everything in `.standard`, plus GPU hardware tessellation using PN triangles (Phong tessellation). Requires an Apple3+ GPU; falls back to `.standard` if the tessellation pipelines can't be built. |
+| `.maximum` | Everything in `.enhanced`, plus mesh shaders with per-meshlet culling. Requires an Apple9 GPU (M3 / A17 Pro or later); falls back to `.enhanced` without one, or if the mesh-shader surface pipeline fails to build. If only the shadow, depth-prepass or pick mesh pipeline fails, the renderer stays on `.maximum`, draws that pass through the vertex pipeline, and logs which pipeline failed. |
+
+**Which bodies take which path.** Every body with an interleaved mesh (`vertexData` + `indices`) is tessellated at `.enhanced` and drawn through meshlets at `.maximum`, whether or not it carries `faceIndices`. Before #161 both paths required `faceIndices`, so STL/OBJ imports and the `Primitives` factories silently stayed on the standard path. Bodies built with `ViewportBody.directMesh(...)` always take the standard direct-mesh path: they bring their own normals and get no PN refinement or meshlets. Overlay-layer bodies always draw through the standard pipelines.
+
+**Fallbacks are explicit.** When the requested quality can't run, the renderer logs one line saying why when it is created (no mesh shaders on this GPU, a failed mesh-shader pipeline with Metal's error, or failed tessellation pipelines; Metal's error for a tessellation pipeline is logged in debug builds only), and reports what it actually runs:
+
+```swift
+controller.effectiveRenderingQuality  // RenderingQuality?, nil until a renderer is attached
+renderer.effectiveRenderingQuality    // ViewportRenderer, fixed for its lifetime
+```
 
 **Example — upgrade quality on a known capable device:**
 
@@ -770,6 +779,13 @@ Controls when in the render order a `ViewportBody` is drawn.
 | `.geometry` | Drawn in the normal geometry pass with standard depth testing. |
 | `.overlay` | Drawn after the selection-outline pass using an always-pass depth state, so the body is visible even when behind other geometry. Overlay bodies get no selection or hover outline (and no per-triangle highlight). Use for manipulator widgets and similar always-on-top affordances. |
 
+Overlay bodies are widgets, not model geometry (#170):
+
+- Their surfaces draw in every display mode, `.wireframe` included. Their edges and analytic arcs follow the display mode's edge rule like geometry edges (shown in `.wireframe`, `.shadedWithEdges` and `.xray`, and always for a body without a mesh), and are drawn on top too.
+- They cast no shadows and receive none, so scene geometry never shadows a gizmo.
+- They don't size the grid, the axes or the shadow map, but they do widen the camera's near/far fit, so a gizmo in front of or behind a flat model is not clipped away.
+- In the GPU pick pass they stamp exactly what is drawn, with always-pass depth, after all geometry: surfaces, edges (whether or not `edgeIndices` is set, so a ring drawn as a polyline can be grabbed), arcs and `vertices`. A widget therefore wins the pick over geometry in front of it, as it is drawn over it, and a later overlay body wins over an earlier one. See [Picking](Picking.md#display-mode-and-pick-content).
+
 Set on `ViewportBody.renderLayer`. See [`ViewportBody`](ViewportBody.md) for the full body API.
 
 **Example:**
@@ -787,7 +803,7 @@ gizmo.renderLayer = .overlay  // always visible, never occluded
 public struct SelectionOutlineStyle: Sendable, Hashable
 ```
 
-Colour and width of the outline ring the live renderer draws around a selected or hovered body. Used by `ViewportConfiguration.selectionOutline` and `.hoverOutline`. The ring is drawn by pushing the body's vertices outward along their screen-space normals by `width` pixels, outside the body's stencil footprint, so it stays the same thickness at any zoom and model scale. Every meshed body gets the ring in every display mode: translucent bodies, and all bodies in `.wireframe`, are stencil-marked by a colourless pass first, so they get a ring rather than a filled shape. Edge-only and point bodies get no ring. `OffscreenRenderer` draws the same ring from `OffscreenRenderOptions.selectionOutline` / `hoverOutline`.
+Colour and width of the outline ring the live renderer draws around a selected or hovered body. Used by `ViewportConfiguration.selectionOutline` and `.hoverOutline`. The ring is drawn by pushing the body's vertices outward along their screen-space normals by `width` pixels, outside the body's stencil footprint, so it stays the same thickness at any zoom and model scale. Every meshed body gets the ring in every display mode: a colourless pass stencil-marks each selected or hovered body's whole silhouette, ignoring depth, so translucent bodies, bodies in `.wireframe` and bodies partly or wholly behind nearer geometry all get a ring rather than a filled shape. The ring itself is drawn on top, so it stays visible around a hidden body; before #177 the parts of a body covered by nearer geometry were left unmarked and the outline colour painted over the occluder there. Edge-only and point bodies get no ring. `OffscreenRenderer` draws the same ring from `OffscreenRenderOptions.selectionOutline` / `hoverOutline`.
 
 | Property | Type | Default | Description |
 |---|---|---|---|

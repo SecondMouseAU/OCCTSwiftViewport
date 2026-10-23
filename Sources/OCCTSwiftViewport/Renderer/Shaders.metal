@@ -1771,17 +1771,29 @@ kernel void brdf_integration(
 // MARK: - Hardware Tessellation (PN Triangles)
 // =====================================================================
 
-// Per-patch data: 10 Bezier control points + 3 corner normals + face index
+// Per-patch data: 10 Bezier control points + 3 corner normals.
 // Uses packed_float3 (12 bytes, alignment 4) to avoid float3's 16-byte padding.
-// Total: 13 * 12 + 4 + 4 = 164 bytes per patch.
+// Total: 13 * 12 = 156 bytes per patch; TessellationManager.patchStride must match.
 struct PNPatchData {
     packed_float3 b300, b030, b003;           // Corner positions
     packed_float3 b210, b120, b201, b102, b021, b012; // Edge control points
     packed_float3 b111;                        // Center control point
     packed_float3 n200, n020, n002;           // Corner normals
-    int32_t faceIndex;                         // B-Rep face index (not read by the pick pass)
-    float _pad;                                // Alignment to 168? No — 164 is 4-aligned
 };
+
+// The cubic Bezier triangle at barycentric `bary`. Every post-tessellation vertex function
+// evaluates the surface through this one function, so the shaded, shadow, depth, pick,
+// highlight, stencil-mask and outline passes produce bit-identical positions and the
+// `.lessEqual` highlight wins its depth tie with the shaded surface (#202).
+inline float3 pnPatchPosition(PNPatchData p, float3 bary) {
+    float u = bary.x, v = bary.y, w = bary.z;
+    float uu = u*u, vv = v*v, ww = w*w;
+    return p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
+         + p.b210*3.0*uu*v + p.b120*3.0*u*vv
+         + p.b201*3.0*uu*w + p.b102*3.0*u*ww
+         + p.b021*3.0*vv*w + p.b012*3.0*v*ww
+         + p.b111*6.0*u*v*w;
+}
 
 // Tessellation factor parameters
 struct TessFactorParams {
@@ -1801,8 +1813,8 @@ kernel void compute_pn_patches(
     device float*       vertices     [[buffer(0)]],  // stride 6: px,py,pz,nx,ny,nz
     device uint32_t*    indices      [[buffer(1)]],  // 3 per triangle
     device PNPatchData* patches      [[buffer(2)]],  // output: 1 per triangle
-    device int32_t*     faceIndices  [[buffer(3)]],  // per-triangle face index
-    constant uint&      triangleCount [[buffer(4)]],
+    constant uint&      triangleCount [[buffer(3)]],
+    constant float&     creaseCos    [[buffer(4)]],  // cos(normalSmoothingCreaseAngle), #202
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= triangleCount) return;
@@ -1828,10 +1840,12 @@ kernel void compute_pn_patches(
     // Crease detection: if normals differ by more than ~30 degrees along an edge,
     // keep that edge flat (linear interpolation) to prevent scalloping artifacts
     // at sharp feature edges like cylinder-side-to-cap transitions.
-    float creaseThreshold = 0.866; // cos(30°)
-    bool edge01_smooth = dot(n0, n1) > creaseThreshold;
-    bool edge02_smooth = dot(n0, n2) > creaseThreshold;
-    bool edge12_smooth = dot(n1, n2) > creaseThreshold;
+    // The threshold is normalSmoothingCreaseAngle, the angle crease-aware smoothing uses, so a
+    // coarse mesh whose neighbouring normals differ by more than a fixed 30° still rounds when the
+    // app raises it (#202).
+    bool edge01_smooth = dot(n0, n1) > creaseCos;
+    bool edge02_smooth = dot(n0, n2) > creaseCos;
+    bool edge12_smooth = dot(n1, n2) > creaseCos;
 
     // Linear 1/3 and 2/3 points for flat edges
     float3 lin_b210 = (2.0 * p0 + p1) / 3.0;
@@ -1892,7 +1906,6 @@ kernel void compute_pn_patches(
     patch.b021 = b021; patch.b012 = b012;
     patch.b111 = b111;
     patch.n200 = n0; patch.n020 = n1; patch.n002 = n2;
-    patch.faceIndex = faceIndices[gid];
     patches[gid] = patch;
 }
 
@@ -1980,21 +1993,8 @@ vertex ShadedVertexOut tessellated_vertex(
     float v = bary.y;  // weight for b030 (vertex 1)
     float w = bary.z;  // weight for b003 (vertex 2)
 
-    float uu = u * u;
-    float vv = v * v;
-    float ww = w * w;
-
     // Evaluate cubic Bezier triangle
-    float3 pos = p.b300 * uu * u
-               + p.b030 * vv * v
-               + p.b003 * ww * w
-               + p.b210 * 3.0 * uu * v
-               + p.b120 * 3.0 * u * vv
-               + p.b201 * 3.0 * uu * w
-               + p.b102 * 3.0 * u * ww
-               + p.b021 * 3.0 * vv * w
-               + p.b012 * 3.0 * v * ww
-               + p.b111 * 6.0 * u * v * w;
+    float3 pos = pnPatchPosition(p, bary);
 
     // Quadratically interpolate normals
     float3 normal = normalize(p.n200 * u + p.n020 * v + p.n002 * w);
@@ -2021,14 +2021,7 @@ vertex ShadowVertexOut tessellated_shadow_vertex(
     constant ShadowUniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     ShadowVertexOut out;
@@ -2047,14 +2040,7 @@ vertex PickVertexOut tessellated_depth_vertex(
     constant Uniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     PickVertexOut out;
@@ -2082,14 +2068,7 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
     constant Uniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     TessPatchPickVertexOut out;
@@ -2113,6 +2092,80 @@ fragment PickFragmentOut tessellated_pick_fragment(
     return out;
 }
 
+// --- Overlay passes on the PN-tessellated surface (#202) ---
+//
+// The per-triangle highlight, the selection stencil mask and the selection outline used to draw
+// the flat input mesh over a PN-bulged surface: a `.lessEqual` highlight then lost the depth test
+// where the surface bulged in front of it, and the outline ring sat inside the tessellated
+// silhouette. These post-tessellation vertex functions evaluate the same Bezier patch as
+// `tessellated_vertex`, so the passes cover exactly the surface that was drawn.
+
+struct TessHighlightVertexOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition [[centroid_perspective]];  // MSAA-safe clip test (#164)
+    // Input triangle index: one patch per triangle, drawn with patchStart 0 (see
+    // TessPatchPickVertexOut), so it indexes the per-triangle style buffer.
+    uint triangleIndex [[flat]];
+};
+
+[[patch(triangle, 3)]]
+vertex TessHighlightVertexOut tessellated_highlight_vertex(
+    uint patchID [[patch_id]],
+    float3 bary [[position_in_patch]],
+    const device PNPatchData* patches [[buffer(0)]],
+    constant Uniforms& uniforms [[buffer(1)]]
+) {
+    float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(patches[patchID], bary), 1.0);
+    TessHighlightVertexOut out;
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    out.triangleIndex = patchID;
+    return out;
+}
+
+fragment HighlightFragmentOut tessellated_highlight_fragment(
+    TessHighlightVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant float4 *triangleStyles [[buffer(2)]]
+) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
+    float4 style = triangleStyles[in.triangleIndex];
+    if (style.a <= 0.0) discard_fragment();
+    HighlightFragmentOut out;
+    out.color = style;
+    return out;
+}
+
+// The selection outline on the tessellated surface: `selection_outline_vertex`'s screen-space
+// expansion, applied to the evaluated patch position and normal.
+[[patch(triangle, 3)]]
+vertex SelectionOutlineVertexOut tessellated_outline_vertex(
+    uint patchID [[patch_id]],
+    float3 bary [[position_in_patch]],
+    const device PNPatchData* patches [[buffer(0)]],
+    constant SelectionOutlineParams &params [[buffer(1)]]
+) {
+    PNPatchData p = patches[patchID];
+    float3 normal = normalize(p.n200 * bary.x + p.n020 * bary.y + p.n002 * bary.z);
+    float4 worldPos = params.modelMatrix * float4(pnPatchPosition(p, bary), 1.0);
+    float3 worldNormal = (params.modelMatrix * float4(normal, 0.0)).xyz;
+    float4 clipPos = params.viewProjectionMatrix * worldPos;
+    float4 clipNormal = params.viewProjectionMatrix * float4(worldNormal, 0.0);
+
+    float2 dirNdc = clipNormal.xy * clipPos.w - clipPos.xy * clipNormal.w;
+    float2 dirPx = dirNdc * params.viewportSize;
+    float lenPx = length(dirPx);
+    if (lenPx > 1e-6 && params.outlineWidth > 0.0) {
+        float2 offsetNdc = (dirPx / lenPx) * (2.0 * params.outlineWidth / params.viewportSize);
+        clipPos.xy += offsetNdc * clipPos.w;
+    }
+
+    SelectionOutlineVertexOut out;
+    out.clipPosition = clipPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
+}
+
 // =====================================================================
 // MARK: - Mesh Shaders (Apple9+ / M3+ / A17+)
 // =====================================================================
@@ -2131,8 +2184,6 @@ struct MeshletDesc {
     uint   vertexCount;
     uint   triangleOffset;
     uint   triangleCount;
-    int    faceIndexFirst;
-    int    _pad0, _pad1, _pad2;
 };
 
 // Payload passed from object shader to mesh shader

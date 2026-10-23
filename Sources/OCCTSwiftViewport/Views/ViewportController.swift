@@ -543,6 +543,16 @@ public final class ViewportController: ObservableObject {
     /// ```
     public var drawablePixelSize: CGSize { attachedRenderer?.lastDrawableSize ?? .zero }
 
+    /// The rendering quality the attached renderer actually draws with, or `nil` before a
+    /// renderer is attached.
+    ///
+    /// Lower than `configuration.renderingQuality` when the device can't run it: `.maximum` runs
+    /// `.enhanced` on a GPU without mesh shaders (before Apple9: M3 / A17 Pro). See
+    /// `ViewportRenderer.effectiveRenderingQuality`.
+    public var effectiveRenderingQuality: RenderingQuality? {
+        attachedRenderer?.effectiveRenderingQuality
+    }
+
     /// Requests a batched/region GPU pick (issue #90), the screen-space-rectangle
     /// analogue of the tap-driven single-pixel pick that already populates `pickResult`.
     ///

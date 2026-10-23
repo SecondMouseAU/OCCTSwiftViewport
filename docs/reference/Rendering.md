@@ -198,7 +198,7 @@ Offscreen defaults follow onscreen. `MetalViewportView` follows the SwiftUI colo
 
 | `RenderAppearance` | Background |
 |---|---|
-| `.system` (default) | As `.dark` when the appearance in effect at render time is dark, otherwise as `.light`. macOS: `NSApp.effectiveAppearance` when the process has an `NSApplication`, so an app that forces its own appearance with `NSApp.appearance` renders in it; a plain headless process with no application uses the user's Light/Dark setting. iOS/visionOS: `UITraitCollection.current` |
+| `.system` (default) | As `.dark` when the appearance in effect at render time is dark, otherwise as `.light`. macOS: `NSApp.effectiveAppearance` when the process has an `NSApplication`, so an app that forces its own appearance with `NSApp.appearance` renders in it; a plain headless process with no application uses the user's Light/Dark setting. iOS/visionOS: `UITraitCollection.current`. That is usually unspecified outside a view's trait update, which makes a headless render light; call `render` inside your view's `traitCollection.performAsCurrent { … }` to follow its style, or pin `.light` / `.dark` (#202) |
 | `.light` | `backgroundColor` |
 | `.dark` | `darkModeBackgroundColor`, or `backgroundColor` when that is `nil` |
 
@@ -255,7 +255,7 @@ The renderer caches GPU buffers per body ID and regenerates them only when a bod
 
 For the same bodies and settings, `OffscreenRenderer` produces the same image as a headless frame of `ViewportRenderer` (pinned per scene by `OffscreenParityTests`). `OffscreenRenderOptions(matching:width:height:)` copies those settings from a live `ViewportController`.
 
-Reproduced offscreen: the shadow map, grid, axes, opaque and transparent surfaces (interleaved and direct-mesh), edges (native and quad-expanded), analytic arcs, point clouds, per-triangle highlights (`triangleStyles`), the selection/hover tint and outline, the overlay render layer (drawn last on top of all geometry, casting no shadows), clip planes (first four enabled, shadow map included), `edgeIntensity`, crease-aware normal smoothing, the SSAO / silhouette composite with its ACES tone mapping (`exposure`, `whitePoint`), image-based lighting plus the HDR skybox (`drawBackground`) from the environment map named by `LightingConfiguration.environmentMapURL` / `environmentMapData`, and the `renderingQuality` surface paths: PN-triangle tessellation (`.enhanced`, `tessellationMaxFactor`, `adaptiveTessellation`, `uniformTessellationFactor`) and mesh shaders (`.maximum` on Apple9) in the shaded, shadow-map and SSAO depth passes. Overlay bodies, outlines and highlights draw the untessellated mesh, as live.
+Reproduced offscreen: the shadow map, grid, axes, opaque and transparent surfaces (interleaved and direct-mesh), edges (native and quad-expanded), analytic arcs, point clouds, per-triangle highlights (`triangleStyles`), the selection/hover tint and outline, the overlay render layer (drawn last on top of all geometry, in every display mode, arcs included, neither casting nor receiving shadows), clip planes (first four enabled, shadow map included), `edgeIntensity`, crease-aware normal smoothing, the SSAO / silhouette composite with its ACES tone mapping (`exposure`, `whitePoint`), image-based lighting plus the HDR skybox (`drawBackground`) from the environment map named by `LightingConfiguration.environmentMapURL` / `environmentMapData`, and the `renderingQuality` surface paths: PN-triangle tessellation (`.enhanced`, `tessellationMaxFactor`, `adaptiveTessellation`, `uniformTessellationFactor`) and mesh shaders (`.maximum` on Apple9) in the shaded, shadow-map and SSAO depth passes. The per-triangle highlight, the selection stencil mask and the outline are drawn on the tessellated surface too, so a highlight is not hidden by the PN bulge and the ring sits outside the rounded silhouette (#202); PN patch edges whose end normals differ by more than `normalSmoothingCreaseAngle` stay flat. Overlay bodies draw the untessellated mesh, as live, and are left out of the per-frame tessellation factors.
 
 Not reproduced offscreen:
 
@@ -376,6 +376,14 @@ public private(set) var lastDrawableSize: CGSize
 ```
 
 The most recent drawable size in pixels, updated each frame. Use this to convert point coordinates to drawable pixels without accessing `UIScreen`/`NSScreen` (works on iOS, macOS, and visionOS).
+
+#### `effectiveRenderingQuality`
+
+```swift
+public var effectiveRenderingQuality: RenderingQuality { get }
+```
+
+The [`RenderingQuality`](Configuration.md#renderingquality) the renderer actually draws with: `configuration.renderingQuality`, or lower when the device can't run it (`.maximum` without an Apple9 GPU runs `.enhanced`). Fixed when the renderer is created, which also logs the fallback once. `ViewportController.effectiveRenderingQuality` forwards it (`nil` before a renderer is attached).
 
 ### Environment map (IBL)
 

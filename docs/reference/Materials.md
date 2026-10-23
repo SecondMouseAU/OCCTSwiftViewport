@@ -138,6 +138,12 @@ Surface opacity. `1` = fully opaque; less than `1` alpha-blends the surface agai
 is behind it. This is not optical transmission — use it for ghost-style overlays.
 Default `1`.
 
+Blending changes the colour only. The target's alpha accumulates coverage ("over"), so a
+translucent surface over an opaque background leaves the image opaque. Before #187 the alpha
+channel was blended by the surface's own opacity too, which left alpha below 1 under every
+translucent surface; the premultiplied image that `OffscreenRenderer` returns then had colour
+above alpha there and un-premultiplied to near-white, so `.glass` read as a flat white disc.
+
 ---
 
 ### Presets
