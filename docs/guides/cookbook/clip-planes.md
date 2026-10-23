@@ -235,10 +235,13 @@ Not covered:
 
 - **Shadows.** The shadow-map pass ignores clip planes, so clipped geometry still
   casts shadows onto what remains.
-- **CPU raycasting.** `SceneRaycast` (and the dynamic pivot that uses it) tests
-  the full meshes, clipped parts included.
 - **`OffscreenRenderer`.** `OffscreenRenderOptions` has no clip planes, so headless
   renders are never sectioned.
+
+CPU raycasting follows the planes too. The dynamic pivot passes
+`ViewportController.clipPlanes` to `SceneRaycast`, so orbiting a sectioned model
+pivots on the visible cut rather than the removed wall in front of it. Pass
+`clipPlanes:` to `SceneRaycast.cast` in your own raycasts for the same behaviour.
 
 Clipping is done in **world space** after the model transform has been applied,
 so per-body transforms and clip planes interact correctly — a rotated or

@@ -307,7 +307,7 @@ controller.selectionFilter = PickResultFilter { result in
 public struct RaycastHit: Sendable
 ```
 
-The result of a successful CPU raycast. Returned by `SceneRaycast.cast(ray:bodies:boundingBoxCache:)`.
+The result of a successful CPU raycast. Returned by `SceneRaycast.cast(ray:bodies:boundingBoxCache:clipPlanes:)` and `SceneRaycast.cast(ray:bodies:clipPlanes:)`.
 
 ### Properties
 
@@ -338,17 +338,22 @@ CPU-side raycasting against an array of `ViewportBody` instances. Uses a two-pha
 
 The result is the nearest hit across all bodies.
 
-### `static func cast(...) -> RaycastHit?`
+### `static func cast(ray:bodies:boundingBoxCache:clipPlanes:) -> RaycastHit?`
 
 ```swift
 public static func cast(
     ray: Ray,
     bodies: [ViewportBody],
-    boundingBoxCache: [String: BoundingBox]
+    boundingBoxCache: [String: BoundingBox],
+    clipPlanes: [ClipPlane] = []
 ) -> RaycastHit?
 ```
 
 Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `nil` on a complete miss. Non-visible bodies (`body.isVisible == false`) and bodies absent from `boundingBoxCache` are skipped. Each body is tested in its own local space: the ray is mapped through the inverse of `body.transform`, and `RaycastHit.point` / `distance` are returned in world space, so moved, rotated and scaled bodies are hit where they are drawn. Bodies with a non-invertible transform are skipped.
+
+Triangles are read from the same positions the renderer draws: `meshPositions` for a direct-mesh body (`usesDirectMesh`), `vertexData` otherwise. Triangles with out-of-range indices, and a trailing partial triple, are skipped rather than trapping.
+
+**Clip planes.** Pass the section planes in effect (typically `controller.clipPlanes`) and hits on geometry they remove are skipped, with the search continuing behind them. This matches the GPU pick pass: only the enabled planes the renderer applies count (the first `ClipPlane.maxActivePlanes`), and a world-space hit `p` is discarded when `dot(normal, p) + distance < 0` for any of them. The dynamic pivot passes `ViewportController.clipPlanes` automatically.
 
 **Parameters:**
 
@@ -356,7 +361,20 @@ Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `n
 |-----------|------|-------------|
 | `ray` | `Ray` | The world-space ray to cast |
 | `bodies` | `[ViewportBody]` | Scene bodies to test |
-| `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed **local-space** bounding boxes keyed by body ID (`ViewportBody.boundingBox`, before `transform`) |
+| `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed **local-space** bounding boxes keyed by body ID (`ViewportBody.boundingBox`, before `transform`). Build it yourself and keep it while the bodies' `generation` values are unchanged; `ViewportController` does not expose one. |
+| `clipPlanes` | `[ClipPlane]` | Section planes to honour. Default `[]` |
+
+### `static func cast(ray:bodies:clipPlanes:) -> RaycastHit?`
+
+```swift
+public static func cast(
+    ray: Ray,
+    bodies: [ViewportBody],
+    clipPlanes: [ClipPlane] = []
+) -> RaycastHit?
+```
+
+Convenience for one-off casts: builds the bounding-box cache from `ViewportBody.boundingBox` for every visible body, then calls the overload above. It walks each body's geometry to do so, so code that casts repeatedly against the same bodies should keep its own cache.
 
 **Example: cast a ray through a screen tap**
 
@@ -378,10 +396,14 @@ func handleTap(
         cameraState: controller.cameraController.cameraState,
         aspectRatio: aspectRatio
     )
+    // Local-space boxes keyed by body ID. Cache this across casts if the bodies don't change.
+    let cache = Dictionary(
+        uniqueKeysWithValues: bodies.compactMap { b in b.boundingBox.map { (b.id, $0) } })
     if let hit = SceneRaycast.cast(
         ray: ray,
         bodies: bodies,
-        boundingBoxCache: controller.boundingBoxCache
+        boundingBoxCache: cache,
+        clipPlanes: controller.clipPlanes
     ) {
         print("Hit '\(hit.bodyID)' at \(hit.point), distance \(hit.distance)")
     }

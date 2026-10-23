@@ -3,6 +3,7 @@
 //
 // Geometry-source-agnostic input type for Metal rendering.
 
+import os
 import simd
 
 /// Render-time layering for a body.
@@ -69,69 +70,112 @@ public struct TriangleStyle: Hashable, Sendable {
 /// for shaded and wireframe rendering.
 public struct ViewportBody: Identifiable, Sendable {
 
-    // Auto-incrementing generation counter for cache invalidation.
-    private nonisolated(unsafe) static var _nextGeneration: UInt64 = 0
+    /// Process-wide source of generation values, shared by every body and every thread.
+    ///
+    /// A lock rather than `nonisolated(unsafe)`: bodies are `Sendable` and get built and mutated
+    /// off the main actor (background meshing), so two increments can race (issue #166).
+    private static let generationCounter = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+
+    /// Returns a generation value no other body or mutation has been given.
+    static func nextGeneration() -> UInt64 {
+        generationCounter.withLock { value in
+            value &+= 1
+            return value
+        }
+    }
 
     /// Unique identifier for this body.
     public var id: String
 
-    /// Monotonic tag that changes every time a body is initialised.
+    /// Monotonic tag that changes whenever the body's geometry may have changed.
     ///
-    /// Each `ViewportBody.init` call takes the next value, so the renderer can compare
-    /// generations to decide whether the GPU buffers it cached for this `id` are stale.
-    public let generation: UInt64
+    /// Each `ViewportBody.init` call takes the next value, and so does every assignment or
+    /// in-place mutation of a geometry field (`vertexData`, `indices`, `edges`, `arcs`,
+    /// `faceIndices`, `edgeIndices`, `vertices`, `vertexIndices`, `vertexColors`,
+    /// `meshPositions`, `meshNormals`). The renderers compare it with the generation they cached
+    /// GPU buffers for under this `id` and re-upload when it differs, so mutating a body and
+    /// handing it back is enough to update the GPU (issue #166). Appearance and placement fields
+    /// (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, ...) leave it unchanged,
+    /// since they are read per frame and need no re-upload.
+    ///
+    /// Copies share a generation until one of them is mutated. Two bodies with the same `id`
+    /// and `generation` therefore hold the same geometry.
+    public private(set) var generation: UInt64
+
+    /// Takes a fresh generation after a geometry field changed (not called during `init`).
+    private mutating func geometryDidChange() {
+        generation = Self.nextGeneration()
+    }
 
     /// Interleaved vertex data: [px, py, pz, nx, ny, nz, ...] with stride 6.
-    public var vertexData: [Float]
+    public var vertexData: [Float] {
+        didSet { geometryDidChange() }
+    }
 
     /// Triangle indices for shaded rendering.
-    public var indices: [UInt32]
+    public var indices: [UInt32] {
+        didSet { geometryDidChange() }
+    }
 
     /// Pre-sampled polylines drawn by the wireframe and edge passes, in body-local space.
     ///
     /// Each inner array is one connected polyline, so its points are consecutive rather
     /// than paired per segment. Sampling is fixed when the body is built, unlike `arcs`.
-    public var edges: [[SIMD3<Float>]]
+    public var edges: [[SIMD3<Float>]] {
+        didSet { geometryDidChange() }
+    }
 
     /// Analytic arc and circle feature edges, in body-local space (issue #48).
     ///
     /// Unlike `edges` (pre-sampled polylines), these are tessellated to line segments by
     /// the renderer **adaptively to projected size each frame**, so they stay smooth at
     /// any zoom independent of mesh density. Empty by default.
-    public var arcs: [ViewportArc]
+    public var arcs: [ViewportArc] {
+        didSet { geometryDidChange() }
+    }
 
     /// Maps each triangle back to the B-Rep face it was tessellated from, for face selection.
     ///
     /// Parallel to the triangle count (`indices.count / 3`). Empty when the body has no
     /// B-Rep provenance, which leaves it pickable only as a whole.
-    public var faceIndices: [Int32]
+    public var faceIndices: [Int32] {
+        didSet { geometryDidChange() }
+    }
 
     /// Maps each drawn line segment back to the B-Rep edge it came from, for edge selection.
     ///
     /// Parallel to the line primitives of `edges` flattened
     /// (`[poly0.seg0, poly0.seg1, ..., poly1.seg0, ...]`). Empty leaves the body not
     /// edge-pickable.
-    public var edgeIndices: [Int32]
+    public var edgeIndices: [Int32] {
+        didSet { geometryDidChange() }
+    }
 
     /// B-Rep vertex positions, drawn as point sprites in the pick pass so vertices can be picked.
     ///
     /// Each entry is one vertex position in body-local space. Empty leaves the body not
     /// vertex-pickable. Doubles as the bounding-box source for point-cloud bodies, which
     /// carry no `vertexData`.
-    public var vertices: [SIMD3<Float>]
+    public var vertices: [SIMD3<Float>] {
+        didSet { geometryDidChange() }
+    }
 
     /// Maps each entry of `vertices` back to its B-Rep vertex index, for vertex selection.
     ///
     /// Parallel to `vertices`. Empty means identity, so a pick result's `primitiveIndex` is
     /// already the vertex index.
-    public var vertexIndices: [Int32]
+    public var vertexIndices: [Int32] {
+        didSet { geometryDidChange() }
+    }
 
     /// Per-point colour for point-cloud bodies, parallel to `vertices`.
     ///
     /// Empty (the default), or any count that does not match `vertices`, falls back to the
     /// body's `color` for every point. Read only by the point-cloud pass, so it has no
     /// effect unless `primitiveKind` is `.point`.
-    public var vertexColors: [SIMD4<Float>]
+    public var vertexColors: [SIMD4<Float>] {
+        didSet { geometryDidChange() }
+    }
 
     /// Radius of each point sprite in world units, for point-cloud bodies.
     ///
@@ -162,10 +206,7 @@ public struct ViewportBody: Identifiable, Sendable {
     /// a fresh per-triangle style buffer; the rest of the body's GPU state
     /// (vertex / index / edge / point buffers) is preserved.
     public var triangleStyles: [TriangleStyle] {
-        didSet {
-            ViewportBody._nextGeneration += 1
-            triangleStylesGeneration = ViewportBody._nextGeneration
-        }
+        didSet { triangleStylesGeneration = Self.nextGeneration() }
     }
 
     /// Changes whenever `triangleStyles` is assigned, so the renderer can re-upload just the
@@ -225,13 +266,17 @@ public struct ViewportBody: Identifiable, Sendable {
     /// kernel that already holds separate position/normal arrays (e.g. OCCT's
     /// `Poly_Triangulation`, surfaced as `Mesh.metalBufferData()`) renders without a CPU
     /// interleave/repack. Empty for the normal interleaved path.
-    public var meshPositions: [Float]
+    public var meshPositions: [Float] {
+        didSet { geometryDidChange() }
+    }
 
     /// De-interleaved per-vertex normals for the direct-mesh path, stride 3.
     ///
     /// Parallel to `meshPositions`, and has to match it in length for the direct-mesh path to
     /// engage at all. See ``meshPositions``.
-    public var meshNormals: [Float]
+    public var meshNormals: [Float] {
+        didSet { geometryDidChange() }
+    }
 
     /// Whether the renderer takes the direct-mesh path for this body instead of `vertexData`.
     ///
@@ -268,9 +313,9 @@ public struct ViewportBody: Identifiable, Sendable {
         meshPositions: [Float] = [],
         meshNormals: [Float] = []
     ) {
-        ViewportBody._nextGeneration += 1
-        self.generation = ViewportBody._nextGeneration
-        self.triangleStylesGeneration = ViewportBody._nextGeneration
+        let generation = Self.nextGeneration()
+        self.generation = generation
+        self.triangleStylesGeneration = generation
         self.id = id
         self.vertexData = vertexData
         self.indices = indices
@@ -309,7 +354,8 @@ extension ViewportBody {
     /// detects ``usesDirectMesh`` and uploads `positions`/`normals` to separate GPU buffers.
     ///
     /// `positions` and `normals` are stride-3 (`[x, y, z, …]`) and must be the same length.
-    /// `vertices` (for bounding box, fit and CPU picking) is derived from `positions`.
+    /// `vertices` (for vertex picking) is derived from `positions`; `boundingBox` and
+    /// `SceneRaycast` read `meshPositions` directly.
     public static func directMesh(
         id: String,
         positions: [Float],
@@ -321,7 +367,7 @@ extension ViewportBody {
         material: PBRMaterial? = nil,
         transform: simd_float4x4 = matrix_identity_float4x4
     ) -> ViewportBody {
-        // Derive SIMD3 vertices for bounding box / fit / CPU raycast (cheap reshape, no normals).
+        // Derive SIMD3 vertices for vertex picking (cheap reshape, no normals).
         var verts: [SIMD3<Float>] = []
         verts.reserveCapacity(positions.count / 3)
         var i = 0
@@ -372,12 +418,12 @@ extension ViewportBody {
 
     /// Computes the axis-aligned bounding box of everything the body draws.
     ///
-    /// Covers the mesh positions in `vertexData`, or `vertices` when `vertexData` is empty (point
-    /// clouds and direct-mesh bodies), plus every point of every `edges` polyline and the full
-    /// circle of every `arc` (conservative for partial arcs). Edges and arcs count
-    /// because they are drawn too: leaving them out let the near clip plane, fitted to these
-    /// bounds, cut off edges lying in front of the mesh, and gave edge-only bodies no bounds at
-    /// all (issue #135). Used for clip-plane fitting, frustum culling, shadow framing, picking
+    /// Covers the mesh positions the renderer draws (`meshPositions` when ``usesDirectMesh``,
+    /// else `vertexData`, else `vertices` for point clouds), plus every point of every `edges`
+    /// polyline and the full circle of every `arc` (conservative for partial arcs). Edges and
+    /// arcs count because they are drawn too: leaving them out let the near clip plane, fitted to
+    /// these bounds, cut off edges lying in front of the mesh, and gave edge-only bodies no
+    /// bounds at all (issue #135). Used for clip-plane fitting, frustum culling, shadow framing, picking
     /// and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
     public var boundingBox: BoundingBox? {
         var bbMin = SIMD3<Float>(repeating: .infinity)
@@ -389,10 +435,18 @@ extension ViewportBody {
             hasPoint = true
         }
 
-        let stride = 6
-        let vertexCount = vertexData.count / stride
-        if vertexCount > 0 {
-            for i in 0..<vertexCount {
+        // Mesh positions, from the same source the renderer draws: `meshPositions` for a
+        // direct-mesh body (issue #167; a body built through `init` may leave `vertices` empty),
+        // otherwise the stride-6 `vertexData`, otherwise `vertices` (point clouds).
+        if usesDirectMesh {
+            var i = 0
+            while i + 2 < meshPositions.count {
+                include(SIMD3<Float>(meshPositions[i], meshPositions[i + 1], meshPositions[i + 2]))
+                i += 3
+            }
+        } else if vertexData.count >= 6 {
+            let stride = 6
+            for i in 0..<(vertexData.count / stride) {
                 let base = i * stride
                 include(SIMD3<Float>(vertexData[base], vertexData[base + 1], vertexData[base + 2]))
             }

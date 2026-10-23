@@ -333,9 +333,10 @@ if body.usesDirectMesh {
 
 ## Generation counter and cache invalidation
 
-Each `ViewportBody.init` call atomically increments a static counter and stamps the new body's `generation` property with a unique `UInt64`. The renderer compares generations to detect geometry changes and decide whether to re-upload vertex, index, or edge buffers to the GPU. This means:
+Each `ViewportBody.init` call atomically increments a static counter and stamps the new body's `generation` property with a unique `UInt64`. Assigning or mutating a geometry field (`vertexData`, `indices`, `edges`, `arcs`, `faceIndices`, `edgeIndices`, `vertices`, `vertexIndices`, `vertexColors`, `meshPositions`, `meshNormals`) takes a fresh value too. The renderer compares generations to detect geometry changes and decide whether to re-upload vertex, index, or edge buffers to the GPU. This means:
 
-- Mutating a property on an *existing* body (e.g., changing `color` or `transform`) does **not** re-upload vertex buffers — only the uniform is updated.
+- Mutating an appearance or placement property on an *existing* body (e.g., changing `color` or `transform`) does **not** re-upload vertex buffers — only the uniform is updated.
+- Mutating geometry in place (e.g., `body.vertexData = deformed` for a live deformation) and handing the body back re-uploads that body's buffers on the next frame.
 - Replacing a body with a new `ViewportBody(...)` (new `generation`) forces a full buffer re-upload.
 - Bulk-replacing all bodies triggers re-uploads for every body whose `generation` changed.
 

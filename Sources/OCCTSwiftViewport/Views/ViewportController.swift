@@ -696,7 +696,8 @@ extension ViewportController {
             cameraState: cameraState,
             bodies: bodies,
             aspectRatio: lastAspectRatio,
-            config: config
+            config: config,
+            clipPlanes: clipPlanes
         ) {
             cameraController.adjustPivot(to: newPivot, duration: config.animationDuration)
         }
