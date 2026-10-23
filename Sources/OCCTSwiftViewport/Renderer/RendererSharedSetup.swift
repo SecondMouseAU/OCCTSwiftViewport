@@ -287,7 +287,11 @@ enum RendererSharedSetup {
         )
     }
 
-    /// Coordinate-axis line pipeline.
+    /// Coordinate-axis and `.plane` grid pipeline: unlit position + colour vertices.
+    ///
+    /// Source-alpha blended with "over" alpha so the `.plane` grid's translucent fill composites
+    /// without punching a hole in the target's alpha; opaque colours (the axes, the grid lines)
+    /// are unaffected.
     static func makeAxisPipelineState(
         device: MTLDevice,
         library: MTLLibrary,
@@ -305,6 +309,7 @@ enum RendererSharedSetup {
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
             sampleCount: sampleCount,
+            blending: .sourceAlphaAccumulatingAlpha,
             vertexDescriptor: axisVertexDescriptor()
         )
     }
@@ -370,26 +375,6 @@ enum RendererSharedSetup {
     }
 
     // MARK: - Shared Resources
-
-    /// Builds the axis vertex buffer: 3 RGB-coloured line segments (6 vertices, stride 7 floats).
-    static func makeAxisVertexBuffer(device: MTLDevice, axisLength: Float = 1000.0) -> MTLBuffer? {
-        let axisData: [Float] = [
-            // X axis: red
-            0, 0, 0, 1, 0, 0, 1,
-            axisLength, 0, 0, 1, 0, 0, 1,
-            // Y axis: green
-            0, 0, 0, 0, 1, 0, 1,
-            0, axisLength, 0, 0, 1, 0, 1,
-            // Z axis: blue
-            0, 0, 0, 0, 0, 1, 1,
-            0, 0, axisLength, 0, 0, 1, 1,
-        ]
-        return device.makeBuffer(
-            bytes: axisData,
-            length: axisData.count * MemoryLayout<Float>.size,
-            options: .storageModeShared
-        )
-    }
 
     /// Generates the procedural studio matcap texture (RGBA8) both renderers sample.
     static func makeMatcapTexture(device: MTLDevice, size: Int = 256) -> MTLTexture? {
@@ -457,9 +442,6 @@ enum RendererSharedSetup {
     /// Number of grid divisions the adaptive spacing aims to keep across the visible width.
     private static let gridTargetDivisions: Float = 15.0
 
-    /// Half the number of grid dots drawn per axis (the grid is `(2 * halfCount + 1)` squared).
-    private static let gridHalfCount: Int32 = 15
-
     /// Snaps the ground grid to the `subdivisions`-power spacing level closest to the visible width.
     ///
     /// - Parameters:
@@ -487,57 +469,135 @@ enum RendererSharedSetup {
         return baseSpacing * pow(levelBase, level)
     }
 
-    /// Encodes the adaptive dot grid, centred on the camera pivot at the current spacing level.
+    /// Encodes the ground grid on the XY plane (Z-up world) in the configured `GridStyle`.
+    ///
+    /// The grid window centres on the camera pivot at the current adaptive spacing level and is
+    /// clipped to the `gridSize` square around the world origin. `.dots` draws instanced point
+    /// sprites; `.plane` draws a translucent fill (depth-tested, no depth write, so it only tints
+    /// what lies behind it) plus minor/major grid lines.
+    ///
+    /// `dotPipeline` is the `grid_vertex` point-sprite pipeline (`.dots`); `linePipeline` the
+    /// alpha-blended `axis_vertex` pipeline (`.plane`). `fillDepthState` (depth test on, write
+    /// off) is used for the `.plane` fill only, after which `depthState` is restored.
     static func encodeGrid(
         encoder: MTLRenderCommandEncoder,
-        pipeline: MTLRenderPipelineState,
+        dotPipeline: MTLRenderPipelineState,
+        linePipeline: MTLRenderPipelineState,
+        fillDepthState: MTLDepthStencilState,
+        depthState: MTLDepthStencilState,
+        buffers: GridAxisBuffers,
         viewProjection: simd_float4x4,
         cameraState: CameraState,
-        baseSpacing: Float,
-        subdivisions: Int
+        settings: GridAxisSettings
     ) {
         let spacing = adaptiveGridSpacing(
             cameraState: cameraState,
-            baseSpacing: baseSpacing,
-            subdivisions: subdivisions
-        )
-        let halfCount = gridHalfCount
-        let pivot = cameraState.pivot
-        let centerX = (pivot.x / spacing).rounded() * spacing
-        let centerZ = (pivot.z / spacing).rounded() * spacing
-
-        var gridUniforms = GridUniforms(
-            viewProjectionMatrix: viewProjection,
-            gridOrigin: SIMD3<Float>(centerX, -0.01, centerZ),
-            spacing: spacing,
-            halfCount: halfCount,
-            dotSize: max(2.0, 4.0 / cameraState.distance),
-            dotColor: SIMD4<Float>(0.6, 0.6, 0.6, 1.0)
+            baseSpacing: settings.gridBaseSpacing,
+            subdivisions: settings.gridSubdivisions
         )
 
-        let count = Int(halfCount) * 2 + 1
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBytes(&gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
-        encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
-        encoder.drawPrimitives(
-            type: .point,
-            vertexStart: 0,
-            vertexCount: 1,
-            instanceCount: count * count
-        )
+        switch settings.gridStyle {
+        case .dots:
+            guard
+                let window = GridAxisGeometry.gridWindow(
+                    pivot: cameraState.pivot,
+                    spacing: spacing,
+                    halfCount: GridAxisGeometry.dotHalfCount,
+                    gridSize: settings.gridSize
+                )
+            else { return }
+            var gridUniforms = GridUniforms(
+                viewProjectionMatrix: viewProjection,
+                gridOrigin: window.origin,
+                spacing: spacing,
+                columns: window.columns,
+                dotSize: max(2.0, 4.0 / cameraState.distance),
+                rows: window.rows,
+                dotColor: settings.gridColors.dot
+            )
+            encoder.setRenderPipelineState(dotPipeline)
+            encoder.setVertexBytes(
+                &gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
+            encoder.setFragmentBytes(
+                &gridUniforms, length: MemoryLayout<GridUniforms>.size, index: 0)
+            encoder.drawPrimitives(
+                type: .point,
+                vertexStart: 0,
+                vertexCount: 1,
+                instanceCount: Int(window.columns) * Int(window.rows)
+            )
+
+        case .plane:
+            guard
+                let window = GridAxisGeometry.gridWindow(
+                    pivot: cameraState.pivot,
+                    spacing: spacing,
+                    halfCount: GridAxisGeometry.lineHalfCount,
+                    gridSize: settings.gridSize
+                )
+            else { return }
+            var axisUniforms = AxisUniforms(viewProjectionMatrix: viewProjection)
+            encoder.setRenderPipelineState(linePipeline)
+            encoder.setVertexBytes(
+                &axisUniforms, length: MemoryLayout<AxisUniforms>.size, index: 1)
+
+            var fill = GridAxisGeometry.gridFillVertices(window: window)
+            encoder.setDepthStencilState(fillDepthState)
+            encoder.setVertexBytes(
+                &fill, length: fill.count * MemoryLayout<Float>.size, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+            encoder.setDepthStencilState(depthState)
+
+            if let lines = buffers.gridLines(
+                window: window, subdivisions: settings.gridSubdivisions,
+                colors: settings.gridColors)
+            {
+                encoder.setVertexBuffer(lines.buffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lines.vertexCount)
+            }
+        }
     }
 
-    /// Encodes the three world-axis lines from the shared axis vertex buffer.
+    /// Encodes the world axes from the origin: X red, Y green, Z blue, `axisLength` long.
+    ///
+    /// Each axis is a cylinder of `GridAxisGeometry.axisWorldRadius(...)` (fixed for `.cylinder`,
+    /// zoom-compensated for `.constantScreenWidth`) plus a 1 px centre line, so an axis whose
+    /// radius falls below a pixel stays visible.
     static func encodeAxes(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
-        vertexBuffer: MTLBuffer,
-        viewProjection: simd_float4x4
+        buffers: GridAxisBuffers,
+        viewProjection: simd_float4x4,
+        cameraState: CameraState,
+        settings: GridAxisSettings
     ) {
-        var axisUniforms = AxisUniforms(viewProjectionMatrix: viewProjection)
+        let length = settings.axisLength
+        guard length > 0, length.isFinite else { return }
+        let radius = GridAxisGeometry.axisWorldRadius(
+            style: settings.axisStyle,
+            baseRadius: settings.axisRadius,
+            cameraState: cameraState
+        )
         encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+
+        if radius > 0, radius.isFinite {
+            encoder.setVertexBuffer(buffers.axisCylinders, offset: 0, index: 0)
+            let count = GridAxisGeometry.verticesPerAxis
+            for axis in 0..<3 {
+                let model = GridAxisGeometry.axisModelMatrix(
+                    axis: axis, length: length, radius: radius)
+                var axisUniforms = AxisUniforms(viewProjectionMatrix: viewProjection * model)
+                encoder.setVertexBytes(
+                    &axisUniforms, length: MemoryLayout<AxisUniforms>.size, index: 1)
+                encoder.drawPrimitives(
+                    type: .triangle, vertexStart: axis * count, vertexCount: count)
+            }
+        }
+
+        var lines = GridAxisGeometry.axisCenterLineVertices(length: length)
+        var axisUniforms = AxisUniforms(viewProjectionMatrix: viewProjection)
         encoder.setVertexBytes(&axisUniforms, length: MemoryLayout<AxisUniforms>.size, index: 1)
+        encoder.setVertexBytes(&lines, length: lines.count * MemoryLayout<Float>.size, index: 0)
         encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 6)
     }
 

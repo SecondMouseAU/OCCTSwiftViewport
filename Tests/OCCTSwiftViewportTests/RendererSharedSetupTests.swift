@@ -134,7 +134,7 @@ struct RendererSharedSetupTests {
 
     @Test("Offscreen grid options now default to the same values the live viewport uses")
     func offscreenGridDefaultsMatchViewportConfiguration() {
-        let options = OffscreenRenderOptions()
+        let options = OffscreenRenderOptions(appearance: .light)
         let config = ViewportConfiguration()
         #expect(options.gridBaseSpacing == config.gridBaseSpacing)
         #expect(options.gridSubdivisions == config.gridSubdivisions)

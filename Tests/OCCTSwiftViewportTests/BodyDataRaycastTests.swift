@@ -231,7 +231,7 @@ struct MutatedGeometryRenderTests {
             return
         }
         var options = OffscreenRenderOptions(
-            width: 120, height: 120, backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+            width: 120, height: 120, backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
         options.cameraState = frontCamera
         var body = box(x: -2)
         let before = try #require(renderer.render(bodies: [body], options: options))

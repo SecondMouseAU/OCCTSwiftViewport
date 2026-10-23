@@ -428,6 +428,7 @@ struct EdgeRenderingGapsTests {
         let options = OffscreenRenderOptions(
             width: size, height: size, cameraState: camera, displayMode: .shadedWithEdges,
             lightingConfiguration: .flat, backgroundColor: SIMD4<Float>(1, 1, 1, 1),
+            appearance: .light,
             msaaSampleCount: 1,
             edgeLineConfiguration: EdgeLineConfiguration(width: 4 * Float(size) / 128))
         guard let image = renderer.render(bodies: [plane], options: options) else {
@@ -446,6 +447,7 @@ struct EdgeRenderingGapsTests {
         let options = OffscreenRenderOptions(
             width: Self.size, height: Self.size, cameraState: Self.orthoCamera,
             displayMode: .shadedWithEdges, backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light,
             edgeLineConfiguration: EdgeLineConfiguration(width: 3),
             edgeIntensity: edgeIntensity)
         guard let image = renderer.render(bodies: [Self.meshedBodyWithLine()], options: options)

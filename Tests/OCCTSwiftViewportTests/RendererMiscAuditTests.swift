@@ -111,7 +111,8 @@ struct EmptiedBodyTests {
         }
         var opts = OffscreenRenderOptions(
             width: 64, height: 64, cameraState: frontCamera,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light)
         opts.displayMode = .unlit
 
         let full = try #require(renderer.render(bodies: [quadBody(id: "a")], options: opts))
@@ -130,7 +131,8 @@ struct EmptiedBodyTests {
             Issue.record("Metal device unavailable; skipping")
             return
         }
-        let opts = OffscreenRenderOptions(width: 32, height: 32, cameraState: frontCamera)
+        let opts = OffscreenRenderOptions(
+            width: 32, height: 32, cameraState: frontCamera, appearance: .light)
         _ = renderer.render(bodies: [quadBody(id: "a"), quadBody(id: "b")], options: opts)
         #expect(renderer.cachedBodyCount == 2)
         _ = renderer.render(bodies: [quadBody(id: "a")], options: opts)

@@ -5,7 +5,7 @@ parent: API Reference
 
 # Configuration
 
-These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
+These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `ViewportController(configuration:)` that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
 
 [`GestureConfiguration`](Input.md#gestureconfiguration) and [`DynamicPivotConfiguration`](Camera.md#dynamicpivotconfiguration) are documented on the Input and Camera pages respectively — `ViewportConfiguration` embeds them by value.
 
@@ -17,7 +17,16 @@ These types control viewport appearance, rendering fidelity, and picking. `Viewp
 
 ## ViewportConfiguration
 
-`ViewportConfiguration` is the master configuration value type for a viewport instance. It is `Sendable` and can be constructed with any subset of its parameters overridden; every field has a default. Pass it to `MetalViewportView(configuration:)` or set `ViewportController.configuration` at runtime to apply changes.
+`ViewportConfiguration` is the master configuration value type for a viewport instance. It is `Sendable` and can be constructed with any subset of its parameters overridden; every field has a default. Pass it to `ViewportController(configuration:)`, then hand that controller to `MetalViewportView(controller:bodies:)`:
+
+```swift
+var config = ViewportConfiguration.cad
+config.gridStyle = .dots
+let controller = ViewportController(configuration: config)
+// MetalViewportView(controller: controller, bodies: $bodies)
+```
+
+`ViewportController.configuration` is a `let`: the configuration is fixed for the controller's lifetime. The settings that can change live are mirrored as `@Published` properties on the controller (`displayMode`, `showAxes`, `showGrid`, `lightingConfiguration`, `enableTAA`, the depth-of-field values and so on); to change anything else, build a new controller.
 
 ---
 
@@ -66,10 +75,10 @@ Maximum camera-to-pivot distance in world units. Caps the zoom-out range.
 #### `defaultFieldOfView`
 
 ```swift
-public var defaultFieldOfView: Float  // default: 45
+public var defaultFieldOfView: Float?  // default: nil (keep initialCameraState.fieldOfView)
 ```
 
-Vertical field of view in degrees for the initial perspective projection.
+Vertical field of view in degrees for the initial perspective camera. When set, `ViewportController` applies it over `initialCameraState.fieldOfView` when it is created (`effectiveInitialCameraState` returns the result). `nil` keeps the initial camera's own FOV, including a camera you assign to `initialCameraState` after creating the configuration. Either way, `reset(animated:)` returns to that FOV.
 
 ---
 
@@ -168,20 +177,20 @@ Whether the world-space coordinate axes are rendered.
 #### `axisLength`
 
 ```swift
-public var axisLength: Float  // default: 2.0
+public var axisLength: Float?  // default: nil (sized to the scene)
 ```
 
-Length of the coordinate axis cylinders in world units.
+Length of each coordinate axis in world units, measured from the origin along +X (red), +Y (green) and +Z (blue). `nil` sizes the axes to the scene every frame: `max(1.5 × reach, 0.5 × diagonal)` of the visible geometry-layer bodies' world bounds, where `reach` is the bounds' largest absolute coordinate. The axes start at the origin, so this makes them poke out of a model that contains it at any scale, and keeps them a visible size beside a model that sits away from it. An empty scene gets 2 units. A value you set always wins. `OffscreenRenderer` resolves `nil` the same way from the bodies it renders.
 
 ---
 
 #### `axisRadius`
 
 ```swift
-public var axisRadius: Float  // default: 0.02
+public var axisRadius: Float?  // default: nil (automatic)
 ```
 
-Radius of the axis cylinders (or base radius when `axisStyle == .constantScreenWidth`).
+World-space radius of the axis cylinders for `.cylinder`; for `.constantScreenWidth`, the radius they have at the default camera's zoom (distance 10, 45° FOV), scaled with the zoom from there. `nil` picks it automatically: for `.cylinder`, 1 % of the axis length (0.02 at 2 units), so axes sized to a large scene stay proportionate instead of shrinking to a hairline; for `.constantScreenWidth`, 0.02. A value you set always wins. A 1 px centre line is always drawn as well, so an axis never disappears when its radius falls below a pixel.
 
 ---
 
@@ -191,7 +200,7 @@ Radius of the axis cylinders (or base radius when `axisStyle == .constantScreenW
 public var axisStyle: AxisStyle  // default: .cylinder
 ```
 
-Whether axis cylinders scale with camera distance to maintain constant on-screen width. See [`AxisStyle`](#axisstyle).
+Fixed world-space radius or constant on-screen width. See [`AxisStyle`](#axisstyle).
 
 ---
 
@@ -201,7 +210,7 @@ Whether axis cylinders scale with camera distance to maintain constant on-screen
 public var showGrid: Bool  // default: true
 ```
 
-Whether the ground grid is rendered.
+Whether the ground grid is rendered. The grid lies in the XY plane at z = 0, matching the Z-up world (turntable orbit, standard views).
 
 ---
 
@@ -211,7 +220,7 @@ Whether the ground grid is rendered.
 public var gridStyle: GridStyle  // default: .plane
 ```
 
-Solid plane or adaptive dot grid. See [`GridStyle`](#gridstyle).
+Ground plane with grid lines, or adaptive dot grid. See [`GridStyle`](#gridstyle).
 
 ---
 
@@ -221,7 +230,7 @@ Solid plane or adaptive dot grid. See [`GridStyle`](#gridstyle).
 public var gridSize: Float  // default: 100.0
 ```
 
-Half-extent of the grid plane in world units (`.plane` style only).
+Side length, in world units, of the square grid centred on the world origin (it spans `±gridSize / 2` on X and Y). Applies to both styles: no line or dot is drawn outside the square. `0`, a negative value or `.infinity` leaves the grid unbounded. Either way the grid only covers a window around the camera pivot (about ±50 spacings for `.plane`, ±15 for `.dots`) at the current spacing level.
 
 ---
 
@@ -231,7 +240,7 @@ Half-extent of the grid plane in world units (`.plane` style only).
 public var gridBaseSpacing: Float  // default: 1.0
 ```
 
-Fundamental grid spacing in world units (`.dots` style). The renderer snaps to multiples of this value as the camera zooms.
+Fundamental grid spacing in world units (both styles). The renderer snaps to this value times a power of `gridSubdivisions` as the camera zooms.
 
 ---
 
@@ -241,7 +250,7 @@ Fundamental grid spacing in world units (`.dots` style). The renderer snaps to m
 public var gridSubdivisions: Int  // default: 10
 ```
 
-Number of subdivisions between major grid levels (`.dots` style).
+Factor between grid spacing levels (both styles). In the `.plane` style every `gridSubdivisions`-th line is drawn with more contrast, marking where the next-coarser level's lines fall.
 
 ---
 
@@ -251,7 +260,25 @@ Number of subdivisions between major grid levels (`.dots` style).
 public var backgroundColor: SIMD4<Float>  // default: SIMD4<Float>(0.95, 0.95, 0.95, 1.0)
 ```
 
-Viewport background color as linear RGBA with premultiplied-alpha conventions. The default is a near-white light grey.
+Viewport background color in the light appearance, as linear RGBA with premultiplied-alpha conventions. The default is a near-white light grey. In the dark appearance `darkModeBackgroundColor` replaces it, unless that is `nil`.
+
+---
+
+#### `darkModeBackgroundColor`
+
+```swift
+public var darkModeBackgroundColor: SIMD4<Float>?  // default: ViewportConfiguration.defaultDarkModeBackgroundColor
+```
+
+Background colour used in the dark appearance. Following dark mode is on by default, with `defaultDarkModeBackgroundColor`, a near-black grey `(0.12, 0.12, 0.12, 1)`.
+
+- **Follow dark mode with your own colour:** set this to it.
+- **Opt out:** set it to `nil`, and `backgroundColor` applies in both appearances.
+- **Force an appearance:** `MetalViewportView` follows the SwiftUI colour scheme of its environment, so `.preferredColorScheme(.light)` or `.environment(\.colorScheme, .dark)` on the view (or an ancestor) pins it.
+
+`resolvedBackgroundColor(isDark:)` returns the colour in effect for an appearance. Headless renders follow the system appearance by default too, through `OffscreenRenderOptions.appearance` (pin `.light`/`.dark` for reproducible output); see [Rendering](Rendering.md#offscreenrenderoptions).
+
+Up to v1.2.3 the dark colour was hard-coded and replaced even a custom `backgroundColor`; it is now this configurable field.
 
 ---
 
@@ -544,15 +571,15 @@ public init(
     rotationStyle: RotationStyle = .turntable,
     minDistance: Float = 0.1,
     maxDistance: Float = 10000,
-    defaultFieldOfView: Float = 45,
+    defaultFieldOfView: Float? = nil,  // nil → keep initialCameraState.fieldOfView
     gestureConfiguration: GestureConfiguration = .default,
     displayMode: DisplayMode = .shaded,
     lightingConfiguration: LightingConfiguration = .threePoint,
     showViewCube: Bool = true,
     viewCubePosition: ViewCubePosition = .bottomTrailing,
     showAxes: Bool = false,
-    axisLength: Float = 2.0,
-    axisRadius: Float = 0.02,
+    axisLength: Float? = nil,  // nil → sized to the scene
+    axisRadius: Float? = nil,  // nil → automatic
     axisStyle: AxisStyle = .cylinder,
     showGrid: Bool = true,
     gridStyle: GridStyle = .plane,
@@ -560,6 +587,7 @@ public init(
     gridBaseSpacing: Float = 1.0,
     gridSubdivisions: Int = 10,
     backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
+    darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration.defaultDarkModeBackgroundColor,
     msaaSampleCount: Int = 4,
     enableSilhouettes: Bool = true,
     silhouetteThickness: Float = 1.0,
@@ -867,12 +895,12 @@ public enum AxisStyle: Sendable {
 }
 ```
 
-Rendering style for the world-space coordinate axes.
+Rendering style for the world-space coordinate axes. Each axis is an unlit cylinder `axisLength` long from the origin (X red, Y green, Z blue) over a 1 px centre line.
 
 | Case | Behaviour |
 |---|---|
-| `.cylinder` | Axis cylinders have a fixed world-space radius (`axisRadius`). They appear thinner on screen as the camera zooms out. Default. |
-| `.constantScreenWidth` | Cylinder radius auto-scales with camera distance so the axes maintain a constant on-screen width. Useful when axes must remain readable across a wide zoom range. |
+| `.cylinder` | Axis cylinders have a fixed world-space radius (`axisRadius`; automatically 1 % of the axis length). They appear thinner on screen as the camera zooms out, down to the 1 px centre line. Default. |
+| `.constantScreenWidth` | The radius scales with the view's visible height at the pivot (camera distance and FOV in perspective, `orthographicScale` in orthographic), so the axes keep the on-screen width `axisRadius` gives at the default camera (distance 10, 45° FOV). The width is exact at the pivot's depth; nearer and farther parts of an axis still follow perspective. |
 
 ---
 
@@ -889,8 +917,10 @@ Rendering style for the ground grid.
 
 | Case | Behaviour |
 |---|---|
-| `.plane` | Solid infinite grid plane. `gridSize` controls how many world units the plane extends. Default. |
-| `.dots` | Instanced adaptive dot grid. The renderer snaps the dot spacing to powers of `gridSubdivisions × gridBaseSpacing` so the grid always shows a readable density regardless of zoom level. |
+| `.plane` | Ground plane: a faint translucent fill (depth-tested but not depth-writing, so it only tints what lies behind it) under 1 px grid lines, every `gridSubdivisions`-th line with more contrast. Default. |
+| `.dots` | Instanced adaptive dot grid. |
+
+Both styles lie in the XY plane at z = 0 (drawn 0.01 below it so faces resting on the ground win the depth test), use spacing `gridBaseSpacing × gridSubdivisionsⁿ` chosen for the current zoom, centre on the camera pivot, and stop at the `gridSize` square around the origin. Line and dot colours are derived from the background the frame clears to (mixed toward black over a light background, toward white over a dark one), so the grid keeps the same modest contrast in light and dark appearance. Up to v1.2.3 the dot grid was drawn in the XZ plane, standing vertical in the Z-up world, and the `.plane` style, `gridStyle` and `gridSize` were ignored.
 
 ---
 
@@ -1074,7 +1104,15 @@ uniforms.clipPlane = plane.asFloat4
 public static let groundPlane: ClipPlane
 ```
 
-Y-up plane at the origin — discards all geometry below Y = 0.
+Ground plane of the Z-up world: discards all geometry below Z = 0 (the same plane as `.zPlane`). Up to v1.2.3 this cut at Y = 0; use `.yPlane` for that.
+
+#### `.yPlane`
+
+```swift
+public static let yPlane: ClipPlane
+```
+
+Y plane at the origin — discards geometry on the negative-Y side.
 
 #### `.xPlane`
 

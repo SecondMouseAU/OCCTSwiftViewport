@@ -23,7 +23,7 @@ func render(_ bodies: [ViewportBody], to name: String, width: Int = 1280, height
     guard let renderer = OffscreenRenderer() else { fail("No Metal device — headless render unavailable") }
     let visible = bodies.filter { $0.isVisible }
     guard !visible.isEmpty else { fail("\(name): no renderable bodies") }
-    var opts = OffscreenRenderOptions()
+    var opts = OffscreenRenderOptions(appearance: .light)
     opts.width = width
     opts.height = height
     opts.showGrid = false

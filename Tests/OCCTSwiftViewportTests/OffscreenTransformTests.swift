@@ -18,8 +18,8 @@ struct OffscreenTransformTests {
             Issue.record("Metal device unavailable; skipping headless render test")
             return
         }
-        let opts = OffscreenRenderOptions(width: 200, height: 200,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        let opts = OffscreenRenderOptions(
+            width: 200, height: 200, backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
 
         // Box at the origin (identity transform) — fills the centre of the frame.
         let centered = ViewportBody.box(id: "b", width: 1.5, height: 1.5, depth: 1.5,
@@ -56,8 +56,9 @@ struct OffscreenTransformTests {
         // Camera at +Z looking down -Z, so +X world maps to +X (right) on screen.
         let camera = CameraState(rotation: simd_quatf(angle: 0, axis: SIMD3<Float>(0, 0, 1)),
                                  distance: 10, pivot: .zero)
-        let opts = OffscreenRenderOptions(width: 200, height: 200, cameraState: camera,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        let opts = OffscreenRenderOptions(
+            width: 200, height: 200, cameraState: camera,
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
 
         var right = ViewportBody.box(id: "r", width: 1, height: 1, depth: 1,
                                      color: SIMD4<Float>(0.9, 0.9, 0.9, 1))

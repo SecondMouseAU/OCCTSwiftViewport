@@ -190,7 +190,7 @@ public final class ViewportController: ObservableObject {
     /// Creates a viewport controller with the specified configuration.
     public init(configuration: ViewportConfiguration = .cad) {
         self.configuration = configuration
-        self.cameraState = configuration.initialCameraState
+        self.cameraState = configuration.effectiveInitialCameraState
         self.displayMode = configuration.displayMode
         self.showViewCube = configuration.showViewCube
         self.showAxes = configuration.showAxes
@@ -205,7 +205,8 @@ public final class ViewportController: ObservableObject {
         self.enableTAA = configuration.enableTAA
         self.taaBlendFactor = configuration.taaBlendFactor
 
-        self.cameraController = CameraController(initialState: configuration.initialCameraState)
+        self.cameraController = CameraController(
+            initialState: configuration.effectiveInitialCameraState)
         cameraController.rotationStyle = configuration.rotationStyle
         cameraController.minDistance = configuration.minDistance
         cameraController.maxDistance = configuration.maxDistance

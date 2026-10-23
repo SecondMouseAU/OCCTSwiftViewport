@@ -19,7 +19,7 @@ struct OffscreenRendererMeasurementTests {
             return
         }
         let body = ViewportBody.box(id: "m-empty")
-        let opts = OffscreenRenderOptions(width: 256, height: 192)
+        let opts = OffscreenRenderOptions(width: 256, height: 192, appearance: .light)
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
             return
@@ -46,7 +46,7 @@ struct OffscreenRendererMeasurementTests {
             )
         )
 
-        let baseOpts = OffscreenRenderOptions(width: 256, height: 192)
+        let baseOpts = OffscreenRenderOptions(width: 256, height: 192, appearance: .light)
         var overlayOpts = baseOpts
         overlayOpts.measurements = [measurement]
 
@@ -81,7 +81,7 @@ struct OffscreenRendererMeasurementTests {
                 showDiameter: true
             ))
         ]
-        var opts = OffscreenRenderOptions(width: 256, height: 192)
+        var opts = OffscreenRenderOptions(width: 256, height: 192, appearance: .light)
         opts.measurements = measurements
         let image = renderer.render(bodies: [body], options: opts)
         #expect(image != nil)

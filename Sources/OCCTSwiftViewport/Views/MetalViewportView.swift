@@ -156,10 +156,9 @@ public struct MetalViewportView: View {
 
     // MARK: - Metal View
 
+    /// `backgroundColor`, or `darkModeBackgroundColor` while the environment is dark (unless `nil`).
     private var canvasBackgroundColor: SIMD4<Float> {
-        colorScheme == .dark
-            ? SIMD4<Float>(0.12, 0.12, 0.12, 1.0)
-            : controller.configuration.backgroundColor
+        controller.configuration.resolvedBackgroundColor(isDark: colorScheme == .dark)
     }
 
     // MARK: - Picking Helpers

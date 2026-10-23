@@ -627,6 +627,13 @@ A cleaner approach for the sparse face-color lookup is a small buffer of (faceIn
 
 ## Grid and Axes
 
+> **Shipped implementation (issue #136):** the grid lies in the XY plane of the Z-up world and
+> honours `gridStyle` (`.plane` = translucent fill + minor/major lines, `.dots` = instanced dots)
+> and `gridSize`; the axes are unit cylinders scaled per draw by `axisLength` / `axisRadius`, with
+> `axisStyle == .constantScreenWidth` scaling the radius by the visible view height. See
+> `Renderer/GridAxisGeometry.swift` and `RendererSharedSetup.encodeGrid` / `encodeAxes`. The
+> sketches below are the original design.
+
 ### Grid (Metal)
 
 The adaptive dot grid algorithm from the current implementation carries over, but rendering changes from 961 entities to one instanced draw call:

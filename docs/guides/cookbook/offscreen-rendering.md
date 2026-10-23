@@ -65,9 +65,16 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `cameraState` | `CameraState` | `CameraState()` | Camera position and projection |
 | `displayMode` | `DisplayMode` | `.shadedWithEdges` | See [Display modes](#display-modes) |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
-| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear |
-| `showGrid` | `Bool` | `false` | Adaptive dot grid |
+| `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear (light appearance) |
+| `darkModeBackgroundColor` | `SIMD4<Float>?` | `(0.12, 0.12, 0.12, 1)` | Dark-appearance background; `nil` = same as light |
+| `appearance` | `RenderAppearance` | `.system` | `.system` (follows the OS, like onscreen), `.light` or `.dark` |
+| `showGrid` | `Bool` | `false` | Ground grid on the XY plane |
 | `showAxes` | `Bool` | `false` | RGB world-space axes |
+| `gridStyle` | `GridStyle` | `.plane` | Line grid with a faint fill, or `.dots` |
+| `gridSize` | `Float` | `100` | Side of the square grid around the origin |
+| `axisLength` | `Float?` | `nil` | Axis length from the origin; `nil` sizes it to the bodies |
+| `axisRadius` | `Float?` | `nil` | Axis cylinder radius; `nil` = 1 % of the axis length |
+| `axisStyle` | `AxisStyle` | `.cylinder` | Or `.constantScreenWidth` |
 | `msaaSampleCount` | `Int` | `4` | MSAA samples (1, 2, or 4) |
 | `gridBaseSpacing` | `Float` | `1.0` | Grid unit in world units (matches `ViewportConfiguration`) |
 | `gridSubdivisions` | `Int` | `10` | Adaptive grid spacing factor (matches `ViewportConfiguration`) |
@@ -213,6 +220,15 @@ options.lightingConfiguration = .threePoint     // default: key + fill + back
 options.backgroundColor = SIMD4<Float>(1, 1, 1, 1)       // white
 options.backgroundColor = SIMD4<Float>(0, 0, 0, 1)       // black
 options.backgroundColor = SIMD4<Float>(0.18, 0.18, 0.18, 1)  // mid-grey
+```
+
+Like the onscreen view, a headless render follows the system appearance by default
+(`appearance = .system`), so on a Mac in dark mode it uses `darkModeBackgroundColor`. Pin an
+appearance for anything that must be reproducible, such as tests, CI or reference images:
+
+```swift
+options.appearance = .light    // always backgroundColor
+options.appearance = .dark     // always darkModeBackgroundColor (default (0.12, 0.12, 0.12, 1))
 ```
 
 ---

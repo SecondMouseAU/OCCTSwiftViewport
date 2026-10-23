@@ -10,6 +10,10 @@ import ImageIO
 import UniformTypeIdentifiers
 import simd
 
+#if canImport(UIKit)
+    import UIKit
+#endif
+
 /// Explicit orthographic projection bounds in world units.
 ///
 /// When supplied to `OffscreenRenderOptions.explicitOrthoBounds`, the renderer
@@ -31,6 +35,43 @@ public struct OrthoBounds: Sendable, Hashable, Codable {
     }
 }
 
+/// Which appearance (light or dark) a headless render uses to pick its background.
+///
+/// Offscreen defaults follow onscreen: `.system` (the default) uses the system appearance at
+/// render time, as `MetalViewportView` follows its colour scheme. That makes the image depend on
+/// the host's Light/Dark setting, so pin `.light` or `.dark` wherever output must be
+/// reproducible: tests, CI, reference images and documentation figures.
+public enum RenderAppearance: Sendable, Hashable {
+    /// Light appearance: `backgroundColor`.
+    case light
+    /// Dark appearance: `darkModeBackgroundColor`, or `backgroundColor` when that is `nil`.
+    case dark
+    /// The system appearance at render time. On macOS this is the user's Light/Dark setting; on
+    /// iOS and visionOS it is `UITraitCollection.current`.
+    case system
+
+    /// Whether this appearance renders dark right now.
+    @MainActor
+    public var isDark: Bool {
+        switch self {
+        case .light: return false
+        case .dark: return true
+        case .system: return Self.systemIsDark
+        }
+    }
+
+    @MainActor
+    private static var systemIsDark: Bool {
+        #if os(macOS)
+            return UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        #elseif canImport(UIKit)
+            return UITraitCollection.current.userInterfaceStyle == .dark
+        #else
+            return false
+        #endif
+    }
+}
+
 /// Configuration for an offscreen render.
 public struct OffscreenRenderOptions: Sendable {
     public var width: Int
@@ -38,7 +79,19 @@ public struct OffscreenRenderOptions: Sendable {
     public var cameraState: CameraState
     public var displayMode: DisplayMode
     public var lightingConfiguration: LightingConfiguration
+    /// Background colour in the light appearance.
     public var backgroundColor: SIMD4<Float>
+
+    /// Background colour in the dark appearance, or `nil` to use `backgroundColor` for both,
+    /// matching `ViewportConfiguration.darkModeBackgroundColor`.
+    public var darkModeBackgroundColor: SIMD4<Float>?
+
+    /// Appearance the render uses to pick its background.
+    ///
+    /// Defaults to `.system`, like the onscreen view. Pin `.light` or `.dark` for reproducible
+    /// output; see `RenderAppearance`.
+    public var appearance: RenderAppearance
+
     public var showGrid: Bool
     public var showAxes: Bool
     public var msaaSampleCount: Int
@@ -49,6 +102,24 @@ public struct OffscreenRenderOptions: Sendable {
     /// Subdivision factor between grid spacing levels, matching
     /// `ViewportConfiguration.gridSubdivisions`.
     public var gridSubdivisions: Int
+
+    /// Grid rendering style, matching `ViewportConfiguration.gridStyle`.
+    public var gridStyle: GridStyle
+
+    /// Side length of the square grid centred on the world origin, matching
+    /// `ViewportConfiguration.gridSize`.
+    public var gridSize: Float
+
+    /// Axis length in world units, or `nil` (the default) to size the axes to the rendered
+    /// bodies, matching `ViewportConfiguration.axisLength`.
+    public var axisLength: Float?
+
+    /// Axis cylinder radius, or `nil` (the default) for automatic, matching
+    /// `ViewportConfiguration.axisRadius`.
+    public var axisRadius: Float?
+
+    /// Axis rendering style, matching `ViewportConfiguration.axisStyle`.
+    public var axisStyle: AxisStyle
 
     /// Edge line rendering configuration (width, dash pattern, quad expansion).
     public var edgeLineConfiguration: EdgeLineConfiguration
@@ -90,11 +161,19 @@ public struct OffscreenRenderOptions: Sendable {
         displayMode: DisplayMode = .shadedWithEdges,
         lightingConfiguration: LightingConfiguration = .threePoint,
         backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
+        darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration
+            .defaultDarkModeBackgroundColor,
+        appearance: RenderAppearance = .system,
         showGrid: Bool = false,
         showAxes: Bool = false,
         msaaSampleCount: Int = 4,
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
+        gridStyle: GridStyle = .plane,
+        gridSize: Float = 100.0,
+        axisLength: Float? = nil,
+        axisRadius: Float? = nil,
+        axisStyle: AxisStyle = .cylinder,
         edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
@@ -107,16 +186,31 @@ public struct OffscreenRenderOptions: Sendable {
         self.displayMode = displayMode
         self.lightingConfiguration = lightingConfiguration
         self.backgroundColor = backgroundColor
+        self.darkModeBackgroundColor = darkModeBackgroundColor
+        self.appearance = appearance
         self.showGrid = showGrid
         self.showAxes = showAxes
         self.msaaSampleCount = msaaSampleCount
         self.gridBaseSpacing = gridBaseSpacing
         self.gridSubdivisions = gridSubdivisions
+        self.gridStyle = gridStyle
+        self.gridSize = gridSize
+        self.axisLength = axisLength
+        self.axisRadius = axisRadius
+        self.axisStyle = axisStyle
         self.edgeLineConfiguration = edgeLineConfiguration
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
         self.measurements = measurements
         self.edgeIntensity = edgeIntensity
+    }
+
+    /// The background colour for `appearance`: `darkModeBackgroundColor` when it renders dark and
+    /// that is set, otherwise `backgroundColor`.
+    @MainActor
+    public var resolvedBackgroundColor: SIMD4<Float> {
+        if appearance.isDark, let dark = darkModeBackgroundColor { return dark }
+        return backgroundColor
     }
 }
 
@@ -214,7 +308,8 @@ public final class OffscreenRenderer: Sendable {
     private let depthState: MTLDepthStencilState
     private let transparentDepthState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
-    private let axisVertexBuffer: MTLBuffer
+    /// Axis cylinders and the cached `.plane` grid-line buffer.
+    private let gridAxisBuffers: GridAxisBuffers
 
     /// Image-based lighting from `LightingConfiguration.environmentMapURL`/`environmentMapData`,
     /// loaded on demand so headless renders light like the interactive viewport.
@@ -296,10 +391,10 @@ public final class OffscreenRenderer: Sendable {
         else { return nil }
         self.transparentDepthState = transparentDepthState
 
-        guard let axisVB = RendererSharedSetup.makeAxisVertexBuffer(device: device) else {
+        guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
         }
-        self.axisVertexBuffer = axisVB
+        self.gridAxisBuffers = gridAxisBuffers
 
         guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else { return nil }
         self.matcapTexture = matcap
@@ -340,6 +435,16 @@ public final class OffscreenRenderer: Sendable {
             guard let box = body.boundingBox?.transformed(by: body.transform) else { continue }
             sceneBounds = sceneBounds.map { $0.union(box) } ?? box
         }
+        let gridAxisSettings = GridAxisSettings(
+            options: options, sceneBounds: sceneBounds,
+            background: options.resolvedBackgroundColor)
+        sceneBounds = GridAxisGeometry.clipBounds(
+            sceneBounds: sceneBounds,
+            settings: gridAxisSettings,
+            cameraState: cameraState,
+            showGrid: options.showGrid,
+            showAxes: options.showAxes
+        )
         let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
@@ -463,7 +568,7 @@ public final class OffscreenRenderer: Sendable {
         }
 
         // Main pass
-        let bg = options.backgroundColor
+        let bg = options.resolvedBackgroundColor
         let passDesc = MTLRenderPassDescriptor()
         if sampleCount > 1, let msaaColor = msaaColorTexture {
             passDesc.colorAttachments[0].texture = msaaColor
@@ -507,11 +612,14 @@ public final class OffscreenRenderer: Sendable {
         if options.showGrid {
             RendererSharedSetup.encodeGrid(
                 encoder: mainEncoder,
-                pipeline: pipelines.gridPipeline,
+                dotPipeline: pipelines.gridPipeline,
+                linePipeline: pipelines.axisPipeline,
+                fillDepthState: transparentDepthState,
+                depthState: depthState,
+                buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
                 cameraState: cameraState,
-                baseSpacing: options.gridBaseSpacing,
-                subdivisions: options.gridSubdivisions
+                settings: gridAxisSettings
             )
         }
 
@@ -520,8 +628,10 @@ public final class OffscreenRenderer: Sendable {
             RendererSharedSetup.encodeAxes(
                 encoder: mainEncoder,
                 pipeline: pipelines.axisPipeline,
-                vertexBuffer: axisVertexBuffer,
-                viewProjection: viewProjection
+                buffers: gridAxisBuffers,
+                viewProjection: viewProjection,
+                cameraState: cameraState,
+                settings: gridAxisSettings
             )
         }
 

@@ -56,8 +56,8 @@ ViewportController (@MainActor, ObservableObject — central hub)
   └─ ViewportRenderer (@MainActor, MTKViewDelegate — Metal render loop)
       ├─ Shaded pipeline (3-light Cook-Torrance GGX + hemisphere ambient + Fresnel rim)
       ├─ Wireframe pipeline (contrast-adaptive edges, depth-biased)
-      ├─ Grid pipeline (adaptive instanced dots)
-      ├─ Axes pipeline (RGB colored lines)
+      ├─ Grid (XY plane, Z-up; `.plane` lines + fill via the axis pipeline, `.dots` instanced)
+      ├─ Axes pipeline (RGB unit cylinders scaled per draw + 1 px centre lines; GridAxisGeometry.swift)
       ├─ Shadow map pipeline (ShadowMapManager — directional light depth pass)
       ├─ Environment map (EnvironmentMapManager — image-based lighting)
       └─ Pick ID texture (R32Uint second color attachment, TBDR imageblock-based)
@@ -97,7 +97,7 @@ Three rotation styles: **arcball** (Ken Shoemake virtual sphere), **turntable** 
 ## Key Conventions
 
 - **Public API re-export:** `Sources/OCCTSwiftViewport/OCCTSwiftViewport.swift` uses underscore-prefixed typealiases (`public typealias _CameraState = CameraState`) to aggregate ~40 public types. Consumers import the module and use `_TypeName` directly.
-- **Primitives for testing:** `ViewportBody` has factory methods (`.box()`, `.cylinder()`, `.sphere()`, `.torus()`) in `Primitives.swift`
+- **Primitives for testing:** `ViewportBody` has factory methods (`.box()`, `.cylinder()`, `.sphere()`) in `Primitives.swift`. Their `up:` parameter defaults to `.y` for source compatibility; pass `.z` for the Z-up viewport world
 - **Platform branching:** `#if os(iOS)` / `#elseif os(macOS)` within shared files (not separate files per platform). macOS uses a custom `ScrollCaptureMTKView` subclass for scroll/mouse events.
 - **Tests:** Swift Testing framework (`import Testing`, `@Test`, `@Suite`), not XCTest
 - **Configuration presets:** `LightingConfiguration` (`.threePoint`, `.studio`, `.architectural`, `.flat`), `GestureConfiguration` (`.blender`, `.fusion360`, `.default`), `RotationStyle` (`.cadDefault`, `.modelingDefault`)

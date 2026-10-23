@@ -25,7 +25,7 @@ func render(_ bodies: [ViewportBody], to name: String,
     let visible = bodies.filter { $0.isVisible }
     guard !visible.isEmpty else { fail("\(name): no renderable bodies") }
 
-    var opts = OffscreenRenderOptions()
+    var opts = OffscreenRenderOptions(appearance: .light)
     opts.width = width
     opts.height = height
     opts.backgroundColor = SIMD4<Float>(0.93, 0.94, 0.96, 1)

@@ -87,6 +87,7 @@ struct EdgeDashRenderingTests {
             width: 128, height: 128, cameraState: camera,
             displayMode: .shadedWithEdges,
             backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light,
             edgeLineConfiguration: EdgeLineConfiguration(width: 3, dashPattern: pattern))
         guard let image = renderer.render(bodies: [body], options: options) else {
             Issue.record("renderer returned nil image")

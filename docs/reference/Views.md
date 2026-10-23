@@ -151,7 +151,7 @@ Whether the world-space axis triad is rendered. Toggled by `toggleAxes()`.
 @Published public var showGrid: Bool
 ```
 
-Whether the adaptive dot grid is rendered. Toggled by `toggleGrid()`.
+Whether the ground grid is rendered, in the style `configuration.gridStyle` sets. Toggled by `toggleGrid()`.
 
 #### `showOrientationGnomon`
 
