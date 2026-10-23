@@ -147,6 +147,24 @@ struct MeasurementOverlay: View {
             point: point, vpMatrix: vpMatrix, viewportSize: viewportSize)
     }
 
+    /// The view-projection matrix the overlay projects with, built with the renderer's
+    /// near/far planes for its last frame rather than a fixed 0.01/10000 (issue #204), so the
+    /// overlay's depth is the renderer's.
+    ///
+    /// - Parameters:
+    ///   - cameraState: The camera to project through.
+    ///   - aspectRatio: The view's width / height.
+    ///   - clipPlanes: The renderer's `lastFrameClipPlanes`, or `nil` before its first frame,
+    ///     when `CameraState.clipPlanes(sceneBounds: nil)` (the wide default) is used.
+    /// - Returns: Projection times view matrix.
+    static func viewProjection(
+        cameraState: CameraState, aspectRatio: Float, clipPlanes: (near: Float, far: Float)?
+    ) -> simd_float4x4 {
+        let clip = clipPlanes ?? cameraState.clipPlanes(sceneBounds: nil)
+        return cameraState.projectionMatrix(
+            aspectRatio: aspectRatio, near: clip.near, far: clip.far) * cameraState.viewMatrix
+    }
+
     private func drawEndpoint(at point: CGPoint, in context: inout GraphicsContext) {
         let radius: CGFloat = 3
         let circle = Path(

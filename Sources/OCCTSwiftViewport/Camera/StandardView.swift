@@ -159,8 +159,7 @@ public enum StandardView: String, CaseIterable, Sendable {
             pivot: pivot,
             fieldOfView: fieldOfView,
             orthographicScale: orthographicScale,
-            isOrthographic: isOrthographic,
-            panOffset: .zero
+            isOrthographic: isOrthographic
         )
     }
 }

@@ -42,8 +42,24 @@ public struct CameraState: Hashable, Codable, Sendable {
     /// Whether using orthographic projection.
     public var isOrthographic: Bool
 
-    /// Camera-relative pan offset (for fine adjustment).
-    public var panOffset: SIMD2<Float>
+    /// Unused: nothing reads it, so setting it does not move the view.
+    ///
+    /// It is still stored, compared, encoded and interpolated, so saved states round-trip, but
+    /// no view or projection matrix ever applied it. To pan, move `pivot` across the view, as
+    /// `CameraController.pan(deltaX:deltaY:)` does.
+    @available(
+        *, deprecated,
+        message:
+            "panOffset was never applied to the view; move pivot across the view to pan instead"
+    )
+    public var panOffset: SIMD2<Float> {
+        get { storedPanOffset }
+        set { storedPanOffset = newValue }
+    }
+
+    /// Backing store for the deprecated `panOffset`, so the type's own init, interpolation and
+    /// coding keep it without deprecation warnings.
+    private var storedPanOffset: SIMD2<Float> = .zero
 
     // MARK: - Computed Properties
 
@@ -123,8 +139,7 @@ public struct CameraState: Hashable, Codable, Sendable {
         pivot: SIMD3<Float> = .zero,
         fieldOfView: Float = 45.0,
         orthographicScale: Float = 10.0,
-        isOrthographic: Bool = false,
-        panOffset: SIMD2<Float> = .zero
+        isOrthographic: Bool = false
     ) {
         self.rotation = simd_normalize(rotation)
         self.distance = distance
@@ -132,7 +147,27 @@ public struct CameraState: Hashable, Codable, Sendable {
         self.fieldOfView = fieldOfView
         self.orthographicScale = orthographicScale
         self.isOrthographic = isOrthographic
-        self.panOffset = panOffset
+    }
+
+    /// Creates a camera state with the deprecated, never-applied `panOffset`.
+    @available(
+        *, deprecated,
+        message:
+            "panOffset was never applied to the view; omit it and move pivot across the view instead"
+    )
+    public init(
+        rotation: simd_quatf = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)),
+        distance: Float = 10.0,
+        pivot: SIMD3<Float> = .zero,
+        fieldOfView: Float = 45.0,
+        orthographicScale: Float = 10.0,
+        isOrthographic: Bool = false,
+        panOffset: SIMD2<Float>
+    ) {
+        self.init(
+            rotation: rotation, distance: distance, pivot: pivot, fieldOfView: fieldOfView,
+            orthographicScale: orthographicScale, isOrthographic: isOrthographic)
+        self.storedPanOffset = panOffset
     }
 
     /// Returns a copy fitted to enclose `bounds` from the current viewing direction.
@@ -150,7 +185,7 @@ public struct CameraState: Hashable, Codable, Sendable {
 
         var copy = self
         copy.pivot = center
-        copy.panOffset = .zero
+        copy.storedPanOffset = .zero
 
         if isOrthographic {
             // Vertical extent must cover 2·radius; horizontally that equals 2·radius·aspect.
@@ -214,16 +249,18 @@ public struct CameraState: Hashable, Codable, Sendable {
     public func interpolated(to target: CameraState, t: Float) -> CameraState {
         let clampedT = simd_clamp(t, 0, 1)
 
-        return CameraState(
+        var result = CameraState(
             rotation: simd_slerp(rotation, target.rotation, clampedT),
             distance: distance + (target.distance - distance) * clampedT,
             pivot: pivot + (target.pivot - pivot) * clampedT,
             fieldOfView: fieldOfView + (target.fieldOfView - fieldOfView) * clampedT,
             orthographicScale: orthographicScale + (target.orthographicScale - orthographicScale)
                 * clampedT,
-            isOrthographic: clampedT >= 0.5 ? target.isOrthographic : isOrthographic,
-            panOffset: panOffset + (target.panOffset - panOffset) * clampedT
+            isOrthographic: clampedT >= 0.5 ? target.isOrthographic : isOrthographic
         )
+        result.storedPanOffset =
+            storedPanOffset + (target.storedPanOffset - storedPanOffset) * clampedT
+        return result
     }
 
     // MARK: - Codable
@@ -260,7 +297,7 @@ public struct CameraState: Hashable, Codable, Sendable {
 
         let ox = try container.decode(Float.self, forKey: .panOffsetX)
         let oy = try container.decode(Float.self, forKey: .panOffsetY)
-        panOffset = SIMD2<Float>(ox, oy)
+        storedPanOffset = SIMD2<Float>(ox, oy)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -281,8 +318,8 @@ public struct CameraState: Hashable, Codable, Sendable {
         try container.encode(orthographicScale, forKey: .orthographicScale)
         try container.encode(isOrthographic, forKey: .isOrthographic)
 
-        try container.encode(panOffset.x, forKey: .panOffsetX)
-        try container.encode(panOffset.y, forKey: .panOffsetY)
+        try container.encode(storedPanOffset.x, forKey: .panOffsetX)
+        try container.encode(storedPanOffset.y, forKey: .panOffsetY)
     }
 }
 

@@ -24,11 +24,17 @@ import simd
 ///   the rest of that drag is ignored, even after the second finger lifts.
 /// - A drag whose start differs from the last one is a new drag, even if the last one's end
 ///   never arrived; that one is ended first.
+/// - A drag ended for either reason is *interrupted*, not released: it ends with no momentum and
+///   never snaps to a nearby axis view (issue #204). Its end used to go out as a `.dragEnded`
+///   with zero velocity, which looks like a slow release and snapped within 3° of an axis.
 struct TouchDragArbiter {
 
-    /// What the view should do for one gesture callback, in order: set the drag origin, then
-    /// dispatch the events.
+    /// What the view should do for one gesture callback, in order: interrupt the last drag, set
+    /// the drag origin, then dispatch the events.
     struct Step: Equatable {
+        /// Whether to end the drag in progress as interrupted, with
+        /// `ViewportController.interruptDrag()`, before anything else.
+        var interruptsDrag = false
         /// Where the drag starts, in points from the view centre (y down), for
         /// `ViewportController.setDragOrigin(offsetFromCenter:)`.
         var dragOrigin: SIMD2<Float>?
@@ -62,7 +68,7 @@ struct TouchDragArbiter {
         var step = Step()
         if dragStart != start {
             // A new drag. If the last one never got its end (a cancelled gesture), end it now.
-            if dragDispatched { step.events.append(Self.endWithoutMomentum) }
+            if dragDispatched { step.interruptsDrag = true }
             dragStart = start
             lastTranslation = .zero
             dragDispatched = false
@@ -71,7 +77,7 @@ struct TouchDragArbiter {
         if isTwoFingerPanActive || dragSuppressed {
             dragSuppressed = true
             if dragDispatched {
-                step.events.append(Self.endWithoutMomentum)
+                step.interruptsDrag = true
                 dragDispatched = false
             }
             lastTranslation = translation
@@ -109,15 +115,15 @@ struct TouchDragArbiter {
 
     /// A two-finger pan began.
     ///
-    /// A one-finger drag in progress ends here, without momentum.
+    /// A one-finger drag in progress ends here, interrupted: no momentum, no snap.
     ///
-    /// - Returns: The end of that drag, if one went out.
+    /// - Returns: A step that interrupts that drag, if one went out.
     mutating func twoFingerPanBegan() -> Step {
         isTwoFingerPanActive = true
         var step = Step()
         if dragStart != nil { dragSuppressed = true }
         if dragDispatched {
-            step.events.append(Self.endWithoutMomentum)
+            step.interruptsDrag = true
             dragDispatched = false
         }
         return step
@@ -127,7 +133,4 @@ struct TouchDragArbiter {
     mutating func twoFingerPanEnded() {
         isTwoFingerPanActive = false
     }
-
-    private static let endWithoutMomentum = ViewportInputEvent.dragEnded(
-        velocity: .zero, modifiers: [])
 }

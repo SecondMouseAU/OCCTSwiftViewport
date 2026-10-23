@@ -324,6 +324,33 @@ extension ViewportController {
         pendingDragOrigin = nil
     }
 
+    /// Ends the primary drag in progress as interrupted rather than released: no momentum, and
+    /// never the slow-release snap to a nearby axis view.
+    ///
+    /// The touch view calls it when a second finger takes over a one-finger drag, or when a drag
+    /// whose end never arrived (a cancelled gesture) is followed by a new one. Its end used to
+    /// go out as a zero-velocity `.dragEnded`, which reads as a gentle release and snapped the
+    /// view within 3° of an axis (issue #204). `onInputEvent` still sees a zero-velocity
+    /// `.dragEnded`, so an input inspector shows the drag ending.
+    func interruptDrag() {
+        onInputEvent?(.dragEnded(velocity: .zero, modifiers: []))
+        cameraController.endOrbitDrag()
+        activeInputDragMode = .orbit
+        inputDragPointer = nil
+        pendingDragOrigin = nil
+    }
+
+    /// Ends the two-finger drag in progress as interrupted (its recognizer was cancelled): no
+    /// momentum and no snap, as `interruptDrag()` does for the primary drag. `onInputEvent` sees
+    /// a zero-velocity `.twoFingerPanEnded`.
+    func interruptTwoFingerDrag() {
+        onInputEvent?(.twoFingerPanEnded(velocity: .zero))
+        twoFingerDragActive = false
+        twoFingerDragPointer = nil
+        pendingTwoFingerDragOrigin = nil
+        cameraController.endOrbitDrag()
+    }
+
     /// Applies release inertia for a two-finger drag interpreted as `action`.
     private func endDrag(_ action: GestureAction, velocity: SIMD2<Float>) {
         switch action {
