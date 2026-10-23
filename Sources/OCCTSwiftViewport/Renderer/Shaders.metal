@@ -380,7 +380,10 @@ fragment ShadedFragmentOut shaded_fragment(
 
     // Shadow mapping: darken key light contribution (PCSS soft shadows)
     if (uniforms.shadowParams.z > 0.5) {
-        float4 lightSpacePos = uniforms.lightViewProjectionMatrix * uniforms.modelMatrix * float4(in.worldPosition, 1.0);
+        // in.worldPosition already includes the body transform (modelMatrix), matching the
+        // shadow depth pass (shadow_vertex: lightVP * modelMatrix * position). Applying
+        // modelMatrix again here would sample the shadow map at transform * transform * p.
+        float4 lightSpacePos = uniforms.lightViewProjectionMatrix * float4(in.worldPosition, 1.0);
         float shadowFactor = sampleShadow(lightSpacePos, shadowMap, uniforms.shadowParams.x,
                                            uniforms.shadowParams2.x, uniforms.shadowParams2.y);
         float shadowDarkness = uniforms.shadowParams.y;
