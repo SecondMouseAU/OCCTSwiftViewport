@@ -312,7 +312,7 @@ let viewport = ViewportController(configuration: config)
 
 `PivotStrategy` adjusts the orbit centre automatically as the user zooms:
 
-- **Zoomed out** (`distance / sceneDiagonalLength > zoomThreshold + halfBand`): orbit around the scene centre.
+- **Zoomed out** (`distance / sceneDiagonalLength > zoomThreshold + halfBand`): orbit around the point on the line of sight at the scene centre's depth.
 - **Zoomed in** (below threshold): orbit around the raycast hit point at the screen centre.
 - **Blend zone**: smoothstep between the two over `blendBand × zoomThreshold`.
 
@@ -331,7 +331,7 @@ public struct DynamicPivotConfiguration: Sendable {
 
 Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller schedules updates automatically with a 50 ms coalesce delay after each orbit/zoom event; no manual calls needed.
 
-A pivot change never zooms: the camera keeps its depth and only the distance to the new pivot changes. When zoomed in, the pivot moves along the line of sight to the surface at the centre of the view, so the view does not move at all. Before issue #200 the distance was kept instead, and the camera slid toward or away from the model after each gesture. Only the move across the view, when zoomed out and the pivot goes to the scene centre, still slides the view sideways to centre it.
+A pivot change never moves the view. Every pivot the strategy returns is on the line of sight through the centre of the view, and the controller slides the pivot along it, changing only `distance`, so the camera's position and orientation stay exactly where the gesture left them, momentum or not. Before issue #200 the distance was kept, and the camera slid toward or away from the model after each gesture. Before issue #204 the zoomed-out pivot was the scene centre itself, off the line of sight whenever the user had panned, so releasing a pan slid the view back to centre the model.
 
 To focus on a specific world point programmatically (bypassing the strategy):
 

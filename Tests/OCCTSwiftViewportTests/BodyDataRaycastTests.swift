@@ -248,7 +248,10 @@ struct MutatedGeometryRenderTests {
     func pivotCacheFollowsMutation() throws {
         let strategy = PivotStrategy()
         let config = DynamicPivotConfiguration(zoomThreshold: 0.5, blendBand: 0.3)
-        let far = CameraState(distance: 1000)
+        // Looking down -x, so the quads' x offsets are depths along the line of sight, where
+        // the zoomed-out pivot goes (issue #204).
+        let far = CameraState(
+            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3(0, 1, 0)), distance: 1000)
         var body = quadBody(id: "q")
         _ = strategy.computePivot(cameraState: far, bodies: [body], aspectRatio: 1, config: config)
         body.vertexData = quadVertexData(x: 40)
@@ -260,7 +263,10 @@ struct MutatedGeometryRenderTests {
     @Test("Hidden and overlay bodies don't move the zoomed-out pivot")
     func pivotIgnoresHiddenAndOverlayBodies() throws {
         let config = DynamicPivotConfiguration(zoomThreshold: 0.5, blendBand: 0.3)
-        let far = CameraState(distance: 1000)
+        // Looking down -x, so the quads' x offsets are depths along the line of sight, where
+        // the zoomed-out pivot goes (issue #204).
+        let far = CameraState(
+            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3(0, 1, 0)), distance: 1000)
         var hidden = quadBody(id: "hidden", x: 100)
         hidden.isVisible = false
         var widget = quadBody(id: "widget", x: -100)

@@ -57,6 +57,10 @@ public final class PivotStrategy {
 
     /// Computes the ideal pivot point.
     ///
+    /// The result is always on the line of sight through the view centre: the view-centre
+    /// raycast hit when zoomed in, the point at the scene centre's depth when zoomed out, and a
+    /// blend of the two between. Moving the pivot there therefore never moves the view.
+    ///
     /// - Parameters:
     ///   - cameraState: Current camera state.
     ///   - bodies: Visible scene bodies.
@@ -64,7 +68,8 @@ public final class PivotStrategy {
     ///   - config: Dynamic pivot configuration.
     ///   - clipPlanes: Section planes in effect. The view-centre raycast skips geometry they
     ///     remove, so the pivot lands on what is actually drawn (issue #163). Defaults to none.
-    /// - Returns: The computed pivot, or `nil` if disabled or no geometry is visible.
+    /// - Returns: The computed pivot, or `nil` if disabled, no geometry is visible, the scene
+    ///   centre is behind the camera, or the raycast misses closer in.
     public func computePivot(
         cameraState: CameraState,
         bodies: [ViewportBody],
@@ -82,11 +87,17 @@ public final class PivotStrategy {
         let diagonal = sceneBB.diagonalLength
         guard diagonal > 0 else { return nil }
 
-        let sceneCenter = sceneBB.center
+        // The scene centre at its depth on the line of sight, not the centre itself: moving the
+        // pivot to an off-axis centre moved the camera across with it, which undid a pan on
+        // every release (issue #204). On the line of sight, a pivot change never moves the view.
+        let forward = cameraState.viewDirection
+        let sceneDepth = simd_dot(sceneBB.center - cameraState.position, forward)
+        guard sceneDepth > 0 else { return nil }
+        let sceneCenter = cameraState.position + forward * sceneDepth
         let zoomRatio = cameraState.distance / diagonal
         let halfBand = config.zoomThreshold * config.blendBand * 0.5
 
-        // Fully zoomed out: use scene center
+        // Fully zoomed out: orbit about the scene's depth.
         if zoomRatio > config.zoomThreshold + halfBand {
             return sceneCenter
         }
@@ -96,15 +107,8 @@ public final class PivotStrategy {
         let hit = SceneRaycast.cast(
             ray: ray, bodies: bodies, boundingBoxCache: bbCache, clipPlanes: clipPlanes)
 
-        // When the raycast misses geometry:
-        // - Fully zoomed out: safe to use scene center (user sees the whole scene)
-        // - Closer in: keep current pivot (user may have panned away intentionally)
-        guard let hitPoint = hit?.point else {
-            if zoomRatio > config.zoomThreshold + halfBand {
-                return sceneCenter
-            }
-            return nil
-        }
+        // A miss closer in keeps the current pivot (the user may have panned away on purpose).
+        guard let hitPoint = hit?.point else { return nil }
 
         // Fully zoomed in: use raycast hit
         if zoomRatio < config.zoomThreshold - halfBand {
