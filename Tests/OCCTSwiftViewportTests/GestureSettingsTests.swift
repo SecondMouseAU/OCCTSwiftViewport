@@ -153,6 +153,25 @@ struct GestureSettingsTests {
         #expect(isClose(simd_length(vc.cameraState.pivot), 1, 1e-3))
     }
 
+    @Test("A .focusOnPoint double-tap skips geometry removed by a section plane (#163)")
+    func doubleTapFocusSkipsClippedGeometry() {
+        let vc = controller(
+            GestureConfiguration(doubleTap: .focusOnPoint, doubleClick: .focusOnPoint))
+        vc.cameraController.animateTo(
+            CameraState(rotation: StandardView.front.rotation, distance: 10, pivot: .zero),
+            duration: 0)
+        vc.inputSceneBodies = [.box(id: "box", width: 2, height: 2, depth: 2)]
+        // Keep only the half-space on the far side of the box centre from the camera, so the
+        // near face is cut away and the tap must land on the far face instead.
+        let toCamera = simd_normalize(vc.cameraState.position - vc.cameraState.pivot)
+        vc.clipPlanes = [ClipPlane(normal: -toCamera, distance: 0)]
+        vc.dispatch(.tap(ndc: .zero, count: 2))
+        _ = vc.cameraController.advance(by: 1)
+        let pivot = vc.cameraState.pivot
+        #expect(isClose(simd_length(pivot), 1, 1e-3))
+        #expect(simd_dot(pivot, toCamera) < 0, "focused on the clipped near face: \(pivot)")
+    }
+
     @Test("A .focusOnPoint double-tap on empty space does nothing")
     func doubleTapFocusMiss() {
         let vc = controller(
