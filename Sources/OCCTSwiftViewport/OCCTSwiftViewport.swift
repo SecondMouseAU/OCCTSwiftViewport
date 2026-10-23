@@ -31,6 +31,7 @@ public typealias _ViewportController = ViewportController
 public typealias _ViewportBody = ViewportBody
 public typealias _ViewportArc = ViewportArc
 public typealias _ArcSampling = ArcSampling
+public typealias _PrimitiveUpAxis = PrimitiveUpAxis
 public typealias _BodyPrimitiveKind = BodyPrimitiveKind
 public typealias _RenderLayer = RenderLayer
 public typealias _PickLayer = PickLayer

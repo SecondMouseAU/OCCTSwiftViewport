@@ -59,7 +59,7 @@ private func deinterleave(_ vd: [Float]) -> (pos: [Float], nrm: [Float]) {
 }
 
 private func interleavedBodies() -> [ViewportBody] {
-    var s = ViewportBody.sphere(id: "sphere", radius: 1.4, color: bodyColor)
+    var s = ViewportBody.sphere(id: "sphere", radius: 1.4, color: bodyColor, up: .z)
     s.material = .chromedSteel   // glossy metal makes any normal error obvious
     return [s]
 }
@@ -75,14 +75,16 @@ private func directBodies() -> [ViewportBody] {
                                          material: .chromedSteel)
     sphere.isPickable = true
 
-    // Small overlay-layer direct body, offset up-right, drawn always-on-top.
-    let refBox = ViewportBody.box(id: "overlay", width: 0.7, height: 0.7, depth: 0.7, color: overlayColor)
+    // Small overlay-layer direct body, offset right (+X) and up (+Z, the viewport's up axis;
+    // issue #169), drawn always-on-top.
+    let refBox = ViewportBody.box(id: "overlay", width: 0.7, height: 0.7, depth: 0.7,
+                                  color: overlayColor, up: .z)
     let b = deinterleave(refBox.vertexData)
     var overlay = ViewportBody.directMesh(id: "overlay", positions: b.pos, normals: b.nrm,
                                           indices: refBox.indices, color: overlayColor)
     overlay.renderLayer = .overlay
     overlay.isPickable = true
-    overlay.transform = simd_float4x4(translation: SIMD3<Float>(1.6, 1.6, 0))
+    overlay.transform = simd_float4x4(translation: SIMD3<Float>(1.6, 0, 1.6))
 
     return [sphere, overlay]
 }

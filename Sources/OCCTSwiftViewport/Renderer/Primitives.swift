@@ -2,6 +2,9 @@
 // ViewportKit
 //
 // Procedural geometry generators for common primitives.
+//
+// Each factory builds its geometry Y-up and then rotates it onto `up` (see PrimitiveUpAxis.swift).
+// The default stays `.y` for source compatibility; pass `.z` for the viewport's Z-up world.
 
 import simd
 
@@ -9,21 +12,26 @@ extension ViewportBody {
 
     // MARK: - Box
 
-    /// Creates a box with flat-shaded faces.
+    /// Creates a box with flat-shaded faces, centered at the origin.
+    ///
+    /// `height` runs along `up`. With the default `up: .y`, `width`/`height`/`depth` are the
+    /// X/Y/Z extents; with `up: .z` (the viewport's Z-up world) they are the X/Z/Y extents.
     ///
     /// - Parameters:
     ///   - id: Unique identifier
-    ///   - width: X-axis extent
-    ///   - height: Y-axis extent
-    ///   - depth: Z-axis extent
+    ///   - width: Extent along X (along Y when `up` is `.x`)
+    ///   - height: Extent along `up`
+    ///   - depth: Extent along Z (along Y when `up` is `.z`)
     ///   - color: RGBA colour
+    ///   - up: The axis `height` runs along. Defaults to `.y` for source compatibility.
     /// - Returns: A ViewportBody containing box geometry
     public static func box(
         id: String,
         width: Float = 1,
         height: Float = 1,
         depth: Float = 1,
-        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+        up: PrimitiveUpAxis = .y
     ) -> ViewportBody {
         let hw = width * 0.5
         let hh = height * 0.5
@@ -118,34 +126,39 @@ extension ViewportBody {
         // 6 faces, 2 triangles each → face indices [0,0,1,1,2,2,3,3,4,4,5,5]
         let faceIndices: [Int32] = (0..<6).flatMap { face in [Int32(face), Int32(face)] }
 
+        up.orient(vertexData: &verts)
         return ViewportBody(
-            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
-            color: color)
+            id: id, vertexData: verts, indices: indices, edges: up.orient(edges: edges),
+            faceIndices: faceIndices, color: color)
     }
 
     // MARK: - Cylinder
 
-    /// Creates a cylinder along the Y axis.
+    /// Creates a cylinder centered at the origin whose axis runs along `up`.
     ///
     /// - Parameters:
     ///   - id: Unique identifier
     ///   - radius: Cylinder radius
-    ///   - height: Cylinder height
+    ///   - height: Cylinder height, measured along `up`
     ///   - segments: Number of radial segments
     ///   - color: RGBA colour
+    ///   - up: The cylinder's axis. Defaults to `.y` for source compatibility; pass `.z` for an
+    ///     upright cylinder in the viewport's Z-up world.
     /// - Returns: A ViewportBody containing cylinder geometry
     public static func cylinder(
         id: String,
         radius: Float = 0.5,
         height: Float = 1,
         segments: Int = 64,
-        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+        up: PrimitiveUpAxis = .y
     ) -> ViewportBody {
         let hh = height * 0.5
         var verts: [Float] = []
         var indices: [UInt32] = []
         var edges: [[SIMD3<Float>]] = []
 
+        // Triangles wind counter-clockwise seen from outside, like the box and OCCT meshes.
         // --- Side ---
         let sideStart = UInt32(verts.count / 6)
         for i in 0...segments {
@@ -166,7 +179,7 @@ extension ViewportBody {
             let br = sideStart + (i + 1) * 2
             let tl = bl + 1
             let tr = br + 1
-            indices.append(contentsOf: [bl, br, tr, bl, tr, tl])
+            indices.append(contentsOf: [bl, tr, br, bl, tl, tr])
         }
 
         // --- Top cap ---
@@ -178,7 +191,7 @@ extension ViewportBody {
             verts.append(contentsOf: [cos(angle) * radius, hh, sin(angle) * radius, 0, 1, 0])
         }
         for i in 0..<UInt32(segments) {
-            indices.append(contentsOf: [topCenterIdx, topRingStart + i, topRingStart + i + 1])
+            indices.append(contentsOf: [topCenterIdx, topRingStart + i + 1, topRingStart + i])
         }
 
         // --- Bottom cap ---
@@ -190,7 +203,7 @@ extension ViewportBody {
             verts.append(contentsOf: [cos(angle) * radius, -hh, sin(angle) * radius, 0, -1, 0])
         }
         for i in 0..<UInt32(segments) {
-            indices.append(contentsOf: [botCenterIdx, botRingStart + i + 1, botRingStart + i])
+            indices.append(contentsOf: [botCenterIdx, botRingStart + i, botRingStart + i + 1])
         }
 
         // --- Edges ---
@@ -207,7 +220,7 @@ extension ViewportBody {
         edges.append(topRing)
         edges.append(bottomRing)
 
-        // Vertical lines (every 4th segment)
+        // Vertical lines, every (segments / 8)th segment: 8 when segments is a multiple of 8
         let vertStep = max(1, segments / 8)
         for i in stride(from: 0, to: segments, by: vertStep) {
             let angle = Float(i) / Float(segments) * 2.0 * .pi
@@ -222,14 +235,15 @@ extension ViewportBody {
         faceIndices.append(contentsOf: Array(repeating: Int32(1), count: segments))  // top cap
         faceIndices.append(contentsOf: Array(repeating: Int32(2), count: segments))  // bottom cap
 
+        up.orient(vertexData: &verts)
         return ViewportBody(
-            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
-            color: color)
+            id: id, vertexData: verts, indices: indices, edges: up.orient(edges: edges),
+            faceIndices: faceIndices, color: color)
     }
 
     // MARK: - Sphere
 
-    /// Creates a UV sphere.
+    /// Creates a UV sphere centered at the origin whose poles lie on `up`.
     ///
     /// - Parameters:
     ///   - id: Unique identifier
@@ -237,13 +251,16 @@ extension ViewportBody {
     ///   - segments: Number of longitudinal segments
     ///   - rings: Number of latitudinal rings
     ///   - color: RGBA colour
+    ///   - up: The pole axis; the equator edge ring lies in the plane perpendicular to it.
+    ///     Defaults to `.y` for source compatibility.
     /// - Returns: A ViewportBody containing sphere geometry
     public static func sphere(
         id: String,
         radius: Float = 0.5,
         segments: Int = 48,
         rings: Int = 32,
-        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0)
+        color: SIMD4<Float> = SIMD4<Float>(0.8, 0.8, 0.8, 1.0),
+        up: PrimitiveUpAxis = .y
     ) -> ViewportBody {
         var verts: [Float] = []
         var indices: [UInt32] = []
@@ -268,7 +285,7 @@ extension ViewportBody {
             }
         }
 
-        // Generate indices
+        // Generate indices (counter-clockwise seen from outside)
         let vertsPerRow = UInt32(segments + 1)
         for ring in 0..<UInt32(rings) {
             for seg in 0..<UInt32(segments) {
@@ -277,7 +294,7 @@ extension ViewportBody {
                 let bl = tl + vertsPerRow
                 let br = bl + 1
 
-                indices.append(contentsOf: [tl, bl, tr, tr, bl, br])
+                indices.append(contentsOf: [tl, tr, bl, tr, br, bl])
             }
         }
 
@@ -311,8 +328,9 @@ extension ViewportBody {
         let triangleCount = indices.count / 3
         let faceIndices = Array(repeating: Int32(0), count: triangleCount)
 
+        up.orient(vertexData: &verts)
         return ViewportBody(
-            id: id, vertexData: verts, indices: indices, edges: edges, faceIndices: faceIndices,
-            color: color)
+            id: id, vertexData: verts, indices: indices, edges: up.orient(edges: edges),
+            faceIndices: faceIndices, color: color)
     }
 }

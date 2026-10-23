@@ -170,7 +170,7 @@ struct MyViewport: View {
             showScaleBar: false
         )
     )
-    @State private var bodies: [ViewportBody] = [.box()]
+    @State private var bodies: [ViewportBody] = [.box(id: "box")]
 
     var body: some View {
         GeometryReader { geo in

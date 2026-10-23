@@ -73,7 +73,7 @@ import OCCTSwiftViewport
 struct ContentView: View {
     @StateObject private var controller = ViewportController()
     @State private var bodies: [ViewportBody] = [
-        .box(size: 1, color: .gray)
+        .box(id: "box", up: .z)  // 1×1×1 grey box; `up: .z` matches the Z-up viewport
     ]
 
     var body: some View {

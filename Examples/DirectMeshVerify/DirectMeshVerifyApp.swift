@@ -54,32 +54,38 @@ private func translation(_ t: SIMD3<Float>) -> simd_float4x4 {
                   SIMD4<Float>(t.x, t.y, t.z, 1))
 }
 
+/// The viewport is Z-up (issue #169): every body is built with `up: .z` and lifted along +Z so it
+/// rests on the XY grid.
 private func directBodies() -> [ViewportBody] {
     let steel = SIMD4<Float>(0.55, 0.72, 0.95, 1)
     let brass = SIMD4<Float>(0.85, 0.68, 0.28, 1)
     let green = SIMD4<Float>(0.35, 0.80, 0.45, 1)
     let orange = SIMD4<Float>(1.0, 0.55, 0.15, 1)
 
-    var sphere = direct(from: ViewportBody.sphere(id: "s", radius: 1.0, segments: 40, rings: 24, color: steel),
+    var sphere = direct(from: ViewportBody.sphere(id: "s", radius: 1.0, segments: 40, rings: 24,
+                                                  color: steel, up: .z),
                         id: "direct-sphere", color: steel, material: .chromedSteel)
-    sphere.transform = translation(SIMD3<Float>(-2.6, 1.0, 0))
+    sphere.transform = translation(SIMD3<Float>(-2.6, 0, 1.0))
     sphere.isPickable = true
 
-    var cyl = direct(from: ViewportBody.cylinder(id: "c", radius: 0.7, height: 2.0, segments: 40, color: brass),
+    var cyl = direct(from: ViewportBody.cylinder(id: "c", radius: 0.7, height: 2.0, segments: 40,
+                                                 color: brass, up: .z),
                      id: "direct-cylinder", color: brass, material: .brass)
-    cyl.transform = translation(SIMD3<Float>(0, 1.0, 0))
+    cyl.transform = translation(SIMD3<Float>(0, 0, 1.0))
     cyl.isPickable = true
 
-    var box = direct(from: ViewportBody.box(id: "b", width: 1.4, height: 1.4, depth: 1.4, color: green),
+    var box = direct(from: ViewportBody.box(id: "b", width: 1.4, height: 1.4, depth: 1.4,
+                                            color: green, up: .z),
                      id: "direct-box", color: green)
-    box.transform = translation(SIMD3<Float>(2.6, 0.7, 0))
+    box.transform = translation(SIMD3<Float>(2.6, 0, 0.7))
     box.isPickable = true
 
-    var overlay = direct(from: ViewportBody.box(id: "o", width: 0.6, height: 0.6, depth: 0.6, color: orange),
+    var overlay = direct(from: ViewportBody.box(id: "o", width: 0.6, height: 0.6, depth: 0.6,
+                                                color: orange, up: .z),
                          id: "direct-overlay", color: orange)
     overlay.renderLayer = .overlay
     overlay.isPickable = true
-    overlay.transform = translation(SIMD3<Float>(0, 2.6, 0))
+    overlay.transform = translation(SIMD3<Float>(0, 0, 2.6))
 
     return [sphere, cyl, box, overlay]
 }
