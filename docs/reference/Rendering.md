@@ -198,7 +198,7 @@ Thrown by `OffscreenRenderer.renderToPNG(bodies:url:options:)`.
 public final class OffscreenRenderer: Sendable
 ```
 
-Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1) are deferred to a back-to-front sorted pass. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
+Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1, or every body in `.xray`) have their surfaces deferred to a back-to-front sorted pass; their edges still draw. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 

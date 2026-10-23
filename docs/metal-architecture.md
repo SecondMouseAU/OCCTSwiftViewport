@@ -424,8 +424,8 @@ One draw call renders all 961 grid dots via instancing. The instance buffer cont
 | `.shaded`          | Shaded triangles                                              |
 | `.shadedWithEdges` | Shaded triangles, then wireframe overlay with depth bias      |
 | `.flat`            | Shaded triangles with flat (face) normals instead of smooth   |
-| `.xray`            | X-ray pass (transparent, no depth write), then wireframe      |
-| `.rendered`        | Same as shaded (no PBR needed for CAD)                        |
+| `.xray`            | Wireframe, then every surface in the sorted translucent pass (no depth write) |
+| `.rendered`        | Same as shaded                                                |
 
 ### Buffer Management
 

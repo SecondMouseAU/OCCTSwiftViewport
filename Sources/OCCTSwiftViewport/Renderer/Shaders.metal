@@ -34,8 +34,9 @@ struct Uniforms {
                                        // z = backgroundExposure, w = hasEnvMap (>0.5)
     float4   clipPlanes[4];            // xyz = normal, w = distance (dot(N,P)+w < 0 → clip)
     uint     clipPlaneCount;           // number of active clip planes (0–4)
-    uint     unlit;                    // 1 = unlit/flat-colour (skip lighting + tone map)
-    float2   _clipPad;                 // padding to 16-byte alignment
+    uint     unlit;                    // 1 = unlit/flat-colour (skip lighting + tone map),
+                                       // 2 = faceted (light with per-triangle face normals)
+    float2   _clipPad;                // padding to 16-byte alignment
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).
@@ -297,7 +298,7 @@ fragment ShadedFragmentOut shaded_fragment(
     // skipping all lighting, ambient, shadows, fresnel, curvature and tone mapping —
     // so vivid diagnostic colours stay faithful and distinguishable. Clip planes and
     // selection tint still apply.
-    if (uniforms.unlit != 0u) {
+    if (uniforms.unlit == 1u) {
         float3 flatColor = bodyUniforms.color.rgb;
         if (bodyUniforms.isSelected == 1) {
             flatColor = mix(flatColor, float3(0.3, 0.5, 1.0), 0.15);
@@ -310,6 +311,18 @@ fragment ShadedFragmentOut shaded_fragment(
     }
 
     float3 N = normalize(in.worldNormal);
+    float3 viewN = in.viewNormal;
+    // Faceted mode (DisplayMode.flat): light each triangle with its own face normal, rebuilt
+    // from the screen-space derivatives of the world position, which are constant across a
+    // triangle. Oriented to the interpolated normal's side so mesh winding doesn't matter.
+    if (uniforms.unlit == 2u) {
+        float3 faceN = cross(dfdx(in.worldPosition), dfdy(in.worldPosition));
+        if (length_squared(faceN) > 1e-20) {
+            faceN = normalize(faceN);
+            N = dot(faceN, N) < 0.0 ? -faceN : faceN;
+            viewN = (uniforms.viewMatrix * float4(N, 0.0)).xyz;
+        }
+    }
     float3 V = normalize(uniforms.cameraPosition.xyz - in.worldPosition);
     float NdotV = max(dot(N, V), 0.001);
 
@@ -476,7 +489,9 @@ fragment ShadedFragmentOut shaded_fragment(
     // Uses fragment derivatives of the world normal to detect surface curvature.
     // Suppressed at mesh boundaries where derivatives are discontinuous.
     // shadowParams2.z > 0.5 = debug disable curvature
-    if (uniforms.shadowParams2.z < 0.5) {
+    // Skipped in faceted mode: a face normal has no curvature inside a triangle, and its
+    // derivatives only spike along the seams.
+    if (uniforms.shadowParams2.z < 0.5 && uniforms.unlit != 2u) {
         float3 dx = dfdx(N);
         float3 dy = dfdy(N);
         float derivMag = length(dx) + length(dy);
@@ -497,7 +512,7 @@ fragment ShadedFragmentOut shaded_fragment(
 
     // Matcap
     if (matcapBlend > 0.001) {
-        float3 vn = normalize(in.viewNormal);
+        float3 vn = normalize(viewN);
         float2 matcapUV = vn.xy * 0.5 + 0.5;
         constexpr sampler matcapSampler(filter::linear);
         float3 matcapColor = matcapTexture.sample(matcapSampler, matcapUV).rgb;

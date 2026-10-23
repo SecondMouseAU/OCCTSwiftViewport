@@ -518,7 +518,8 @@ public final class OffscreenRenderer: Sendable {
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
                 iblParams: iblParams,
-                unlit: options.displayMode == .unlit
+                unlit: options.displayMode == .unlit,
+                flatShading: !options.displayMode.usesSmoothShading
             )
         }
 
@@ -649,9 +650,14 @@ public final class OffscreenRenderer: Sendable {
                 buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
 
             // Defer translucent mesh bodies to the transparent pass.
-            if body.renderLayer == .geometry, body.effectiveMaterial.opacity < 1.0, hasMesh {
+            // Only the surface is deferred: the body's edges still draw below, so a translucent
+            // body keeps its edges (and `.xray`, which makes every surface translucent, has them).
+            let defersSurface =
+                body.renderLayer == .geometry && hasMesh
+                && displayMode.surfaceOpacity(forMaterialOpacity: body.effectiveMaterial.opacity)
+                    < 1.0
+            if defersSurface {
                 transparentBodies.append((body, buffers))
-                continue
             }
 
             var uniforms = makeUniforms()
@@ -661,7 +667,7 @@ public final class OffscreenRenderer: Sendable {
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
             // Shaded
-            if displayMode.showsSurfaces, hasMesh, let vb = buffers.vertexBuffer,
+            if displayMode.showsSurfaces, hasMesh, !defersSurface, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             {
                 if let nb = buffers.normalBuffer {
@@ -762,6 +768,8 @@ public final class OffscreenRenderer: Sendable {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = t.body.transform
                 var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: 0)
+                bodyUniforms.color.w = displayMode.surfaceOpacity(
+                    forMaterialOpacity: bodyUniforms.color.w)
                 // Direct-mesh bodies (Option A) bind position@0 + normal@2 via directMeshPipeline;
                 // both pipelines share the same alpha-blend config so compositing is identical.
                 if let nb = t.buffers.normalBuffer {

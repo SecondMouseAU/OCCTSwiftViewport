@@ -30,7 +30,10 @@ controller.displayMode = .shadedWithEdges
 
 The `showsSurfaces`, `showsEdges`, `usesSmoothShading`, and `usesTransparency`
 properties on `DisplayMode` expose these flags programmatically, useful if you
-are building a toolbar or binding a picker.
+are building a toolbar or binding a picker. Both renderers read them, and the
+GPU pick pass follows the Surfaces and Edges columns: hidden faces and edges
+can't be picked (see
+[Picking](../../reference/Picking.md#display-mode-and-pick-content)).
 
 ```swift
 // Show the mode name in a label
@@ -69,9 +72,10 @@ both silhouette and internal topology simultaneously. Keyboard shortcut: **E**.
 
 ### `.flat`
 
-Shaded surfaces with flat (face-constant) normals — no smooth interpolation
-across triangles. Useful for inspecting faceting, reviewing mesh density, or
-achieving a cel-shaded aesthetic.
+Shaded surfaces lit with each triangle's face normal instead of the
+interpolated vertex normals, so every facet of the tessellation shows. Lights,
+materials, shadows and IBL are the same as `.shaded`. Useful for inspecting
+faceting or reviewing mesh density.
 
 ### `.unlit` — diagnostic / debug renders
 
@@ -103,16 +107,19 @@ controller.displayMode = .unlit
 
 ### `.xray`
 
-Transparent surface fill with edges, so internal structure is visible through
-the model. `usesTransparency` is `true` only for this mode. Keyboard shortcut:
-**X**.
+See-through surfaces with edges, so internal structure and bodies behind
+others show through the model. Every surface is drawn translucent, at no more
+than `DisplayMode.xraySurfaceOpacity` (0.4), in the sorted translucent pass that
+bodies with opacity below 1 use in every mode; edges are drawn opaque.
+`usesTransparency` is `true` only for this mode. Surfaces and edges both stay
+pickable (the nearest surface wins). Keyboard shortcut: **X**.
 
 ### `.rendered`
 
-Nominal placeholder for a full PBR / material / texture pipeline. Defined in
-the enum and accepted by `ViewportController`; the degree to which it differs
-from `.shaded` in a given release is version-dependent — check the CHANGELOG
-for the current state.
+Draws exactly like `.shaded`. The shaded path is already the full PBR
+renderer, and its quality features (IBL, shadows, SSAO, TAA) are switched by
+`LightingConfiguration` and `ViewportController`, not by the display mode.
+`.rendered` is there for apps that want to label a "final look" view.
 
 ---
 
