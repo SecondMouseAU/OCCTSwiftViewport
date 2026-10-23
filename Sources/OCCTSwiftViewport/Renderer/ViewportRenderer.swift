@@ -590,7 +590,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         guard
             let depthOnlyPipeline = RendererSharedSetup.makePipelineState(
                 device: device, label: "depth_only", library: library,
-                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_fragment",
+                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_clip_fragment",
                 depthPixelFormat: .depth32Float, vertexDescriptor: vertexDesc)
         else {
             return nil
@@ -601,7 +601,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         guard
             let depthOnlyDirectPipeline = RendererSharedSetup.makePipelineState(
                 device: device, label: "depth_only_direct", library: library,
-                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_fragment",
+                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_clip_fragment",
                 depthPixelFormat: .depth32Float, vertexDescriptor: directVertexDesc)
         else {
             return nil
@@ -753,7 +753,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let tdDesc = MTLRenderPipelineDescriptor()
             tdDesc.label = "tessellated_depth_only"
             tdDesc.vertexFunction = library.makeFunction(name: "tessellated_depth_vertex")
-            tdDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
+            tdDesc.fragmentFunction = library.makeFunction(name: "depth_only_clip_fragment")
             tdDesc.depthAttachmentPixelFormat = .depth32Float
             tdDesc.rasterSampleCount = 1
             configureTessellation(tdDesc)
@@ -861,6 +861,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             let shadedFrag = library.makeFunction(name: "shaded_fragment")!
             let depthFrag = library.makeFunction(name: "depth_only_fragment")
+            // SSAO/silhouette prepass honours section planes; the shadow map does not.
+            let depthClipFrag = library.makeFunction(name: "depth_only_clip_fragment")
             let pickFrag = library.makeFunction(name: "meshlet_pick_fragment")
 
             self.meshShaderShadedPipeline = makeMeshPipeline(
@@ -874,7 +876,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 label: "mesh_shadow"
             )
             self.meshShaderDepthOnlyPipeline = makeMeshPipeline(
-                meshFn: depthMeshFunc, fragmentFn: depthFrag,
+                meshFn: depthMeshFunc, fragmentFn: depthClipFrag,
                 colorFormat: .invalid, depthFmt: .depth32Float,
                 label: "mesh_depth_only"
             )
@@ -1925,6 +1927,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
                 mainEncoder.setVertexBytes(
                     &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
 
@@ -2020,6 +2024,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setFragmentBytes(
                     &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
                 )
+                // Section clip planes (the outline fragment discards clipped fragments).
+                var outlineUniforms = makeUniforms()
+                mainEncoder.setFragmentBytes(
+                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
                 mainEncoder.drawIndexedPrimitives(
                     type: .triangle,
                     indexCount: buffers.indexCount,
@@ -2175,6 +2183,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setMeshBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
                                 pickEncoder.setFragmentBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
                                 )
                                 pickEncoder.drawMeshThreadgroups(
@@ -2193,6 +2203,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setVertexBuffer(
                                     tess.patchDataBuffer, offset: 0, index: 0)
                                 pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
@@ -2214,6 +2226,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setVertexBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
                                 )
                                 pickEncoder.drawIndexedPrimitives(
@@ -2227,6 +2241,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setRenderPipelineState(pickShadedPipeline)
                                 pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                                 pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
@@ -2273,6 +2289,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setVertexBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
                                 )
                                 pickEncoder.drawPrimitives(
@@ -2300,6 +2318,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 body: d.body, objectIndex: d.objectIndex)
                             var arcPrimID = UInt32(truncatingIfNeeded: d.arcIndex)
                             pickEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(
                                 &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
@@ -2338,6 +2358,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                                 pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
                                 pickEncoder.setVertexBytes(
+                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
@@ -2385,6 +2407,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             }
                             pickEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             pickEncoder.setFragmentBytes(
                                 &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
@@ -2528,6 +2552,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             depthEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
                             depthEncoder.setMeshBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
+                            depthEncoder.setFragmentBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawMeshThreadgroups(
                                 MTLSize(width: ml.meshletCount, height: 1, depth: 1),
                                 threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
@@ -2541,6 +2567,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 tess.tessFactorBuffer, offset: 0, instanceStride: 0)
                             depthEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
                             depthEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawPatches(
                                 numberOfPatchControlPoints: 3,
@@ -2558,6 +2586,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             depthEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                             depthEncoder.setVertexBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setFragmentBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawIndexedPrimitives(
                                 type: .triangle,
                                 indexCount: buffers.indexCount,
@@ -2569,6 +2599,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             depthEncoder.setRenderPipelineState(depthOnlyPipeline)
                             depthEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                             depthEncoder.setVertexBytes(
+                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                            depthEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.drawIndexedPrimitives(
                                 type: .triangle,

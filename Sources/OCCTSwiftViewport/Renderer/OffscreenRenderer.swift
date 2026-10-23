@@ -688,6 +688,8 @@ public final class OffscreenRenderer: Sendable {
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
                 mainEncoder.setVertexBytes(
                     &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
 

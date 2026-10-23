@@ -199,7 +199,7 @@ Edge / wireframe intensity multiplier. `0` = invisible, `1` = default, `>1` = bo
 @Published public var clipPlanes: [ClipPlane]
 ```
 
-Active clipping planes (up to 4). Only planes with `isOn == true` are applied by the renderer each frame.
+Active clipping planes (up to 4). Only planes with `isEnabled == true` are applied by the renderer each frame. Clipped geometry is hidden from every drawn pass and from GPU picking (see `ClipPlane`).
 
 #### `measurements`
 

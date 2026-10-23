@@ -504,11 +504,25 @@ fragment ShadedFragmentOut shaded_fragment(
 
 struct PickVertexOut {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // for clip plane testing
 };
 
 struct PickFragmentOut {
     uint pickID [[color(0)]];
 };
+
+// True when `worldPosition` lies on the clipped (negative) side of any active section plane.
+// Same test the shaded/wireframe/highlight fragments run inline; the pick, depth-prepass,
+// selection-outline and point-cloud fragments call this so sections hide geometry everywhere.
+inline bool isClippedBySectionPlanes(float3 worldPosition, constant Uniforms &uniforms) {
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        float4 plane = uniforms.clipPlanes[cp];
+        if (dot(plane.xyz, worldPosition) + plane.w < 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 vertex PickVertexOut pick_vertex(
     VertexIn in [[stage_in]],
@@ -517,6 +531,7 @@ vertex PickVertexOut pick_vertex(
     PickVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
@@ -526,9 +541,11 @@ vertex PickVertexOut pick_vertex(
 //   bits 30-31 : kind        (2 bits — 0=face, 1=edge, 2=vertex)
 fragment PickFragmentOut pick_fragment(
     PickVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     uint primitiveID [[primitive_id]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (0u << 30);
     return out;
@@ -537,9 +554,11 @@ fragment PickFragmentOut pick_fragment(
 // Edge pick — kind=1.
 fragment PickFragmentOut pick_line_fragment(
     PickVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     uint primitiveID [[primitive_id]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (1u << 30);
     return out;
@@ -550,9 +569,11 @@ fragment PickFragmentOut pick_line_fragment(
 // adaptively per frame and `[[primitive_id]]` would only give a segment index.
 fragment PickFragmentOut pick_arc_fragment(
     PickVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     constant uint &arcPrimID [[buffer(3)]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((arcPrimID & 0x3FFFu) << 16) | (1u << 30);
     return out;
@@ -563,6 +584,7 @@ fragment PickFragmentOut pick_arc_fragment(
 struct PickPointVertexOut {
     float4 clipPosition [[position]];
     float pointSize [[point_size]];
+    float3 worldPosition;    // for clip plane testing
 };
 
 vertex PickPointVertexOut pick_point_vertex(
@@ -573,15 +595,18 @@ vertex PickPointVertexOut pick_point_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
     out.pointSize = 8.0; // 8x8 px clickable footprint
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
 // Vertex pick — kind=2.
 fragment PickFragmentOut pick_point_fragment(
     PickPointVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     uint primitiveID [[primitive_id]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (2u << 30);
     return out;
@@ -612,6 +637,7 @@ struct VisiblePointVertexOut {
     float4 clipPosition [[position]];
     float  pointSize    [[point_size]];
     float4 color;
+    float3 worldPosition;    // for clip plane testing
 };
 
 vertex VisiblePointVertexOut visible_point_vertex(
@@ -625,6 +651,7 @@ vertex VisiblePointVertexOut visible_point_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(positions[vid], 1.0);
     float4 clipPos = uniforms.viewProjectionMatrix * worldPos;
     out.clipPosition = clipPos;
+    out.worldPosition = worldPos.xyz;
 
     // Convert world-space radius to a screen-space pixel diameter. The
     // factor `pxPerWorldFactor / clipPos.w` gives pixels per world unit at
@@ -643,8 +670,11 @@ vertex VisiblePointVertexOut visible_point_vertex(
 
 fragment float4 visible_point_fragment(
     VisiblePointVertexOut in [[stage_in]],
-    float2 pointCoord [[point_coord]]
+    float2 pointCoord [[point_coord]],
+    constant Uniforms &uniforms [[buffer(2)]]
 ) {
+    // Section planes clip the whole sprite by its centre point.
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     // Mask to a disk inscribed in the [[point_coord]] unit square.
     float2 c = pointCoord - float2(0.5);
     if (dot(c, c) > 0.25) discard_fragment();
@@ -662,6 +692,7 @@ struct SelectionOutlineParams {
 
 struct SelectionOutlineVertexOut {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // un-expanded surface point, for clip plane testing
 };
 
 // Renders geometry slightly scaled along normals for the outline effect
@@ -675,6 +706,9 @@ vertex SelectionOutlineVertexOut selection_outline_vertex(
 
     SelectionOutlineVertexOut out;
     out.clipPosition = params.viewProjectionMatrix * worldPos;
+    // Clip against the surface point, not the normal-expanded one, so the outline is cut
+    // exactly where the section cuts the body.
+    out.worldPosition = (params.modelMatrix * float4(in.position, 1.0)).xyz;
     return out;
 }
 
@@ -684,8 +718,10 @@ struct SelectionOutlineFragmentOut {
 
 fragment SelectionOutlineFragmentOut selection_outline_fragment(
     SelectionOutlineVertexOut in [[stage_in]],
-    constant SelectionOutlineParams &params [[buffer(1)]]
+    constant SelectionOutlineParams &params [[buffer(1)]],
+    constant Uniforms &uniforms [[buffer(2)]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     SelectionOutlineFragmentOut out;
     out.color = float4(params.outlineColor, 1.0);
     return out;
@@ -721,11 +757,22 @@ vertex PickVertexOut depth_only_vertex(
     PickVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
-// Empty fragment — only depth is written
+// Empty fragment — only depth is written. Used by the shadow-map pipelines, whose vertex
+// stages carry no world position (and whose ShadowUniforms carry no clip planes).
 fragment void depth_only_fragment() {
+}
+
+// Depth-only fragment for the SSAO/silhouette prepass: honours section clip planes so the
+// prepass depth matches what the shaded pass actually drew.
+fragment void depth_only_clip_fragment(
+    PickVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]]
+) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
 }
 
 // MARK: - Wireframe Pipeline
@@ -1822,6 +1869,7 @@ vertex PickVertexOut tessellated_depth_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     PickVertexOut out;
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
@@ -1833,6 +1881,7 @@ struct TessPatchPickVertexOut {
     // patches[gid] for triangle gid) and drawn with patchStart 0 and no patch index buffer, so
     // [[patch_id]] is the triangle index PickResult.triangleIndex promises (issue #136, H7).
     uint triangleIndex [[flat]];
+    float3 worldPosition;    // for clip plane testing
 };
 
 [[patch(triangle, 3)]]
@@ -1856,6 +1905,7 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
     TessPatchPickVertexOut out;
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
     out.triangleIndex = patchID;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
@@ -1864,8 +1914,10 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
 // Kind tag stays 0 (face). primitiveID truncated to 14 bits to match decoder layout.
 fragment PickFragmentOut tessellated_pick_fragment(
     TessPatchPickVertexOut in [[stage_in]],
+    constant Uniforms& uniforms [[buffer(1)]],
     constant BodyUniforms& bodyUniforms [[buffer(2)]]
 ) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((in.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
     return out;
@@ -2043,6 +2095,7 @@ void meshlet_shadow_mesh(
 
 struct DepthMeshVertex {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // for clip plane testing (depth_only_clip_fragment)
 };
 
 using DepthMeshOutput = mesh<DepthMeshVertex, void, 64, 64, topology::triangle>;
@@ -2067,6 +2120,7 @@ void meshlet_depth_mesh(
         float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
         DepthMeshVertex v;
         v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        v.worldPosition = worldPos.xyz;
         output.set_vertex(tid, v);
     }
 
@@ -2082,6 +2136,7 @@ void meshlet_depth_mesh(
 
 struct PickMeshVertex {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // for clip plane testing (meshlet_pick_fragment)
 };
 
 // In a mesh pipeline [[primitive_id]] is the meshlet-local primitive (0-63), so the global
@@ -2113,6 +2168,7 @@ void meshlet_pick_mesh(
         float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
         PickMeshVertex v;
         v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        v.worldPosition = worldPos.xyz;
         output.set_vertex(tid, v);
     }
 
@@ -2135,8 +2191,10 @@ struct PickMeshFragmentIn {
 // Face pick for the mesh-shader path — kind=0, global triangle index from the primitive data.
 fragment PickFragmentOut meshlet_pick_fragment(
     PickMeshFragmentIn in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]]
 ) {
+    if (isClippedBySectionPlanes(in.vert.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((in.prim.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
     return out;

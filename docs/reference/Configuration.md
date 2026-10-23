@@ -851,6 +851,8 @@ config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 
 
 `ClipPlane` defines a half-space clipping plane for section views. It is a `Sendable`, `Equatable` value type. Fragments where `dot(normal, point) + distance < 0` are discarded by the Metal shader. Pass clip planes to `ViewportController.clipPlanes` to activate them.
 
+Every pass that draws scene geometry honours the planes: shaded surfaces, edges, arcs, highlights, point clouds, the selection outline, the SSAO/silhouette depth prepass and the GPU pick pass, so clipped geometry is neither visible nor pickable. The shadow map, CPU `SceneRaycast` and `OffscreenRenderer` do not apply clip planes.
+
 The plane equation is:
 
 ```

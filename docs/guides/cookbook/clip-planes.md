@@ -213,7 +213,7 @@ controller.clipPlanes = [
 
 ## How it works in the shader
 
-Every shaded, wireframe, and point fragment shader evaluates:
+Every fragment shader that draws scene geometry evaluates:
 
 ```metal
 for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -222,6 +222,23 @@ for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
         discard_fragment();
 }
 ```
+
+That covers the shaded surfaces (including the tessellated and mesh-shader paths),
+wireframe and quad-expanded edges, analytic arcs, per-triangle highlights,
+point clouds, the selection outline, the SSAO/silhouette depth prepass, and the
+GPU pick pass for faces, edges, arcs and vertices. Clipped-away geometry is
+therefore not drawn, not outlined, does not darken what is behind it, and
+**cannot be picked**: a click on a sectioned model hits the visible geometry
+behind the cut.
+
+Not covered:
+
+- **Shadows.** The shadow-map pass ignores clip planes, so clipped geometry still
+  casts shadows onto what remains.
+- **CPU raycasting.** `SceneRaycast` (and the dynamic pivot that uses it) tests
+  the full meshes, clipped parts included.
+- **`OffscreenRenderer`.** `OffscreenRenderOptions` has no clip planes, so headless
+  renders are never sectioned.
 
 Clipping is done in **world space** after the model transform has been applied,
 so per-body transforms and clip planes interact correctly — a rotated or
@@ -236,7 +253,7 @@ read; unused slots are zeroed.
 ## Tips
 
 - **Performance:** Each additional active plane adds one dot-product per
-  fragment per pass (shaded, wireframe, pick). With 4 planes this is negligible
+  fragment per pass (shaded, wireframe, depth prepass, pick, ...). With 4 planes this is negligible
   on Apple GPU hardware.
 - **Cap faces:** Clip planes cut geometry but do not generate cap faces. If you
   need filled caps on the cut cross-section, composite a filled polygon
