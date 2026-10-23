@@ -158,6 +158,18 @@ public enum RenderingQuality: Sendable {
     case maximum
 }
 
+/// How the uniform tessellation factor is chosen when `adaptiveTessellation` is `false`.
+public enum UniformTessellationFactor: Sendable, Equatable {
+    /// Scale the factor to system load, between `minimum` and `tessellationMaxFactor`.
+    ///
+    /// The live renderer lowers the factor when the smoothed GPU frame time nears the frame
+    /// budget (`1 / preferredFramesPerSecond`), under thermal pressure, or in Low Power Mode,
+    /// and raises it again when there is headroom, with hysteresis so it does not oscillate.
+    case loadAdaptive(minimum: Int = 4)
+    /// Always tessellate at this factor (clamped to `1...tessellationMaxFactor`).
+    case fixed(Int)
+}
+
 /// Master configuration for a viewport.
 ///
 /// ViewportConfiguration aggregates all settings for camera behavior,
@@ -340,10 +352,17 @@ public struct ViewportConfiguration: Sendable {
     ///
     /// `true` sizes each patch's factors from its projected edge length (target ~4 px per edge)
     /// and surface curvature, capped at `tessellationMaxFactor`. `false` tessellates every patch
-    /// uniformly at `tessellationMaxFactor`, regardless of size on screen; that costs roughly
-    /// `tessellationMaxFactor²` triangles per input triangle, so keep the factor low when
-    /// turning adaptivity off.
+    /// uniformly, regardless of size on screen, at the factor `uniformTessellationFactor`
+    /// chooses. A uniform factor `f` costs roughly `f²` triangles per input triangle.
     public var adaptiveTessellation: Bool
+
+    /// The factor used when `adaptiveTessellation` is `false` (default `.loadAdaptive()`).
+    ///
+    /// `.loadAdaptive(minimum:)` scales the factor between `minimum` and
+    /// `tessellationMaxFactor` from the measured GPU frame time, the thermal state and Low
+    /// Power Mode. `.fixed(_:)` pins it. Off-screen renders always use the configured factor
+    /// (`tessellationMaxFactor` for `.loadAdaptive`), so their output stays deterministic.
+    public var uniformTessellationFactor: UniformTessellationFactor
 
     // MARK: - Temporal Anti-Aliasing
 
@@ -398,6 +417,7 @@ public struct ViewportConfiguration: Sendable {
         renderingQuality: RenderingQuality = .standard,
         tessellationMaxFactor: Int = 32,
         adaptiveTessellation: Bool = true,
+        uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive(),
         enableTAA: Bool = false,
         taaBlendFactor: Float = 0.9,
         dynamicPivotConfiguration: DynamicPivotConfiguration = .default,
@@ -441,6 +461,7 @@ public struct ViewportConfiguration: Sendable {
         self.renderingQuality = renderingQuality
         self.tessellationMaxFactor = tessellationMaxFactor
         self.adaptiveTessellation = adaptiveTessellation
+        self.uniformTessellationFactor = uniformTessellationFactor
         self.enableTAA = enableTAA
         self.taaBlendFactor = taaBlendFactor
         self.dynamicPivotConfiguration = dynamicPivotConfiguration

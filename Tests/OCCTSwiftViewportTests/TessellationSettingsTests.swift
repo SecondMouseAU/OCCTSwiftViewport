@@ -93,11 +93,13 @@ struct TessellationSettingsTests {
     /// computed edge factors of every patch.
     @MainActor
     private static func renderFactors(
-        body: ViewportBody, camera: CameraState, adaptive: Bool = true, maxFactor: Int = 32
+        body: ViewportBody, camera: CameraState, adaptive: Bool = true, maxFactor: Int = 32,
+        uniform: UniformTessellationFactor = .loadAdaptive()
     ) -> (batch: [(TessellationBuffers, simd_float4x4)], factors: [Float])? {
         var config = ViewportConfiguration()
         config.renderingQuality = .enhanced
         config.adaptiveTessellation = adaptive
+        config.uniformTessellationFactor = uniform
         config.tessellationMaxFactor = maxFactor
         config.initialCameraState = camera
         let controller = ViewportController(configuration: config)
@@ -167,7 +169,7 @@ struct TessellationSettingsTests {
         #expect(smallSum < fullSum * 0.5, "full \(fullSum) vs scaled \(smallSum)")
     }
 
-    @Test("adaptiveTessellation = false tessellates every patch at the max factor")
+    @Test("adaptiveTessellation = false, off-screen: load-adaptive uses the max factor")
     @MainActor
     func uniformFactorsOnGPU() {
         guard MTLCreateSystemDefaultDevice() != nil else { return }
@@ -182,6 +184,24 @@ struct TessellationSettingsTests {
             return
         }
         #expect(result.factors.allSatisfy { $0 == 8 }, "factors: \(Set(result.factors))")
+    }
+
+    @Test("adaptiveTessellation = false with .fixed pins every patch to that factor")
+    @MainActor
+    func fixedUniformFactorOnGPU() {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let body = ViewportBody.box(
+            id: "b", width: 1, height: 1, depth: 1, color: SIMD4<Float>(1, 1, 1, 1))
+        guard
+            let result = Self.renderFactors(
+                body: body, camera: Self.fixedCamera(), adaptive: false, maxFactor: 32,
+                uniform: .fixed(6)),
+            !result.factors.isEmpty
+        else {
+            Issue.record("headless tessellated render failed")
+            return
+        }
+        #expect(result.factors.allSatisfy { $0 == 6 }, "factors: \(Set(result.factors))")
     }
 
     // MARK: - Meshlet source data

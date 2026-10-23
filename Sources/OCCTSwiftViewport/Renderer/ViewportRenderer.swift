@@ -243,6 +243,12 @@ struct FrameRenderTargets {
 
     /// Drawable presented when the frame's command buffer commits; `nil` off-screen.
     let presentable: (any MTLDrawable)?
+
+    /// Time available per frame, in seconds, on the live path; `nil` off-screen.
+    ///
+    /// Drives the uniform-tessellation load governor; off-screen frames leave it `nil` so they
+    /// tessellate at the configured factor and stay deterministic.
+    var frameBudget: Double?
 }
 
 // MARK: - ViewportRenderer
@@ -358,6 +364,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Per-frame factors are capped to this, since a later `tessellationMaxFactor` raise cannot
     /// exceed what the pipelines were created for.
     private let pipelineMaxTessFactor: Int
+    /// Load governor for the uniform tessellation factor (live frames only).
+    private var tessLoadGovernor = TessellationLoadGovernor()
+    /// Latest GPU frame time, fed to `tessLoadGovernor`.
+    private let gpuFrameTimes = GPUFrameTimeRecorder()
+    /// The uniform tessellation factor the last frame used (`nil` when adaptive or untessellated).
+    private(set) var lastUniformTessellationFactor: Float?
 
     // Mesh shaders (Apple9+ / M3+ / A17+)
     private let meshShaderShadedPipeline: MTLRenderPipelineState?
@@ -1206,12 +1218,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let renderPassDescriptor = view.currentRenderPassDescriptor
         else { return }
 
+        let framesPerSecond = view.preferredFramesPerSecond > 0 ? view.preferredFramesPerSecond : 60
         encodeFrame(
             into: FrameRenderTargets(
                 mainPassDescriptor: renderPassDescriptor,
                 finalColorTexture: drawable.texture,
                 size: view.drawableSize,
-                presentable: drawable
+                presentable: drawable,
+                frameBudget: 1.0 / Double(framesPerSecond)
             ))
     }
 
@@ -1431,15 +1445,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let computeEncoder = commandBuffer.makeComputeCommandEncoder()
             {
                 let config = controller.configuration
+                let maxFactor = Float(
+                    min(
+                        TessellationManager.clampedMaxFactor(config.tessellationMaxFactor),
+                        pipelineMaxTessFactor))
+                var factor = maxFactor
+                if config.adaptiveTessellation {
+                    lastUniformTessellationFactor = nil
+                } else {
+                    factor = uniformTessellationFactor(
+                        config: config, maxFactor: maxFactor, frameBudget: targets.frameBudget,
+                        commandBuffer: commandBuffer)
+                    lastUniformTessellationFactor = factor
+                }
                 tessMgr.updateTessFactors(
                     tessBuffers: tessBufferList,
                     viewProjectionMatrix: viewProjection,
                     viewportSize: SIMD2<Float>(Float(w), Float(h)),
                     adaptive: config.adaptiveTessellation,
-                    maxFactor: Float(
-                        min(
-                            TessellationManager.clampedMaxFactor(config.tessellationMaxFactor),
-                            pipelineMaxTessFactor)),
+                    maxFactor: factor,
                     encoder: computeEncoder
                 )
                 computeEncoder.endEncoding()
@@ -3051,6 +3075,38 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         return smoothedVertexData ?? body.vertexData
+    }
+
+    /// Picks this frame's uniform tessellation factor (`adaptiveTessellation == false`).
+    ///
+    /// For `.loadAdaptive` on a live frame (`frameBudget != nil`), steps the load governor with
+    /// the last measured GPU frame time, thermal state and Low Power Mode, and has this frame's
+    /// command buffer record its own GPU time. Off-screen frames use the configured factor.
+    private func uniformTessellationFactor(
+        config: ViewportConfiguration, maxFactor: Float, frameBudget: Double?,
+        commandBuffer: MTLCommandBuffer
+    ) -> Float {
+        var governed: Float?
+        if case .loadAdaptive(let minimum) = config.uniformTessellationFactor,
+            let frameBudget
+        {
+            let info = ProcessInfo.processInfo
+            tessLoadGovernor = tessLoadGovernor.step(
+                TessellationLoadSample(
+                    gpuFrameTime: gpuFrameTimes.latestFrameTime,
+                    frameBudget: frameBudget,
+                    thermalState: info.thermalState,
+                    isLowPowerModeEnabled: info.isLowPowerModeEnabled,
+                    minFactor: Float(minimum),
+                    maxFactor: maxFactor))
+            governed = tessLoadGovernor.factor
+            let recorder = gpuFrameTimes
+            commandBuffer.addCompletedHandler { @Sendable buffer in
+                recorder.record(gpuStartTime: buffer.gpuStartTime, gpuEndTime: buffer.gpuEndTime)
+            }
+        }
+        return TessellationLoadGovernor.uniformFactor(
+            policy: config.uniformTessellationFactor, maxFactor: maxFactor, governed: governed)
     }
 
     /// Collects the visible bodies' tessellation buffers with each body's model matrix, the

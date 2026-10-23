@@ -5,13 +5,13 @@ parent: API Reference
 
 # Configuration
 
-These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
+These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
 
 [`GestureConfiguration`](Input.md#gestureconfiguration) and [`DynamicPivotConfiguration`](Camera.md#dynamicpivotconfiguration) are documented on the Input and Camera pages respectively — `ViewportConfiguration` embeds them by value.
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -492,7 +492,17 @@ public var adaptiveTessellation: Bool  // default: true
 
 When `true`, the tessellation level adapts per edge to the projected screen-space length (target about 4 px per tessellated edge) and surface curvature, concentrating triangles where the mesh is coarse relative to the viewport, capped at `tessellationMaxFactor`. Projection uses each body's `transform`, so moved and scaled bodies get the right factors.
 
-When `false`, every patch is tessellated uniformly at `tessellationMaxFactor`, whatever its size on screen. That costs roughly `tessellationMaxFactor²` triangles per input triangle, so lower the factor when turning adaptivity off. Requires `renderingQuality != .standard`.
+When `false`, every patch is tessellated uniformly, whatever its size on screen, at the factor [`uniformTessellationFactor`](#uniformtessellationfactor) chooses. A uniform factor `f` costs roughly `f²` triangles per input triangle. Requires `renderingQuality != .standard`.
+
+---
+
+#### `uniformTessellationFactor`
+
+```swift
+public var uniformTessellationFactor: UniformTessellationFactor  // default: .loadAdaptive()
+```
+
+The factor used when `adaptiveTessellation == false`. See [`UniformTessellationFactor`](#uniformtessellationfactor-1).
 
 ---
 
@@ -548,6 +558,7 @@ public init(
     renderingQuality: RenderingQuality = .standard,
     tessellationMaxFactor: Int = 32,
     adaptiveTessellation: Bool = true,
+    uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive(),
     enableTAA: Bool = false,
     taaBlendFactor: Float = 0.9,
     dynamicPivotConfiguration: DynamicPivotConfiguration = .default,
@@ -656,6 +667,32 @@ if config.renderingQuality == .standard {
     config.tessellationMaxFactor = 32
     config.adaptiveTessellation = true
 }
+```
+
+---
+
+## UniformTessellationFactor
+
+```swift
+public enum UniformTessellationFactor: Sendable, Equatable {
+    case loadAdaptive(minimum: Int = 4)
+    case fixed(Int)
+}
+```
+
+How the uniform tessellation factor is chosen when `adaptiveTessellation == false`.
+
+| Case | Description |
+|---|---|
+| `.loadAdaptive(minimum:)` | Default. The live renderer scales the factor between `minimum` and `tessellationMaxFactor` to fit system load. It starts at the maximum. When the smoothed GPU frame time (measured from each frame's command buffer) rises above 85% of the frame budget (`1 / preferredFramesPerSecond`, or 1/60), it lowers the factor by 20%. Below 55% it raises the factor by 2. Between the two it holds, and after any change it holds for 30 frames, so the factor never oscillates frame to frame. Thermal state caps the ceiling: `.fair` to 75% of the maximum, `.serious` to 50%, `.critical` to `minimum`. Low Power Mode halves it. A lowered cap applies at once. |
+| `.fixed(_:)` | Always tessellate at this factor, clamped to `1...tessellationMaxFactor`. |
+
+Off-screen renders (`renderHeadless(...)`) never adapt to load: `.loadAdaptive` uses `tessellationMaxFactor` there, so the output is deterministic.
+
+```swift
+var config = ViewportConfiguration.cadHighQuality
+config.adaptiveTessellation = false
+config.uniformTessellationFactor = .loadAdaptive(minimum: 8)  // or .fixed(12) to pin it
 ```
 
 ---
