@@ -1262,7 +1262,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 inFrontOf: RendererSharedSetup.orthographicEyeBounds(
                     modelBounds: modelBounds, bodies: bodiesBinding.wrappedValue,
                     settings: gridAxisSettings, showAxes: controller.showAxes,
-                    localBounds: cachedLocalBounds(of:)))
+                    cameraState: cameraState, localBounds: cachedLocalBounds(of:)))
         }
         let viewMatrix = cameraState.viewMatrix
         let sceneBounds = GridAxisGeometry.clipBounds(
@@ -1281,7 +1281,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 capBasis: cameraState.isOrthographic
                     ? RendererSharedSetup.overlayCapBasis(
                         modelBounds: modelBounds, settings: gridAxisSettings,
-                        showAxes: controller.showAxes) : nil,
+                        showAxes: controller.showAxes, cameraState: cameraState) : nil,
                 localBounds: cachedLocalBounds(of:)))
         // As depths from the controller's eye, which the measurement overlay projects from:
         // the frame's orthographic eye may sit further back along the line of sight (#215).
@@ -1677,6 +1677,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
                 cameraState: cameraState,
+                orthographic: cameraState.isOrthographic,
                 settings: gridAxisSettings
             )
         }
@@ -1843,16 +1844,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // bodies back-to-front with depth-test on / write off, so they composite
         // over the opaque set (and over each other in sorted order).
         if displayMode.showsSurfaces, !transparentDraws.isEmpty {
-            // Depth along the line of sight in orthographic (#215).
-            func sortDepth(
-                _ d: (body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)
-            ) -> Float {
-                let localCenter = d.buffers.localBoundingBox?.center ?? SIMD3<Float>(0, 0, 0)
-                let c = d.body.transform * SIMD4<Float>(localCenter, 1)
-                return RendererSharedSetup.transparentSortDepth(
-                    center: SIMD3<Float>(c.x, c.y, c.z), cameraState: cameraState)
+            // Depth along the line of sight in orthographic (#215), each key computed once, as
+            // offscreen (#217).
+            let sorted = RendererSharedSetup.sortedBackToFront(
+                transparentDraws, cameraState: cameraState
+            ) {
+                RendererSharedSetup.worldCenter(
+                    of: $0.buffers.localBoundingBox, transform: $0.body.transform)
             }
-            let sorted = transparentDraws.sorted { sortDepth($0) > sortDepth($1) }
 
             mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
             mainEncoder.setFragmentTexture(matcapTexture, index: 0)
@@ -2774,6 +2773,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     // Auto-focus: the view depth of the world-space scene center
                     dofFocalDist = Self.autoFocusDistance(
                         bodies: bodies, cameraState: cameraState)
+                } else {
+                    // Orthographic: from the pivot, not the placed eye (#217).
+                    dofFocalDist = Self.manualFocusDistance(
+                        dofFocalDist, cameraState: cameraState)
                 }
                 var ssaoParams = SSAOParamsSwift(
                     texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
@@ -2861,6 +2864,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // A centre at or behind the eye: focus just in front of it rather than at a depth the
         // composite pass has no pixels at (0 would also mean "autofocus").
         return max(depth, 1e-3)
+    }
+
+    /// The depth from the frame's eye the composite pass focuses at for a manual
+    /// `dofFocalDistance`.
+    ///
+    /// In perspective that is `focalDistance`, measured from the eye. In orthographic the eye is
+    /// only placed in front of the scene, and moves back whenever the scene's bounds grow, so a
+    /// distance from it put the focal plane wherever the eye happened to be (#217). There
+    /// `focalDistance` is measured from a reference eye `PivotStrategy.zoomDistance(of:)` in
+    /// front of the pivot, the distance a perspective camera showing the same height would sit
+    /// at, so the focal plane stays put as the eye moves and a matching perspective framing
+    /// focuses on the same plane. A focal plane behind the eye focuses just in front of it.
+    nonisolated static func manualFocusDistance(
+        _ focalDistance: Float, cameraState: CameraState
+    ) -> Float {
+        guard cameraState.isOrthographic else { return focalDistance }
+        let pastPivot = focalDistance - PivotStrategy.zoomDistance(of: cameraState)
+        return max(cameraState.distance + pastPivot, 1e-3)
     }
 
     /// The mean of the visible geometry bodies' world-space bounding-box centres, or `nil`.

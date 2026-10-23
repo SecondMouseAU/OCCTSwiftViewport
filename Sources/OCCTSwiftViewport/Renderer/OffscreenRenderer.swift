@@ -739,7 +739,7 @@ public final class OffscreenRenderer: Sendable {
         let cameraState = Self.renderCamera(options: options) {
             RendererSharedSetup.orthographicEyeBounds(
                 modelBounds: modelBounds, bodies: bodies, settings: gridAxisSettings,
-                showAxes: options.showAxes)
+                showAxes: options.showAxes, cameraState: options.cameraState)
         }
         let viewMatrix = cameraState.viewMatrix
         let sceneBounds = GridAxisGeometry.clipBounds(
@@ -757,7 +757,7 @@ public final class OffscreenRenderer: Sendable {
                 capBasis: Self.isOrthographic(options)
                     ? RendererSharedSetup.overlayCapBasis(
                         modelBounds: modelBounds, settings: gridAxisSettings,
-                        showAxes: options.showAxes) : nil))
+                        showAxes: options.showAxes, cameraState: options.cameraState) : nil))
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
 
@@ -1032,6 +1032,7 @@ public final class OffscreenRenderer: Sendable {
                 buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
                 cameraState: options.cameraState,
+                orthographic: Self.isOrthographic(options),
                 settings: gridAxisSettings
             )
         }
@@ -1261,17 +1262,12 @@ public final class OffscreenRenderer: Sendable {
             // key is computed once: `boundingBox` scans the body's vertices.
             var sortCamera = cameraState
             sortCamera.isOrthographic = Self.isOrthographic(options)
-            let sorted =
-                transparentBodies
-                .map { t in
-                    let localCenter = t.body.boundingBox?.center ?? SIMD3<Float>(0, 0, 0)
-                    let c = t.body.transform * SIMD4<Float>(localCenter, 1)
-                    let depth = RendererSharedSetup.transparentSortDepth(
-                        center: SIMD3<Float>(c.x, c.y, c.z), cameraState: sortCamera)
-                    return (t: t, depth: depth)
-                }
-                .sorted { $0.depth > $1.depth }
-                .map(\.t)
+            let sorted = RendererSharedSetup.sortedBackToFront(
+                transparentBodies, cameraState: sortCamera
+            ) {
+                RendererSharedSetup.worldCenter(
+                    of: $0.body.boundingBox, transform: $0.body.transform)
+            }
 
             for t in sorted {
                 var uniforms = makeUniforms()

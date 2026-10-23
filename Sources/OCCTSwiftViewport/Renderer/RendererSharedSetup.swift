@@ -677,6 +677,10 @@ enum RendererSharedSetup {
     /// `dotPipeline` is the `grid_vertex` point-sprite pipeline (`.dots`); `linePipeline` the
     /// alpha-blended `axis_vertex` pipeline (`.plane`). `fillDepthState` (depth test on, write
     /// off) is used for the `.plane` fill only, after which `depthState` is restored.
+    ///
+    /// `orthographic` (the frame's projection, which `explicitOrthoBounds` can make orthographic
+    /// whatever the camera says) draws the grid with depth clamping instead of near/far clipping:
+    /// see `gridDepthClipMode(orthographic:)`.
     static func encodeGrid(
         encoder: MTLRenderCommandEncoder,
         dotPipeline: MTLRenderPipelineState,
@@ -686,8 +690,13 @@ enum RendererSharedSetup {
         buffers: GridAxisBuffers,
         viewProjection: simd_float4x4,
         cameraState: CameraState,
+        orthographic: Bool,
         settings: GridAxisSettings
     ) {
+        let clipMode = gridDepthClipMode(orthographic: orthographic)
+        if clipMode != .clip { encoder.setDepthClipMode(clipMode) }
+        defer { if clipMode != .clip { encoder.setDepthClipMode(.clip) } }
+
         let spacing = adaptiveGridSpacing(
             cameraState: cameraState,
             baseSpacing: settings.gridBaseSpacing,
@@ -756,6 +765,22 @@ enum RendererSharedSetup {
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lines.vertexCount)
             }
         }
+    }
+
+    /// How the grid is depth-clipped: clamped in orthographic, clipped in perspective.
+    ///
+    /// The orthographic eye is placed in front of the model, the axes and the overlays, but not
+    /// the grid: its window follows the pivot, and a pivot update must never move the eye. So in
+    /// a low-elevation view the part of the window toward the camera can lie in front of the
+    /// eye, where the near plane cut it off in a straight line across the view (#217). Letting
+    /// the near plane go behind the eye, which an orthographic projection allows, would break
+    /// the composite pass, which decodes depth with a perspective formula that a negative near
+    /// plane turns negative. Clamping instead draws the grid in front of the near plane at the
+    /// near depth. Everything else lies behind the near plane, so the grid there is in front of
+    /// it, as it is in the scene; nothing else changes. In perspective the grid is clipped: a
+    /// point behind a perspective eye is not in view.
+    static func gridDepthClipMode(orthographic: Bool) -> MTLDepthClipMode {
+        orthographic ? .clamp : .clip
     }
 
     /// Encodes the world axes from the origin: X red, Y green, Z blue, `axisLength` long.

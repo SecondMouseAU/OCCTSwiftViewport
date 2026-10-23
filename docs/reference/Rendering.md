@@ -351,7 +351,7 @@ The live Metal render loop. Created by `MetalViewportView` and configured by a `
 
 Most behaviour is configured via `ViewportController` properties rather than directly on this type. The public surface is intentionally narrow.
 
-In orthographic each frame draws the controller's camera with its eye moved back, if need be, in front of the bodies, overlay bodies and axes (`CameraState.placingOrthographicEye(inFrontOf:)`), as `OffscreenRenderer` does (issue #215). Under `MetalViewportView` the controller already keeps the eye there, so this changes nothing; it covers a controller without a `sceneBoundsProvider`, whose `cameraState` keeps its own `distance`.
+In orthographic each frame draws the controller's camera with its eye moved back, if need be, in front of the bodies, overlay bodies and axes (`CameraState.placingOrthographicEye(inFrontOf:)`), as `OffscreenRenderer` does (issue #215). The axes count as thick as they are drawn, and the grid, which the eye is not placed in front of, is drawn with depth clamping, so the part of it in front of the eye is not near-clipped; both renderers do the same (issue #217). Under `MetalViewportView` the controller already keeps the eye there, so this changes nothing; it covers a controller without a `sceneBoundsProvider`, whose `cameraState` keeps its own `distance`.
 
 ### Initializer
 

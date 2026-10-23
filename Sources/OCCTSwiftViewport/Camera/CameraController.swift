@@ -167,7 +167,30 @@ public final class CameraController: ObservableObject {
     /// (the default) leaves the eye of `cameraState` where `distance` puts it; `ViewportRenderer`
     /// still draws an orthographic frame from an eye placed in front of the scene.
     public var sceneBoundsProvider: (@MainActor () -> BoundingBox?)? {
-        didSet { placeOrthographicEyeInFrontOfScene() }
+        didSet {
+            cameraSceneBoundsProvider = nil
+            placeOrthographicEyeInFrontOfScene()
+        }
+    }
+
+    /// The scene bounds for the camera being placed, used in place of `sceneBoundsProvider`.
+    ///
+    /// The bounds `MetalViewportView` keeps the eye in front of hold `.constantScreenWidth`
+    /// axes, whose radius follows `orthographicScale` (#217). `sceneBoundsProvider` gets no
+    /// camera, so it can only read `cameraState`, which is the state before the change being
+    /// placed. Set with `setSceneBoundsProvider(_:)`; setting `sceneBoundsProvider` clears it.
+    private var cameraSceneBoundsProvider: (@MainActor (CameraState) -> BoundingBox?)?
+
+    /// Sets the scene bounds an orthographic eye is kept in front of, read for each camera state
+    /// being placed.
+    ///
+    /// Also sets `sceneBoundsProvider`, to those bounds for the current `cameraState`.
+    internal func setSceneBoundsProvider(
+        _ provider: @escaping @MainActor (CameraState) -> BoundingBox?
+    ) {
+        sceneBoundsProvider = { [weak self] in self.flatMap { provider($0.cameraState) } }
+        cameraSceneBoundsProvider = provider
+        placeOrthographicEyeInFrontOfScene()
     }
 
     // MARK: - Internal State
@@ -872,7 +895,11 @@ public final class CameraController: ObservableObject {
     /// An eye already in front of the scene is left exactly where it is, so a pivot that slides
     /// along the line of sight (the dynamic pivot) never moves it.
     private func placingOrthographicEye(_ state: CameraState) -> CameraState {
-        guard state.isOrthographic, let provider = sceneBoundsProvider else { return state }
+        guard state.isOrthographic else { return state }
+        if let provider = cameraSceneBoundsProvider {
+            return state.placingOrthographicEye(inFrontOf: provider(state))
+        }
+        guard let provider = sceneBoundsProvider else { return state }
         return state.placingOrthographicEye(inFrontOf: provider())
     }
 
