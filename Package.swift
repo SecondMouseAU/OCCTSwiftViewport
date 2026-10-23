@@ -24,12 +24,8 @@ let package = Package(
         .target(
             name: "OCCTSwiftViewport",
             path: "Sources/OCCTSwiftViewport",
-            // ShadersPrecompiled.metal #includes Shaders.metal, so the build still compiles every
-            // shader into default.metallib, and Shaders.metal itself ships as source: the
-            // tessellated pipelines compile it at run time with preserveInvariance (#209).
             resources: [
-                .process("Renderer/ShadersPrecompiled.metal"),
-                .copy("Renderer/Shaders.metal")
+                .process("Renderer/Shaders.metal")
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)

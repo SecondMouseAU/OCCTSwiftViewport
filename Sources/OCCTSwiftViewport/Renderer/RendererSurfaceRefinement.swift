@@ -401,41 +401,31 @@ struct RefinedPipelines {
     let meshShaded: MTLRenderPipelineState?
     let meshShadow: MTLRenderPipelineState?
     let meshDepthOnly: MTLRenderPipelineState?
-    /// Whether the tessellated pipelines came from the preserve-invariance library (#209).
-    let tessellationIsInvariant: Bool
 
-    /// - Parameters:
-    ///   - device: The device to build on.
-    ///   - library: The default library, for the mesh-shader pipelines.
-    ///   - tessellationLibrary: `RendererSharedSetup.invariantLibrary(device:)`, for the
-    ///     tessellated pipelines; `nil` builds them from `library`.
-    ///   - key: Sample count, maximum factor and mesh-shader choice.
-    init(device: MTLDevice, library: MTLLibrary, tessellationLibrary: MTLLibrary?, key: Key) {
+    init(device: MTLDevice, library: MTLLibrary, key: Key) {
         let depthFormat: MTLPixelFormat = .depth32Float_stencil8
-        let tessLibrary = tessellationLibrary ?? library
-        tessellationIsInvariant = tessellationLibrary != nil
         tessellatedShaded = try? RendererSharedSetup.makeTessellatedShadedPipelineState(
-            device: device, library: tessLibrary, sampleCount: key.sampleCount,
+            device: device, library: library, sampleCount: key.sampleCount,
             depthFormat: depthFormat, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_shaded")
         tessellatedShadow = try? RendererSharedSetup.makeTessellatedShadowPipelineState(
-            device: device, library: tessLibrary, maxFactor: key.maxFactor,
+            device: device, library: library, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_shadow")
         tessellatedDepthOnly = try? RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
-            device: device, library: tessLibrary, maxFactor: key.maxFactor,
+            device: device, library: library, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_depth_only")
         tessellatedHighlight = try? RendererSharedSetup.makeTessellatedHighlightPipelineState(
-            device: device, library: tessLibrary, sampleCount: key.sampleCount,
+            device: device, library: library, sampleCount: key.sampleCount,
             depthFormat: depthFormat, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_highlight")
         tessellatedStencilMask = try? RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
-            device: device, library: tessLibrary, sampleCount: key.sampleCount,
+            device: device, library: library, sampleCount: key.sampleCount,
             depthFormat: depthFormat, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_stencil_mask")
         tessellatedSelectionMask =
             RendererSharedSetup.makeSelectionMaskPipelines(
-                device: device, library: library, tessellationLibrary: tessLibrary,
-                maxTessellationFactor: key.maxFactor, label: "offscreen_selection_mask")?
+                device: device, library: library, maxTessellationFactor: key.maxFactor,
+                label: "offscreen_selection_mask")?
             .tessellated
         if key.meshShaders {
             meshShaded = try? RendererSharedSetup.makeMeshShaderShadedPipelineState(

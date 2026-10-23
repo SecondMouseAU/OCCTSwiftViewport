@@ -3,7 +3,7 @@
 //
 // The selection outline shared by ViewportRenderer and OffscreenRenderer (#209): a single-sample
 // selection-mask pass before the main pass, then a screen-space dilation of that mask drawn in
-// the main pass. Also builds the preserve-invariance shader library the tessellated pipelines use.
+// the main pass.
 
 import Foundation
 @preconcurrency import Metal
@@ -63,53 +63,9 @@ extension RendererSharedSetup {
 
     // MARK: Library
 
-    /// Shader libraries compiled with `preserveInvariance`, one per device.
-    @MainActor private static var invariantLibraries: [UInt64: MTLLibrary] = [:]
-
-    /// The renderers' shader library: the build-time `default.metallib`, else the bundled source
-    /// compiled at run time.
+    /// The renderers' shader library: the build-time `default.metallib` in the resource bundle.
     static func loadLibrary(device: MTLDevice) -> MTLLibrary? {
-        if let compiled = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            return compiled
-        }
-        guard let source = shaderSource() else { return nil }
-        return try? device.makeLibrary(source: source, options: nil)
-    }
-
-    /// `Shaders.metal` as shipped in the resource bundle (Package.swift copies it next to the
-    /// `default.metallib` that `ShadersPrecompiled.metal` builds from it).
-    static func shaderSource() -> String? {
-        guard let url = Bundle.module.url(forResource: "Shaders", withExtension: "metal") else {
-            return nil
-        }
-        return try? String(contentsOf: url, encoding: .utf8)
-    }
-
-    /// The shader library compiled with `MTLCompileOptions.preserveInvariance`, which the
-    /// tessellated pipelines are built from (#209).
-    ///
-    /// The tessellated shaded, shadow, depth, pick, highlight and mask passes evaluate the same
-    /// patch through different post-tessellation vertex functions and rely on bit-identical
-    /// positions (the `.lessEqual` highlight's depth tie with the shaded surface). Metal
-    /// guarantees that only for `[[invariant]]` positions compiled with preserve-invariance, an
-    /// option the package's build-time `default.metallib` cannot carry, so this compiles the
-    /// bundled source at run time. The first compile on a device takes about a second; Metal
-    /// caches it across launches, and this caches it for the process. Only renderers that build
-    /// tessellation pipelines (`RenderingQuality.enhanced` or `.maximum`) ask for it.
-    ///
-    /// - Returns: The library, or `nil` if the source is missing or fails to compile (the
-    ///   caller then falls back to its default library).
-    @MainActor
-    static func invariantLibrary(device: MTLDevice) -> MTLLibrary? {
-        if let cached = invariantLibraries[device.registryID] { return cached }
-        guard let source = shaderSource() else { return nil }
-        let options = MTLCompileOptions()
-        options.preserveInvariance = true
-        guard let library = try? device.makeLibrary(source: source, options: options) else {
-            return nil
-        }
-        invariantLibraries[device.registryID] = library
-        return library
+        try? device.makeDefaultLibrary(bundle: Bundle.module)
     }
 
     // MARK: Pipelines
@@ -117,8 +73,8 @@ extension RendererSharedSetup {
     /// Builds the selection-mask pipelines; the tessellated one only when `maxTessellationFactor`
     /// is given.
     static func makeSelectionMaskPipelines(
-        device: MTLDevice, library: MTLLibrary, tessellationLibrary: MTLLibrary? = nil,
-        maxTessellationFactor: Int? = nil, label: String = "selection_mask"
+        device: MTLDevice, library: MTLLibrary, maxTessellationFactor: Int? = nil,
+        label: String = "selection_mask"
     ) -> SelectionMaskPipelines? {
         guard
             let plain = makePipelineState(
@@ -135,8 +91,8 @@ extension RendererSharedSetup {
         var pipelines = SelectionMaskPipelines(plain: plain, direct: direct)
         if let maxTessellationFactor {
             pipelines.tessellated = try? makeTessellatedPipelineState(
-                device: device, library: tessellationLibrary ?? library,
-                label: label + "_tessellated", vertexFunction: "tessellated_depth_vertex",
+                device: device, library: library, label: label + "_tessellated",
+                vertexFunction: "tessellated_depth_vertex",
                 fragmentFunction: "selection_mask_fragment",
                 colorPixelFormat: selectionMaskPixelFormat, depthPixelFormat: .invalid,
                 maxFactor: maxTessellationFactor)

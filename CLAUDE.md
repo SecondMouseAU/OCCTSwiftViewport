@@ -75,7 +75,7 @@ Pick IDs are encoded as `objectIndex | (primitiveID << 16)` into a R32Uint textu
 
 ### Shaders & Uniform Struct Sync
 
-All Metal shaders are in `Sources/OCCTSwiftViewport/Renderer/Shaders.metal`. It is built into `default.metallib` through `ShadersPrecompiled.metal` (a one-line `#include`) and also ships as source, which `RendererSharedSetup.invariantLibrary(device:)` compiles with `preserveInvariance` for the tessellated pipelines (#209). The uniform structs (`Uniforms`, `BodyUniforms`) are defined in **both** files and must stay in sync:
+All Metal shaders are in `Sources/OCCTSwiftViewport/Renderer/Shaders.metal`. The uniform structs (`Uniforms`, `BodyUniforms`) are defined in **both** files and must stay in sync:
 
 - **Swift side:** `Renderer/ViewportRenderer.swift` (search for `struct Uniforms` and `struct BodyUniforms`)
 - **Metal side:** `Renderer/Shaders.metal` (search for `struct Uniforms` and `struct BodyUniforms`)

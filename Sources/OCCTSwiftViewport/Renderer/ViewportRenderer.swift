@@ -418,8 +418,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Drawn there rather than on the flat mesh under it. Internal so tests can see them.
     let tessellatedHighlightPipeline: MTLRenderPipelineState?
     let tessellatedStencilMaskPipeline: MTLRenderPipelineState?
-    /// Whether the tessellated pipelines came from the preserve-invariance library (#209).
-    let tessellationIsInvariant: Bool
     let tessellationEnabled: Bool
     /// The `maxTessellationFactor` the tessellated pipelines were built with (clamped, even).
     ///
@@ -786,11 +784,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let tessMgr = TessellationManager(device: device, library: library)
         {
             self.tessellationManager = tessMgr
-            // The tessellated passes need bit-identical positions across pipelines, which
-            // only the preserve-invariance library guarantees (#209).
-            let invariantLibrary = RendererSharedSetup.invariantLibrary(device: device)
-            let tessLibrary = invariantLibrary ?? library
-            self.tessellationIsInvariant = invariantLibrary != nil
             let maxTessFactor = TessellationManager.clampedMaxFactor(
                 controller.configuration.tessellationMaxFactor)
             self.pipelineMaxTessFactor = maxTessFactor
@@ -799,7 +792,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedShadedPipeline =
                     try RendererSharedSetup.makeTessellatedShadedPipelineState(
-                        device: device, library: tessLibrary, sampleCount: sampleCount,
+                        device: device, library: library, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadedPipeline = nil
@@ -808,7 +801,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedShadowPipeline =
                     try RendererSharedSetup.makeTessellatedShadowPipelineState(
-                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadowPipeline = nil
                 diagErrors.append("shadow: \(error.localizedDescription)")
@@ -816,7 +809,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedDepthOnlyPipeline =
                     try RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
-                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedDepthOnlyPipeline = nil
                 diagErrors.append("depth: \(error.localizedDescription)")
@@ -824,7 +817,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedPickPipeline =
                     try RendererSharedSetup.makeTessellatedPickPipelineState(
-                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedPickPipeline = nil
                 diagErrors.append("pick: \(error.localizedDescription)")
@@ -832,7 +825,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedHighlightPipeline =
                     try RendererSharedSetup.makeTessellatedHighlightPipelineState(
-                        device: device, library: tessLibrary, sampleCount: sampleCount,
+                        device: device, library: library, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedHighlightPipeline = nil
@@ -841,7 +834,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedStencilMaskPipeline =
                     try RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
-                        device: device, library: tessLibrary, sampleCount: sampleCount,
+                        device: device, library: library, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedStencilMaskPipeline = nil
@@ -849,7 +842,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
 
             if let maskPipeline = try? RendererSharedSetup.makeTessellatedPipelineState(
-                device: device, library: tessLibrary, label: "selection_mask_tessellated",
+                device: device, library: library, label: "selection_mask_tessellated",
                 vertexFunction: "tessellated_depth_vertex",
                 fragmentFunction: "selection_mask_fragment",
                 colorPixelFormat: RendererSharedSetup.selectionMaskPixelFormat,
@@ -884,7 +877,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.tessellatedPickPipeline = nil
             self.tessellatedHighlightPipeline = nil
             self.tessellatedStencilMaskPipeline = nil
-            self.tessellationIsInvariant = false
             self.tessellationEnabled = false
             self.pipelineMaxTessFactor = 0
             #if DEBUG

@@ -1787,9 +1787,7 @@ public final class OffscreenRenderer: Sendable {
             meshShaders: RendererSharedSetup.wantsMeshShaders(
                 options.renderingQuality, device: device))
         if let cached = refinedPipelinesByKey[key] { return cached }
-        let built = RefinedPipelines(
-            device: device, library: library,
-            tessellationLibrary: RendererSharedSetup.invariantLibrary(device: device), key: key)
+        let built = RefinedPipelines(device: device, library: library, key: key)
         refinedPipelinesByKey[key] = built
         return built
     }
@@ -1802,14 +1800,6 @@ public final class OffscreenRenderer: Sendable {
         let refinement = refinedPipelines(for: options, sampleCount: sampleCount)?.refinement(
             canTessellate: tessellationManager != nil)
         return (refinement?.tessellation ?? false, refinement?.meshShaders ?? false)
-    }
-
-    /// Whether the tessellated pipelines for `options` came from the preserve-invariance
-    /// library (#209); exposed for tests.
-    func tessellationIsInvariant(for options: OffscreenRenderOptions) -> Bool {
-        let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
-        return refinedPipelines(for: options, sampleCount: sampleCount)?.tessellationIsInvariant
-            ?? false
     }
 
     /// Whether the cached buffers for `bodyID` include tessellation patches / meshlets; exposed

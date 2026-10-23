@@ -68,12 +68,7 @@ struct VertexIn {
 };
 
 struct ShadedVertexOut {
-    // [[invariant]] (#209): the tessellated passes draw the same patch through different vertex
-    // functions and rely on bit-identical positions (the `.lessEqual` highlight's depth tie with
-    // the shaded surface). Metal only guarantees that for invariant positions in a library built
-    // with preserveInvariance, which the tessellated pipelines use (see
-    // RendererSharedSetup.invariantLibrary(device:)); elsewhere the attribute is a no-op.
-    float4 clipPosition [[position, invariant]];
+    float4 clipPosition [[position]];
     float3 worldNormal;
     // Centroid-sampled (#164): with MSAA, a pixel whose centre lies outside the triangle but
     // whose samples do not would otherwise interpolate worldPosition at the centre, i.e.
@@ -543,7 +538,7 @@ fragment ShadedFragmentOut shaded_fragment(
 // MARK: - Pick-Only Pipeline (1x, no MSAA)
 
 struct PickVertexOut {
-    float4 clipPosition [[position, invariant]];  // see ShadedVertexOut
+    float4 clipPosition [[position]];
     float3 worldPosition;    // for clip plane testing
 };
 
@@ -865,7 +860,7 @@ struct ShadowUniforms {
 };
 
 struct ShadowVertexOut {
-    float4 clipPosition [[position, invariant]];  // see ShadedVertexOut
+    float4 clipPosition [[position]];
     float3 worldPosition;    // for clip plane testing (shadow_clip_fragment)
 };
 
@@ -1808,10 +1803,16 @@ struct PNPatchData {
 };
 
 // The cubic Bezier triangle at barycentric `bary`. Every post-tessellation vertex function
-// evaluates the surface through this one function, and their clip positions are [[invariant]]
-// (#209), so the shaded, shadow, depth, pick, highlight, stencil-mask and selection-mask passes
-// produce bit-identical positions and the `.lessEqual` highlight wins its depth tie with the
-// shaded surface (#202).
+// evaluates the surface through this one function, so the shaded, shadow, depth, pick,
+// highlight, stencil-mask and selection-mask passes produce bit-identical positions and the
+// `.lessEqual` highlight wins its depth tie with the shaded surface (#202).
+//
+// That relies on the compiler emitting the same arithmetic for the same expression in every
+// pipeline. Apple GPUs do, but Metal only guarantees it for [[invariant]] positions in a library
+// compiled with preserveInvariance, which the build-time default.metallib cannot be (SwiftPM and
+// Xcode pass no such flag to it). Compiling the source at run time was considered and deferred
+// (#209 item 3): revisit if the build-time metallib gains a preserve-invariance option, or if a
+// highlight z-fights its tessellated surface.
 inline float3 pnPatchPosition(PNPatchData p, float3 bary) {
     float u = bary.x, v = bary.y, w = bary.z;
     float uu = u*u, vv = v*v, ww = w*w;
@@ -2079,7 +2080,7 @@ vertex PickVertexOut tessellated_depth_vertex(
 // --- Post-tessellation pick vertex ---
 
 struct TessPatchPickVertexOut {
-    float4 clipPosition [[position, invariant]];  // see ShadedVertexOut
+    float4 clipPosition [[position]];
     // Input triangle index. Patches are built one per triangle (compute_pn_patches writes
     // patches[gid] for triangle gid) and drawn with patchStart 0 and no patch index buffer, so
     // [[patch_id]] is the triangle index PickResult.triangleIndex promises (issue #136, H7).
@@ -2129,7 +2130,7 @@ fragment PickFragmentOut tessellated_pick_fragment(
 // exactly the surface that was drawn.
 
 struct TessHighlightVertexOut {
-    float4 clipPosition [[position, invariant]];  // see ShadedVertexOut
+    float4 clipPosition [[position]];
     float3 worldPosition [[centroid_perspective]];  // MSAA-safe clip test (#164)
     // Input triangle index: one patch per triangle, drawn with patchStart 0 (see
     // TessPatchPickVertexOut), so it indexes the per-triangle style buffer.

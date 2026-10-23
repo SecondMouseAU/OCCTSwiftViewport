@@ -1,9 +1,9 @@
 // RenderFollowupTests.swift
 // OCCTSwiftViewport Tests
 //
-// Regression tests for #209: shadow-pass culling and mirrored transforms, the selection outline
-// around face-on flat-normal meshes, [[invariant]] positions for the tessellated passes, and the
-// offscreen overlay in-view test under `pixelPan` / `explicitOrthoBounds`. Pixel scenes render
+// Regression tests for #209 items 1, 2 and 4: shadow-pass culling and mirrored transforms, the
+// selection outline around face-on flat-normal meshes, and the offscreen overlay in-view test
+// under `pixelPan` / `explicitOrthoBounds`. Pixel scenes render
 // through both the live renderer (headless) and `OffscreenRenderer`, light appearance, grid and
 // axes off.
 
@@ -213,67 +213,6 @@ struct FaceOnOutlineTests {
         #expect(
             RendererSharedSetup.selectionOutlineScissor(
                 bounds: [away], viewProjection: viewProjection, size: size, margin: 3) == nil)
-    }
-}
-
-// MARK: - Invariant tessellated positions (#209 item 3)
-
-@Suite("Tessellated passes use invariant positions (#209)")
-@MainActor
-struct InvariantTessellationTests {
-
-    @Test("Every vertex output the tessellated passes share marks its position invariant")
-    func positionsAreInvariant() throws {
-        let source = try #require(RendererSharedSetup.shaderSource())
-        for name in [
-            "ShadedVertexOut", "PickVertexOut", "ShadowVertexOut", "TessPatchPickVertexOut",
-            "TessHighlightVertexOut",
-        ] {
-            let start = try #require(source.range(of: "struct \(name) {"), "\(name) missing")
-            let body = source[start.upperBound...].prefix { $0 != "}" }
-            #expect(body.contains("[[position, invariant]]"), "\(name) position not invariant")
-        }
-    }
-
-    @Test("The tessellated pipelines are built from the preserve-invariance library, live")
-    func liveTessellationIsInvariant() throws {
-        var config = ViewportConfiguration()
-        config.renderingQuality = .enhanced
-        let controller = ViewportController(configuration: config)
-        guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([])),
-            renderer.tessellationEnabled
-        else {
-            Issue.record("Metal device or tessellation unavailable")
-            return
-        }
-        #expect(renderer.tessellationIsInvariant)
-    }
-
-    @Test("The tessellated pipelines are built from the preserve-invariance library, offscreen")
-    func offscreenTessellationIsInvariant() throws {
-        guard let renderer = OffscreenRenderer() else {
-            Issue.record("Metal device unavailable")
-            return
-        }
-        var options = ParityRender.options(displayMode: .shaded)
-        options.renderingQuality = .enhanced
-        guard renderer.surfacePaths(for: options).tessellation else {
-            Issue.record("tessellation unavailable")
-            return
-        }
-        #expect(renderer.tessellationIsInvariant(for: options))
-    }
-
-    @Test("The preserve-invariance library is compiled once per device and cached")
-    func invariantLibraryIsCached() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            Issue.record("Metal device unavailable")
-            return
-        }
-        let first = try #require(RendererSharedSetup.invariantLibrary(device: device))
-        let second = try #require(RendererSharedSetup.invariantLibrary(device: device))
-        #expect(first === second)
-        #expect(first.makeFunction(name: "tessellated_vertex") != nil)
     }
 }
 
