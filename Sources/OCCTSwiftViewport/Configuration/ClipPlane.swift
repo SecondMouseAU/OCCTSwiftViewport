@@ -10,6 +10,10 @@ import simd
 /// The plane equation is `dot(normal, point) + distance = 0`.
 /// Fragments where `dot(normal, point) + distance < 0` are discarded.
 ///
+/// Every pass that draws scene geometry applies the test, the GPU pick pass included, so
+/// clipped geometry is neither visible nor pickable. The shadow map, CPU `SceneRaycast` and
+/// `OffscreenRenderer` do not apply clip planes.
+///
 /// ## Example
 ///
 /// ```swift
