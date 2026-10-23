@@ -864,7 +864,7 @@ enum RendererSharedSetup {
     ///     `wideViewFrustum(cameraState:aspectRatio:)`); only its sides matter.
     ///   - localBounds: A body's local-space box, before `transform`.
     /// - Returns: `bounds` widened by every in-view overlay body.
-    static func clipBounds(
+    static func clipFitBounds(
         _ bounds: BoundingBox?,
         includingOverlaysOf bodies: [ViewportBody],
         in view: Frustum,

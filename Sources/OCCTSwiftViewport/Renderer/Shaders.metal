@@ -1773,7 +1773,7 @@ kernel void brdf_integration(
 
 // Per-patch data: 10 Bezier control points + 3 corner normals.
 // Uses packed_float3 (12 bytes, alignment 4) to avoid float3's 16-byte padding.
-// Total: 13 * 12 = 156 bytes per patch — TessellationManager.patchStride must match.
+// Total: 13 * 12 = 156 bytes per patch; TessellationManager.patchStride must match.
 struct PNPatchData {
     packed_float3 b300, b030, b003;           // Corner positions
     packed_float3 b210, b120, b201, b102, b021, b012; // Edge control points

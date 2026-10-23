@@ -1250,7 +1250,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             showAxes: controller.showAxes
         )
         let clip = cameraState.clipPlanes(
-            sceneBounds: RendererSharedSetup.clipBounds(
+            sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodiesBinding.wrappedValue,
                 in: RendererSharedSetup.wideViewFrustum(
                     cameraState: cameraState, aspectRatio: aspectRatio)
@@ -1801,7 +1801,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 // wall is seen through the near wall, and one on a body behind is seen through
                 // the bodies in front (#171). Every triangle is drawn in exactly one half, so a
                 // mis-wound mesh only composites out of order; it never loses triangles.
-                for culled in Self.translucentCullOrder {
+                for culled in Self.translucentCullOrder(for: d.body.transform) {
                     mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
                     mainEncoder.setFragmentBytes(
@@ -1991,9 +1991,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // 3.9 Selection mask: stencil-mark each selected or hovered geometry body's whole
         // silhouette, without drawing colour or testing depth. Per-triangle highlights were drawn
         // with the surfaces they style, above (#171). The mask covers the parts of the body
-        // hidden behind nearer geometry too, so the outline below is the ring around the body and
-        // never paints over an occluder (#177); it covers bodies drawn translucent or without
-        // surfaces (`.wireframe`) alike. Overlay bodies get no outline.
+        // hidden behind nearer geometry too, so the outline below is only the ring around the
+        // body; it no longer fills the hidden area over the occluder (#177). The ring itself is
+        // still drawn on top. The mask covers bodies drawn translucent or without surfaces
+        // (`.wireframe`) alike. Overlay bodies get no outline.
         var outlinedBodyIDs: Set<String> = []
         for (body, buffers, _) in frameVisibleBodies
         where body.renderLayer == .geometry && body.primitiveKind != .point
@@ -2081,7 +2082,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
-        // 5. Overlay pass — RenderLayer.overlay bodies, drawn after the selection outline with
+        // 5. Overlay pass: RenderLayer.overlay bodies, drawn after the selection outline with
         // always-pass depth so they remain visible through any geometry. Uses the standard
         // shaded + wireframe pipelines (no tessellation / mesh shader paths, since manipulator
         // widgets are simple meshes). Widgets aren't model geometry (#170): their surfaces draw
@@ -2828,6 +2829,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     }
 
     /// The one-line explanation logged when `requested` can't run, or `nil` when it runs as asked.
+    ///
+    /// Also non-`nil` when the quality runs but some mesh-shader pipelines failed to build: the
+    /// passes that would use them (shadow, depth prepass, pick) then draw through the vertex
+    /// pipelines instead.
     nonisolated static func renderingQualityFallbackReason(
         requested: RenderingQuality,
         tessellationEnabled: Bool,
@@ -2837,6 +2842,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ) -> String? {
         let effective: RenderingQuality =
             meshShadersEnabled ? .maximum : (tessellationEnabled ? .enhanced : .standard)
+        if requested == effective, !pipelineErrors.isEmpty {
+            return "renderingQuality .\(requested): some mesh-shader passes use the vertex "
+                + "pipelines instead: " + pipelineErrors.joined(separator: "; ")
+        }
         guard requested != effective, requested != .standard else { return nil }
         var why: [String] = []
         if requested == .maximum, !meshShadersEnabled {
@@ -2860,8 +2869,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///
     /// Mesh triangles wind counter-clockwise seen from outside, which the default clockwise
     /// front-facing rule rasterises as back faces: `.back` culls the camera-facing side and
-    /// leaves the far one. `OffscreenRenderer` uses the same order.
-    nonisolated static let translucentCullOrder: [MTLCullMode] = [.back, .front]
+    /// leaves the far one. A mirroring `transform` (negative determinant) reverses the winding on
+    /// screen, so the order is reversed for it. `OffscreenRenderer` uses the same order.
+    nonisolated static func translucentCullOrder(for transform: simd_float4x4) -> [MTLCullMode] {
+        let linear = simd_float3x3(
+            SIMD3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
+            SIMD3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
+            SIMD3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
+        return simd_determinant(linear) < 0 ? [.front, .back] : [.back, .front]
+    }
 
     /// Encodes a body's shaded surface via the mesh-shader, tessellated, or standard path.
     ///
@@ -2967,7 +2983,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // the tessellation patch builder reads from this vertex buffer, so smoothed normals flow
         // into the PN-triangle control points automatically. Direct-mesh bodies skip smoothing
         // (the producer supplies normals) and skip the tessellation / mesh-shader paths, which
-        // consume the interleaved buffer + faceIndices.
+        // consume the interleaved buffer.
         let smoothedVertexData = RendererSharedBuffers.smoothedVertexData(
             for: body,
             autoSmoothNormals: controller?.configuration.autoSmoothNormals == true,

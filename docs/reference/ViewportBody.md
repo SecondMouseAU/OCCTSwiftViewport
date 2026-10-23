@@ -213,7 +213,7 @@ Per-triangle source face index, parallel to `indices.count / 3`. Maps GPU face p
 
 #### `edgeIndices: [Int32]`
 
-Per-segment source-edge index, parallel to the flattened segments across all `edges` polylines. Empty if not applicable — in which case the body is not edge-pickable. Overlay-layer bodies are the exception: their drawn edges are always pickable (#170).
+Per-segment source-edge index, parallel to the flattened segments across all `edges` polylines. Empty if not applicable, in which case the body is not edge-pickable. Overlay-layer bodies are the exception: their drawn edges are always pickable (#170).
 
 #### `vertices: [SIMD3<Float>]`
 

@@ -188,6 +188,23 @@ struct OverlayLayerTests {
         #expect(hits.contains { $0.bodyID == "circle" && $0.kind == .edge })
     }
 
+    @Test("Only in-view overlays widen the near/far fit")
+    func clipFitTakesInViewOverlaysOnly() {
+        let camera = ParityRender.frontCamera
+        let view = RendererSharedSetup.wideViewFrustum(cameraState: camera, aspectRatio: 1)
+        let model = BoundingBox(min: SIMD3(-1, -1, -1), max: SIMD3(1, 1, -0.9))
+        var near = overlayQuad()
+        near.transform.columns.3 = SIMD4(0, 0, 4, 1)
+        var offScreen = overlayQuad()
+        offScreen.transform.columns.3 = SIMD4(300, 0, 300, 1)
+        let widened = RendererSharedSetup.clipFitBounds(
+            model, includingOverlaysOf: [near], in: view)
+        let untouched = RendererSharedSetup.clipFitBounds(
+            model, includingOverlaysOf: [offScreen], in: view)
+        #expect(widened?.max.z == 4, "an in-view gizmo in front of the model must widen the fit")
+        #expect(untouched == model, "an off-screen gizmo must not stretch the fit")
+    }
+
     @Test("Scene geometry casts no shadow onto an overlay surface, in both renderers")
     func overlaySurfacesReceiveNoShadows() throws {
         var lighting = ParityRender.plainLighting
@@ -330,6 +347,25 @@ struct TranslucentHighlightTests {
             #expect(
                 b < f - 60,
                 "\(renderer): the far-wall highlight painted through the near wall (\(b) vs \(f))")
+        }
+    }
+
+    @Test("A mirrored translucent body still draws its far wall first")
+    func mirroredBodyKeepsFarWallFirst() throws {
+        var mirrored = box(highlighting: -1)
+        mirrored.transform = simd_float4x4(diagonal: SIMD4(-1, 1, 1, 1))
+        #expect(ViewportRenderer.translucentCullOrder(for: mirrored.transform) == [.front, .back])
+        let c = PassScene.size / 2
+        guard let live = PassScene.live([mirrored]), let off = PassScene.offscreen([mirrored])
+        else {
+            Issue.record("Metal device unavailable")
+            return
+        }
+        for (name, pixels) in [("live", live.pixels), ("offscreen", off.pixels)] {
+            let b = redness(PassScene.rgb(pixels, x: c, y: c))
+            #expect(
+                b < 150,
+                "\(name): the mirrored far-wall highlight painted over the near wall (\(b))")
         }
     }
 
@@ -480,5 +516,10 @@ struct RenderingQualityFallbackTests {
             requested: .maximum, tessellationEnabled: true, meshShadersEnabled: false,
             supportsMeshShaders: true, pipelineErrors: ["mesh_shaded: boom"])
         #expect(failed?.contains("mesh_shaded: boom") == true)
+        // The quality runs, but an auxiliary mesh pipeline failed: still reported.
+        let auxiliary = ViewportRenderer.renderingQualityFallbackReason(
+            requested: .maximum, tessellationEnabled: true, meshShadersEnabled: true,
+            supportsMeshShaders: true, pipelineErrors: ["mesh_pick: boom"])
+        #expect(auxiliary?.contains("mesh_pick: boom") == true)
     }
 }

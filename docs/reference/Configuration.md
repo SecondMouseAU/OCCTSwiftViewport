@@ -721,7 +721,7 @@ Controls the tessellation tier used by `ViewportRenderer` and, through `Offscree
 **Fallbacks are explicit.** When the requested quality can't run, the renderer logs one line saying why when it is created (no mesh shaders on this GPU, or the pipeline that failed and Metal's error), and reports what it actually runs:
 
 ```swift
-controller.effectiveRenderingQuality  // RenderingQuality? — nil until a renderer is attached
+controller.effectiveRenderingQuality  // RenderingQuality?, nil until a renderer is attached
 renderer.effectiveRenderingQuality    // ViewportRenderer, fixed for its lifetime
 ```
 

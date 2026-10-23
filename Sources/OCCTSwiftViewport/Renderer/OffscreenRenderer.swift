@@ -751,7 +751,7 @@ public final class OffscreenRenderer: Sendable {
             showAxes: options.showAxes
         )
         let clip = cameraState.clipPlanes(
-            sceneBounds: RendererSharedSetup.clipBounds(
+            sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodies,
                 in: RendererSharedSetup.wideViewFrustum(
                     cameraState: cameraState, aspectRatio: aspectRatio)))
@@ -1231,7 +1231,7 @@ public final class OffscreenRenderer: Sendable {
                     forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
                 // Far-facing triangles first, then camera-facing ones, each half followed by its
                 // per-triangle highlights, as live (#171).
-                for culled in ViewportRenderer.translucentCullOrder {
+                for culled in ViewportRenderer.translucentCullOrder(for: t.body.transform) {
                     mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentDepthState)
                     encodeSurface(t.buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
