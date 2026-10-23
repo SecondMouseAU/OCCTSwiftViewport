@@ -57,6 +57,8 @@ View rotation as a normalized quaternion mapping camera space into world space (
 
 Distance from the pivot point along the view direction. Must be positive. Use `CameraController.minDistance` / `maxDistance` to enforce limits during interaction.
 
+In perspective it sets how large the view is. In orthographic `orthographicScale` does that, and `distance` only places the eye along the line of sight, which moves the clip planes but not the picture. Orthographic zoom leaves it alone, and `placingOrthographicEye(inFrontOf:)` raises it to keep the eye in front of the scene (issue #211).
+
 ---
 
 ### `var pivot: SIMD3<Float>`
@@ -162,13 +164,29 @@ let proj = state.projectionMatrix(aspectRatio: aspect, near: near, far: far)
 
 ---
 
+### `func placingOrthographicEye(inFrontOf:) -> CameraState`
+
+```swift
+public func placingOrthographicEye(inFrontOf bounds: BoundingBox?) -> CameraState
+```
+
+Returns an orthographic copy whose eye sits in front of `bounds`. An orthographic picture does not depend on where the eye is along the view axis, but the near plane cannot go behind the eye, so an eye inside the model cut away everything between it and the front of the model. This raises `distance`, keeping the pivot, rotation and `orthographicScale`, until the nearest corner of `bounds` is one scene radius (half the box's diagonal) in front of the eye. The picture is unchanged; `clipPlanes(sceneBounds:)` then takes in the whole scene. A perspective camera, `nil` bounds, or an eye already that far in front come back unchanged, and the eye is only ever moved back (issue #211).
+
+`CameraController` applies it after every camera change when it has a `sceneBoundsProvider`, which `MetalViewportView` sets, and `fit(to:aspectRatio:padding:)` applies it in orthographic. Call it yourself on a camera you build for `OffscreenRenderer`:
+
+```swift
+let camera = state.placingOrthographicEye(inFrontOf: sceneBounds)
+```
+
+---
+
 ### `func fit(to:aspectRatio:padding:) -> CameraState`
 
 ```swift
 public func fit(to bounds: BoundingBox, aspectRatio: Float, padding: Float = 1.1) -> CameraState
 ```
 
-Returns a copy of the state whose pivot and distance (or `orthographicScale`) are adjusted so that the bounding sphere of `bounds` fills the view from the current viewing direction. `padding` is multiplicative: `1.0` = tight fit, `1.1` = 10 % breathing room (default).
+Returns a copy of the state whose pivot and distance (or `orthographicScale`) are adjusted so that the bounding sphere of `bounds` fills the view from the current viewing direction. `padding` is multiplicative: `1.0` = tight fit, `1.1` = 10 % breathing room (default). In orthographic it also moves the eye back, if need be, to sit in front of `bounds` (see `placingOrthographicEye(inFrontOf:)`), so a short `distance` doesn't near-clip the front of what it frames.
 
 ---
 
@@ -268,6 +286,24 @@ Creates a controller positioned at a named standard view.
 ### `@Published var cameraState: CameraState` *(read-only)*
 
 The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObject` / `@StateObject` to react to changes.
+
+---
+
+### `var sceneBoundsProvider: (@MainActor () -> BoundingBox?)?`
+
+Returns the world-space bounds of the scene, which an orthographic eye is kept in front of. With a provider set, each change to `cameraState` in orthographic moves the eye back along the line of sight, if need be, until it is in front of these bounds (see `CameraState.placingOrthographicEye(inFrontOf:)`); the picture does not change, only `distance`. An eye already in front is not moved, so the dynamic pivot sliding along the line of sight never moves it. `MetalViewportView` sets one that reads its bodies when it appears, replacing any set before, and also re-places the eye when the scene's bounds change under a still camera; `nil` (the default) leaves the eye where `distance` puts it (issue #211). Each change is published once, already placed.
+
+While the eye stays put and the pivot moves (the dynamic pivot), an orthographic `distance` is kept above `minDistance` but not capped at `maxDistance`: the placed eye may sit further back than that in front of a large scene, and the cap stopped the pivot short of the surface it was sliding to.
+
+---
+
+### `func placeOrthographicEyeInFrontOfScene()`
+
+```swift
+public func placeOrthographicEyeInFrontOfScene()
+```
+
+Moves an orthographic eye in front of the `sceneBoundsProvider`'s bounds now, without any other camera change, for when the scene changed rather than the camera (a model loaded or moved). Does nothing in perspective, without a provider, or when the eye is already in front.
 
 ---
 
@@ -380,7 +416,9 @@ Shifts the pivot in the camera's local XY plane. At the default `panSensitivity`
 public func zoom(factor: Float)
 ```
 
-Multiplies distance by `1 / factor` (factor > 1 zooms in). Clamps to `[minDistance, maxDistance]`. Also scales `orthographicScale` in orthographic mode, clamped to `orthographicScaleRange`, so an orthographic view zooms as far in and out as a perspective one. The scale used to be unbounded and could shrink toward zero or grow without limit. This is the raw primitive: it does not apply `zoomSensitivity`.
+In perspective, multiplies distance by `1 / factor` (factor > 1 zooms in), clamped to `[minDistance, maxDistance]`. In orthographic, multiplies `orthographicScale` by `1 / factor` instead, clamped to `orthographicScaleRange`, so an orthographic view zooms as far in and out as a perspective one. The scale used to be unbounded and could shrink toward zero or grow without limit. This is the raw primitive: it does not apply `zoomSensitivity`.
+
+**Behaviour change (issue #211).** An orthographic zoom no longer changes `distance`. It used to divide it too, which walked the eye toward the pivot without changing the picture; zoomed in, the eye ended up inside the model and the near plane cut its front half away.
 
 ---
 
@@ -430,7 +468,7 @@ The pivot shift is gated on `zoomTowardShiftsPivot`. When that is `false` the zo
 public func roll(deltaAngle: Float)
 ```
 
-Rolls the camera around its forward axis by `deltaAngle` radians. A positive angle turns the picture clockwise on screen, matching the `.rotateChanged` event (positive is a clockwise twist), in every rotation style; previously arcball and first-person rolled the other way from turntable. In turntable mode the roll is stored separately so it survives subsequent orbit moves; in arcball/first-person modes it is baked directly into the rotation quaternion.
+Rolls the camera around its forward axis by `deltaAngle` radians. The line of sight does not move, so a roll needs no dynamic pivot update: `MetalViewportView` schedules none when a rotate gesture ends, by design, since the update would find the pivot the camera already has (issue #211). A positive angle turns the picture clockwise on screen, matching the `.rotateChanged` event (positive is a clockwise twist), in every rotation style; previously arcball and first-person rolled the other way from turntable. In turntable mode the roll is stored separately so it survives subsequent orbit moves; in arcball/first-person modes it is baked directly into the rotation quaternion.
 
 ---
 
@@ -470,7 +508,7 @@ Stops any running animation immediately, leaving `cameraState` at its current in
 public func focusOn(point: SIMD3<Float>, distance: Float? = nil, animated: Bool = true)
 ```
 
-Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDistance, maxDistance]`). Animated by default (0.3 s). Animated or not, it stops orbit and pan momentum and cancels any animation in progress. Previously `animated: false` left momentum coasting, which carried the camera off the point straight away.
+Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDistance, maxDistance]`). In orthographic, `distance` zooms instead: `orthographicScale` becomes the height a perspective camera that far from the point would show, `2 · distance · tan(fieldOfView / 2)`, within `orthographicScaleRange`, and the eye's distance is kept. It used to set the eye's distance, which an orthographic view does not show, so the call did not zoom (issue #211). Animated by default (0.3 s). Animated or not, it stops orbit and pan momentum and cancels any animation in progress. Previously `animated: false` left momentum coasting, which carried the camera off the point straight away.
 
 ---
 

@@ -357,7 +357,7 @@ public func focusOn(
 )
 ```
 
-Moves the camera orbit pivot to `point`. Optionally sets the camera-to-pivot `distance`; if `nil`, the current distance is kept. Pass `animated: false` for an instant jump. Either way it stops orbit and pan momentum; previously an instant jump left momentum coasting, which carried the camera straight off the point.
+Moves the camera orbit pivot to `point`. Optionally sets the camera-to-pivot `distance`; if `nil`, the current distance is kept. In orthographic, `distance` zooms instead: `orthographicScale` becomes the height a perspective camera that far away would show, `2 · distance · tan(fieldOfView / 2)` (issue #211). Pass `animated: false` for an instant jump. Either way it stops orbit and pan momentum; previously an instant jump left momentum coasting, which carried the camera straight off the point.
 
 #### `reset(animated:)`
 

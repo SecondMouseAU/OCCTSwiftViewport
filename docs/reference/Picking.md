@@ -476,13 +476,14 @@ public init(origin: SIMD3<Float>, direction: SIMD3<Float>)
 
 ### Camera ray construction
 
-#### `static func fromCamera(ndc:cameraState:aspectRatio:) -> Ray`
+#### `static func fromCamera(ndc:cameraState:aspectRatio:sceneBounds:) -> Ray`
 
 ```swift
 public static func fromCamera(
     ndc: SIMD2<Float>,
     cameraState: CameraState,
-    aspectRatio: Float
+    aspectRatio: Float,
+    sceneBounds: BoundingBox? = nil
 ) -> Ray
 ```
 
@@ -490,20 +491,24 @@ Constructs a world-space ray passing through a point expressed in normalized dev
 
 Handles both perspective and orthographic projections:
 - **Perspective**: origin at `cameraState.position`; direction computed from field-of-view, aspect ratio, and NDC offset.
-- **Orthographic**: origin offset from `cameraState.position` by the NDC-scaled half-extents; direction parallel to `viewDirection`.
+- **Orthographic**: origin offset from the eye by the NDC-scaled half-extents; direction parallel to `viewDirection`. With `sceneBounds`, the eye is the one `CameraState.placingOrthographicEye(inFrontOf:)` places in front of them, so the ray starts in front of the whole scene and geometry between the eye and the camera's side of the scene, or behind the eye, is not missed. Without, it starts at `cameraState.position` (issue #211).
+
+The library's own rays (the dynamic pivot, focus-on-point, measurement picks and wrapped face-pick resolution) all pass the scene's or the picked body's bounds. A ray that starts in front of the scene finds what is drawn because `CameraController` keeps the orthographic eye in front of the scene too, when it has a `sceneBoundsProvider`; starting further back would pick geometry the near plane clips.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `ndc` | `SIMD2<Float>` | Normalized device coordinates in `[-1, 1]` (x right, y up) |
 | `cameraState` | `CameraState` | Current camera state |
 | `aspectRatio` | `Float` | Viewport width / height |
+| `sceneBounds` | `BoundingBox?` | World-space bounds an orthographic ray starts in front of; `nil` (default) starts it at the eye. Ignored in perspective |
 
-#### `static func throughViewCenter(cameraState:aspectRatio:) -> Ray`
+#### `static func throughViewCenter(cameraState:aspectRatio:sceneBounds:) -> Ray`
 
 ```swift
 public static func throughViewCenter(
     cameraState: CameraState,
-    aspectRatio: Float
+    aspectRatio: Float,
+    sceneBounds: BoundingBox? = nil
 ) -> Ray
 ```
 
@@ -598,6 +603,8 @@ public static func worldToNDC(
 ```
 
 Projects a world-space point to normalized device coordinates `(x, y ∈ [-1, 1], z for depth)`. Returns `nil` when the point is behind the camera, by the same view-space depth test as `worldToScreen`. Useful when you need NDC before the final screen-space mapping (e.g. to pass back into `Ray.fromCamera`).
+
+The measurement overlay and the headless measurement compositor draw segments (a distance's leader, an angle's arms, a radius) through an internal companion that cuts a segment where it crosses that same test, rather than dropping it when one end is culled. Only the ends in view get their markers, and a culled label anchor falls back to the middle of the visible part. An angle whose vertex is culled draws the visible parts of its arms without the arc and label (issue #211).
 
 ### `static func distance(_:_:) -> Float`
 

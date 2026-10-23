@@ -638,7 +638,8 @@ enum RendererSharedSetup {
     /// Snaps the ground grid to the `subdivisions`-power spacing level closest to the visible width.
     ///
     /// - Parameters:
-    ///   - cameraState: Camera supplying the distance and field of view.
+    ///   - cameraState: Camera supplying the distance and field of view (perspective) or the
+    ///     scale (orthographic).
     ///   - baseSpacing: Fundamental grid unit in world units (`ViewportConfiguration.gridBaseSpacing`).
     ///   - subdivisions: Subdivision factor between levels (`ViewportConfiguration.gridSubdivisions`),
     ///     clamped to at least 2.
@@ -648,9 +649,13 @@ enum RendererSharedSetup {
         baseSpacing: Float,
         subdivisions: Int
     ) -> Float {
-        let distance = cameraState.distance
+        // The height the view shows at the pivot. In orthographic that is the scale: `distance`
+        // only places the eye there, and an orthographic zoom no longer changes it (#211).
         let fovRadians = cameraState.fieldOfView * .pi / 180.0
-        let visibleWidth = 2.0 * distance * tan(fovRadians / 2.0)
+        let visibleWidth =
+            cameraState.isOrthographic
+            ? cameraState.orthographicScale
+            : 2.0 * cameraState.distance * tan(fovRadians / 2.0)
         let idealSpacing = visibleWidth / gridTargetDivisions
         let levelBase = Float(max(subdivisions, 2))
 
@@ -704,7 +709,9 @@ enum RendererSharedSetup {
                 gridOrigin: window.origin,
                 spacing: spacing,
                 columns: window.columns,
-                dotSize: max(2.0, 4.0 / cameraState.distance),
+                // The distance that shows the same height: in orthographic `distance` only
+                // places the eye, which may sit far back (#211).
+                dotSize: max(2.0, 4.0 / PivotStrategy.zoomDistance(of: cameraState)),
                 rows: window.rows,
                 dotColor: settings.gridColors.dot
             )

@@ -77,19 +77,22 @@ internal enum MeasurementCompositor {
         vp: simd_float4x4,
         viewportSize: CGSize
     ) {
-        guard let s = project(m.start, vp: vp, viewportSize: viewportSize),
-            let e = project(m.end, vp: vp, viewportSize: viewportSize),
-            let mid = project(m.midpoint, vp: vp, viewportSize: viewportSize)
-        else { return }
+        // An end behind the camera cuts the line where it leaves the view rather than dropping
+        // the measurement (issue #211); only the ends in view get a dot.
+        guard let line = segment(m.start, m.end, vp: vp, viewportSize: viewportSize) else {
+            return
+        }
 
         // Leader line (white halo + blue core).
-        strokeLine(s, e, in: ctx, color: Palette.white, width: 1.5)
-        strokeLine(s, e, in: ctx, color: Palette.blue, width: 1.0)
+        strokeLine(line.start, line.end, in: ctx, color: Palette.white, width: 1.5)
+        strokeLine(line.start, line.end, in: ctx, color: Palette.blue, width: 1.0)
 
-        drawEndpoint(at: s, in: ctx)
-        drawEndpoint(at: e, in: ctx)
+        if line.startIsEndpoint { drawEndpoint(at: line.start, in: ctx) }
+        if line.endIsEndpoint { drawEndpoint(at: line.end, in: ctx) }
 
+        // At the midpoint, or at the middle of what is in view when that is culled.
         let text = m.label ?? formatDistance(m.distance)
+        let mid = project(m.midpoint, vp: vp, viewportSize: viewportSize) ?? line.midpoint
         drawLabel(text, at: mid, in: ctx)
     }
 
@@ -101,10 +104,20 @@ internal enum MeasurementCompositor {
         vp: simd_float4x4,
         viewportSize: CGSize
     ) {
-        guard let v = project(m.vertex, vp: vp, viewportSize: viewportSize),
-            let a = project(m.pointA, vp: vp, viewportSize: viewportSize),
-            let b = project(m.pointB, vp: vp, viewportSize: viewportSize)
-        else { return }
+        // Each arm is cut where it leaves the view (issue #211). Without the vertex in view
+        // there is no corner for the arc, so only the visible parts of the arms are drawn.
+        let armA = segment(m.vertex, m.pointA, vp: vp, viewportSize: viewportSize)
+        let armB = segment(m.vertex, m.pointB, vp: vp, viewportSize: viewportSize)
+        guard let armA, let armB, armA.startIsEndpoint else {
+            for arm in [armA, armB].compactMap({ $0 }) {
+                strokeLine(arm.start, arm.end, in: ctx, color: Palette.white, width: 1.5)
+                strokeLine(arm.start, arm.end, in: ctx, color: Palette.orange, width: 1.0)
+            }
+            return
+        }
+        let v = armA.start
+        let a = armA.end
+        let b = armB.end
 
         // Arms.
         strokePolyline([a, v, b], in: ctx, color: Palette.white, width: 1.5)
@@ -153,34 +166,38 @@ internal enum MeasurementCompositor {
         vp: simd_float4x4,
         viewportSize: CGSize
     ) {
-        guard let center = project(m.center, vp: vp, viewportSize: viewportSize),
-            let edge = project(m.edgePoint, vp: vp, viewportSize: viewportSize)
-        else { return }
+        // Cut where it leaves the view (issue #211); the markers only on the ends in view.
+        guard let line = segment(m.center, m.edgePoint, vp: vp, viewportSize: viewportSize) else {
+            return
+        }
+        let center = line.start
+        let edge = line.end
 
         // Leader.
         strokeLine(center, edge, in: ctx, color: Palette.white, width: 1.5)
         strokeLine(center, edge, in: ctx, color: Palette.green, width: 1.0)
 
         // Center cross marker.
-        let crossSize: CGFloat = 4
-        strokeLine(
-            CGPoint(x: center.x - crossSize, y: center.y),
-            CGPoint(x: center.x + crossSize, y: center.y),
-            in: ctx, color: Palette.green, width: 1.5
-        )
-        strokeLine(
-            CGPoint(x: center.x, y: center.y - crossSize),
-            CGPoint(x: center.x, y: center.y + crossSize),
-            in: ctx, color: Palette.green, width: 1.5
-        )
+        if line.startIsEndpoint {
+            let crossSize: CGFloat = 4
+            strokeLine(
+                CGPoint(x: center.x - crossSize, y: center.y),
+                CGPoint(x: center.x + crossSize, y: center.y),
+                in: ctx, color: Palette.green, width: 1.5
+            )
+            strokeLine(
+                CGPoint(x: center.x, y: center.y - crossSize),
+                CGPoint(x: center.x, y: center.y + crossSize),
+                in: ctx, color: Palette.green, width: 1.5
+            )
+        }
 
-        drawEndpoint(at: edge, in: ctx)
+        if line.endIsEndpoint { drawEndpoint(at: edge, in: ctx) }
 
         let value = m.showDiameter ? m.diameter : m.radius
         let prefix = m.showDiameter ? "\u{2300}" : "R"
         let text = m.label ?? "\(prefix)\(formatDistance(value))"
-        let mid = CGPoint(x: (center.x + edge.x) / 2, y: (center.y + edge.y) / 2)
-        drawLabel(text, at: mid, in: ctx)
+        drawLabel(text, at: line.midpoint, in: ctx)
     }
 
     // MARK: - Drawing primitives
@@ -294,6 +311,14 @@ internal enum MeasurementCompositor {
         viewportSize: CGSize
     ) -> CGPoint? {
         ProjectionUtility.worldToScreen(point: point, vpMatrix: vp, viewportSize: viewportSize)
+    }
+
+    /// The part of the segment from `a` to `b` in front of the camera, on screen.
+    private static func segment(
+        _ a: SIMD3<Float>, _ b: SIMD3<Float>, vp: simd_float4x4, viewportSize: CGSize
+    ) -> ProjectionUtility.ScreenSegment? {
+        ProjectionUtility.clippedSegmentToScreen(
+            from: a, to: b, vpMatrix: vp, viewportSize: viewportSize)
     }
 
     /// Converts a top-down screen-space point into CG bottom-up coordinates.
