@@ -85,7 +85,7 @@ controller.onPick = { result in
 
 ## Body-level selection
 
-`ViewportController` maintains `selectedBodyIDs: Set<String>`, which the renderer uses to draw a highlight outline around selected bodies. Select programmatically or mirror a pick result:
+`ViewportController` maintains `selectedBodyIDs: Set<String>`, which the renderer uses to draw a highlight outline around selected bodies. The outline's colour and pixel width come from `ViewportConfiguration.selectionOutline` (and `.hoverOutline` for the hovered body). Select programmatically or mirror a pick result:
 
 ```swift
 // Single select

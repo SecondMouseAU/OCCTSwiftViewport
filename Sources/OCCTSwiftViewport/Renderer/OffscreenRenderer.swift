@@ -319,6 +319,7 @@ public final class OffscreenRenderer: Sendable {
         for body in bodies where body.isVisible {
             ensureBuffers(for: body)
         }
+        pruneBufferCache(keeping: bodies)
 
         let cameraState = options.cameraState
         let aspectRatio = Float(w) / Float(h)
@@ -874,6 +875,18 @@ public final class OffscreenRenderer: Sendable {
         return built
     }
 
+    /// Drops cached buffers for bodies no longer passed to `render`, matching the live renderer.
+    private func pruneBufferCache(keeping bodies: [ViewportBody]) {
+        let activeIDs = Set(bodies.map(\.id))
+        for id in bodyGeneration.keys where !activeIDs.contains(id) {
+            bodyBufferCache.removeValue(forKey: id)
+            bodyGeneration.removeValue(forKey: id)
+        }
+    }
+
+    /// Number of bodies with cached GPU buffers; exposed for tests.
+    var cachedBodyCount: Int { bodyBufferCache.count }
+
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen { return }
@@ -896,7 +909,11 @@ public final class OffscreenRenderer: Sendable {
         let pointColorVB = RendererSharedBuffers.makePointColorBuffer(
             device: device, vertexColors: body.vertexColors, vertexCount: body.vertices.count)
 
+        // Drop the previous generation's entry when the body no longer has any geometry, so a
+        // body that keeps its `id` but clears its data stops drawing (#136 M10).
         guard mesh.vertexBuffer != nil || nativeEdgeVB != nil || pointPositionVB != nil else {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
             return
         }
 

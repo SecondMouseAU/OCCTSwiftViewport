@@ -44,7 +44,10 @@ public struct DynamicPivotConfiguration: Sendable {
 @MainActor
 public final class PivotStrategy {
 
-    /// Cached bounding boxes keyed by body ID.
+    /// Cached body-local bounding boxes keyed by body ID.
+    ///
+    /// Local, not world: the cache is keyed on `generation`, which does not change when only a
+    /// body's `transform` does, so the transform is applied at use instead.
     private var bbCache: [String: BoundingBox] = [:]
 
     /// Generation counter per body for cache invalidation.
@@ -72,7 +75,7 @@ public final class PivotStrategy {
         updateCache(bodies: bodies)
 
         // Compute scene bounding box
-        guard let sceneBB = sceneBoundingBox() else { return nil }
+        guard let sceneBB = sceneBoundingBox(bodies: bodies) else { return nil }
         let diagonal = sceneBB.diagonalLength
         guard diagonal > 0 else { return nil }
 
@@ -152,9 +155,11 @@ public final class PivotStrategy {
         }
     }
 
-    private func sceneBoundingBox() -> BoundingBox? {
+    /// World-space union of the cached bounds of `bodies`, each moved by its current `transform`.
+    private func sceneBoundingBox(bodies: [ViewportBody]) -> BoundingBox? {
         var result: BoundingBox?
-        for bb in bbCache.values {
+        for body in bodies {
+            guard let bb = bbCache[body.id]?.transformed(by: body.transform) else { continue }
             if let existing = result {
                 result = existing.union(bb)
             } else {

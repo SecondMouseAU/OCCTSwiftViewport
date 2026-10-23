@@ -105,11 +105,14 @@ struct AxisUniforms {
     var viewProjectionMatrix: simd_float4x4
 }
 
+// IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct SelectionOutlineParams`).
+// Field order, types, and 16-byte alignment must stay identical. Total stride = 160 bytes.
 struct SelectionOutlineParamsSwift {
-    var viewProjectionMatrix: simd_float4x4
-    var modelMatrix: simd_float4x4
-    var outlineColor: SIMD3<Float>
-    var outlineScale: Float
+    var viewProjectionMatrix: simd_float4x4  // offset   0
+    var modelMatrix: simd_float4x4  // offset  64
+    var outlineColor: SIMD3<Float>  // offset 128 (16 bytes, like Metal float3)
+    var outlineWidth: Float  // offset 144 — drawable pixels
+    var viewportSize: SIMD2<Float>  // offset 152 — drawable pixels
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
@@ -214,7 +217,7 @@ private struct BodyBuffers {
     ///
     /// Nil when `body.triangleStyles` is empty. RGBA per triangle, indexed by
     /// `[[primitive_id]]` in the highlight fragment shader.
-    let triangleStyleBuffer: MTLBuffer?
+    var triangleStyleBuffer: MTLBuffer?
     /// The body's local-space AABB, computed once when buffers are built.
     ///
     /// Cached here so per-frame frustum culling (issue #42) doesn't rescan vertices.
@@ -395,6 +398,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private var bodyBufferCache: [String: BodyBuffers] = [:]
     /// Generation counter per body ID (detects geometry changes).
     private var bodyGeneration: [String: UInt64] = [:]
+    /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
+    private var bodyStyleGeneration: [String: UInt64] = [:]
 
     /// Axis vertex buffer (6 vertices: 3 line segments with position+color).
     private let axisVertexBuffer: MTLBuffer
@@ -449,7 +454,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.controller = controller
         self.bodiesBinding = bodies
 
-        let sampleCount = controller.configuration.msaaSampleCount
+        // Clamp the requested MSAA count to one the device supports (#136 L2), using the same
+        // mapping as OffscreenRenderer (#134). An unsupported count would otherwise fail pipeline
+        // creation, `init` would return nil and MetalViewportView would show its fallback colour.
+        let sampleCount = OffscreenRenderer.supportedSampleCount(
+            controller.configuration.msaaSampleCount
+        ) { device.supportsTextureSampleCount($0) }
         self.msaaSampleCount = sampleCount
 
         // Load shader library.
@@ -1284,8 +1294,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             edgeIntensity
         )
 
-        // Collect active clip planes (up to 4)
-        let activeClipPlanes = Array(controller.clipPlanes.filter { $0.isEnabled }.prefix(4))
+        // Collect active clip planes (up to ClipPlane.maxActivePlanes; the controller logs extras)
+        let activeClipPlanes = ClipPlane.activePlanes(in: controller.clipPlanes).applied
         let clipPlaneVecs: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = {
             var planes: [SIMD4<Float>] = activeClipPlanes.map { $0.asFloat4 }
             while planes.count < 4 { planes.append(.zero) }
@@ -2002,16 +2012,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 else { continue }
 
                 let isHover = (hoveredID == body.id && !selectedIDs.contains(body.id))
-                let outlineColor: SIMD3<Float> =
+                let style =
                     isHover
-                    ? SIMD3<Float>(0.4, 0.7, 1.0)  // light blue for hover
-                    : SIMD3<Float>(0.1, 0.5, 1.0)  // bright blue for selection
+                    ? controller.configuration.hoverOutline
+                    : controller.configuration.selectionOutline
+                guard style.width > 0 else { continue }
 
+                // Width is in drawable pixels; the vertex shader expands along the screen-space
+                // normal, so the ring no longer scales with the body's size (#136 L4).
                 var outlineParams = SelectionOutlineParamsSwift(
                     viewProjectionMatrix: viewProjection,
                     modelMatrix: body.transform,
-                    outlineColor: outlineColor,
-                    outlineScale: 0.015
+                    outlineColor: style.color,
+                    outlineWidth: style.width,
+                    viewportSize: SIMD2<Float>(
+                        Float(max(drawableSize.width, 1)), Float(max(drawableSize.height, 1)))
                 )
 
                 if let nb = buffers.normalBuffer {
@@ -2526,7 +2541,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                 objectIndex = 0
                 for body in bodies where body.isVisible {
-                    guard let buffers = bodyBufferCache[body.id] else {
+                    guard let buffers = bodyBufferCache[body.id],
+                        Self.writesSSAODepth(body)
+                    else {
                         objectIndex += 1
                         continue
                     }
@@ -2633,21 +2650,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let dofEnabled = controller.enableDepthOfField
                 var dofFocalDist = controller.dofFocalDistance
                 if dofEnabled && dofFocalDist == 0 {
-                    // Auto-focus: use distance to scene center
-                    var sceneCenter = SIMD3<Float>.zero
-                    var count: Float = 0
-                    for body in bodies where body.isVisible {
-                        if let bb = body.boundingBox {
-                            sceneCenter += (bb.min + bb.max) * 0.5
-                            count += 1
-                        }
-                    }
-                    if count > 0 {
-                        sceneCenter /= count
-                        dofFocalDist = simd_distance(cameraState.position, sceneCenter)
-                    } else {
-                        dofFocalDist = cameraState.distance
-                    }
+                    // Auto-focus: use distance to the world-space scene center
+                    dofFocalDist = Self.autoFocusDistance(
+                        bodies: bodies, cameraPosition: cameraState.position,
+                        fallback: cameraState.distance)
                 }
                 var ssaoParams = SSAOParamsSwift(
                     texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
@@ -2675,17 +2681,93 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
-        // Prune cache entries for bodies no longer in the scene.
+        // Prune cache entries for bodies no longer in the scene. Walk `bodyGeneration`, a
+        // superset of the buffer cache: an emptied body keeps a generation with no buffers.
         let activeIDs = Set(bodies.map(\.id))
-        for id in bodyBufferCache.keys where !activeIDs.contains(id) {
+        for id in bodyGeneration.keys where !activeIDs.contains(id) {
             bodyBufferCache.removeValue(forKey: id)
             bodyGeneration.removeValue(forKey: id)
+            bodyStyleGeneration.removeValue(forKey: id)
         }
 
         if let presentable = targets.presentable {
             commandBuffer.present(presentable)
         }
         commandBuffer.commit()
+    }
+
+    // MARK: - Per-triangle styles
+
+    /// Uploads `body.triangleStyles` as a raw SIMD4<Float> array the highlight fragment shader
+    /// indexes by `[[primitive_id]]`, or returns nil when the array is empty or its count
+    /// doesn't match `triangleCount` (#136 L9; logged in debug builds).
+    private func makeTriangleStyleBuffer(for body: ViewportBody, triangleCount: Int) -> MTLBuffer? {
+        guard
+            Self.triangleStylesMatch(
+                styleCount: body.triangleStyles.count, triangleCount: triangleCount)
+        else {
+            #if DEBUG
+                if !body.triangleStyles.isEmpty {
+                    NSLog(
+                        "[ViewportRenderer] body %@: triangleStyles.count %ld != triangle count %ld; "
+                            + "highlights ignored", body.id, body.triangleStyles.count,
+                        triangleCount)
+                }
+            #endif
+            return nil
+        }
+        var packed = body.triangleStyles.map { $0.color }
+        return device.makeBuffer(
+            bytes: &packed,
+            length: packed.count * MemoryLayout<SIMD4<Float>>.stride,
+            options: .storageModeShared
+        )
+    }
+
+    /// Whether a `triangleStyles` array of `styleCount` entries is drawn for a body with
+    /// `triangleCount` triangles.
+    ///
+    /// Only a non-empty array with exactly one entry per triangle is used; any other count
+    /// skips the highlight pass for the body (and logs in debug builds).
+    nonisolated static func triangleStylesMatch(styleCount: Int, triangleCount: Int) -> Bool {
+        styleCount > 0 && styleCount == triangleCount
+    }
+
+    // MARK: - Depth-of-field autofocus
+
+    /// Distance from `cameraPosition` to the mean of the visible geometry bodies' world-space
+    /// bounding-box centres, or `fallback` when no such body has bounds.
+    ///
+    /// Bounds are transformed by each body's `transform` first, so a body positioned by its
+    /// transform is focused where it is drawn rather than at its local origin (#136 M12).
+    /// Overlay-layer bodies are ignored.
+    nonisolated static func autoFocusDistance(
+        bodies: [ViewportBody], cameraPosition: SIMD3<Float>, fallback: Float
+    ) -> Float {
+        var sceneCenter = SIMD3<Float>.zero
+        var count: Float = 0
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
+            guard let bb = body.boundingBox?.transformed(by: body.transform) else { continue }
+            sceneCenter += bb.center
+            count += 1
+        }
+        guard count > 0 else { return fallback }
+        return simd_distance(cameraPosition, sceneCenter / count)
+    }
+
+    // MARK: - SSAO depth prepass classification
+
+    /// Whether `body` belongs in the SSAO / silhouette depth prepass.
+    ///
+    /// Mirrors how the main pass classifies bodies: overlay-layer bodies (manipulators, gizmos)
+    /// draw in their own pass on top of everything, point clouds draw as sprites, and translucent
+    /// bodies go through the sorted transparent pass without writing depth. None of them belongs
+    /// in the depth the post-process reads, or they pick up silhouettes and ambient occlusion
+    /// (#136 M11).
+    nonisolated static func writesSSAODepth(_ body: ViewportBody) -> Bool {
+        body.renderLayer == .geometry
+            && body.primitiveKind != .point
+            && body.effectiveMaterial.opacity >= 1.0
     }
 
     // MARK: - Shaded surface draw
@@ -2775,6 +2857,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen {
+            // Geometry still valid. `triangleStyles` can be reassigned on the same body without a
+            // new generation, so re-upload just the style buffer when it changed.
+            if bodyStyleGeneration[body.id] != body.triangleStylesGeneration,
+                var cached = bodyBufferCache[body.id]
+            {
+                cached.triangleStyleBuffer = makeTriangleStyleBuffer(
+                    for: body, triangleCount: cached.indexCount / 3)
+                bodyBufferCache[body.id] = cached
+            }
+            bodyStyleGeneration[body.id] = body.triangleStylesGeneration
             return  // buffer still valid
         }
 
@@ -2853,12 +2945,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Skip bodies with no renderable data at all. Arc-only bodies have none of
         // the baked buffers (arcs are sampled per-frame), so admit them too (#48).
+        // A body that kept its `id` but lost all its geometry must drop the entry cached
+        // for its previous generation, or the old buffers keep drawing (#136 M10).
         guard
             vertexBuffer != nil
                 || nativeEdgeVB != nil
                 || pointPositionVB != nil
                 || !body.arcs.isEmpty
-        else { return }
+        else {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
+            return
+        }
 
         // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
         // the patch builder consumes an interleaved stride-6 buffer + faceIndices, neither of which
@@ -2903,23 +3001,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // Per-triangle highlight style buffer. Built only when the body has any
-        // triangleStyles set; nil otherwise. Uploaded as raw SIMD4<Float> array
-        // so the fragment shader can index by [[primitive_id]] directly.
-        let triStyleBuf: MTLBuffer?
-        let triangleCount = indexCount / 3
-        if !body.triangleStyles.isEmpty, triangleCount > 0,
-            body.triangleStyles.count == triangleCount
-        {
-            // Pack into a contiguous SIMD4<Float> array.
-            var packed = body.triangleStyles.map { $0.color }
-            triStyleBuf = device.makeBuffer(
-                bytes: &packed,
-                length: packed.count * MemoryLayout<SIMD4<Float>>.stride,
-                options: .storageModeShared
-            )
-        } else {
-            triStyleBuf = nil
-        }
+        // triangleStyles set; nil otherwise.
+        let triStyleBuf = makeTriangleStyleBuffer(for: body, triangleCount: indexCount / 3)
 
         bodyBufferCache[body.id] = BodyBuffers(
             vertexBuffer: vertexBuffer,
@@ -2942,6 +3025,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             localBoundingBox: body.boundingBox
         )
         bodyGeneration[body.id] = currentGen
+        bodyStyleGeneration[body.id] = body.triangleStylesGeneration
     }
 
     // MARK: - Picking

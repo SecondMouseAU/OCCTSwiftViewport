@@ -248,6 +248,11 @@ The renderer sends only enabled planes, packing them into a fixed-size 4-tuple
 in the `Uniforms` struct. `clipPlaneCount` tells the shader how many entries to
 read; unused slots are zeroed.
 
+**Limit: four enabled planes.** At most `ClipPlane.maxActivePlanes` (4) enabled
+planes are applied, taken in array order. Enabled planes past the fourth are not
+applied, and debug builds log a warning when `clipPlanes` is set with more.
+Disabled planes don't count toward the limit.
+
 ---
 
 ## Tips

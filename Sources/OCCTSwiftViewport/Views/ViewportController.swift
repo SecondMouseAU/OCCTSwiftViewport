@@ -87,10 +87,23 @@ public final class ViewportController: ObservableObject {
     /// Edge/wireframe intensity multiplier (0 = invisible, 1 = default, 2+ = bold).
     @Published public var edgeIntensity: Float = 1.0
 
-    /// Active clipping planes (up to 4).
+    /// Clipping planes for section views.
     ///
-    /// Only enabled planes are applied.
-    @Published public var clipPlanes: [ClipPlane] = []
+    /// Only enabled planes are applied, and at most ``ClipPlane/maxActivePlanes`` (4) of them,
+    /// in array order. Enabled planes past the fourth are ignored by the renderer; debug builds
+    /// log a warning when this is set with more.
+    @Published public var clipPlanes: [ClipPlane] = [] {
+        didSet {
+            #if DEBUG
+                let dropped = ClipPlane.activePlanes(in: clipPlanes).dropped
+                if dropped > 0 {
+                    NSLog(
+                        "[ViewportController] %ld enabled clip plane(s) beyond the limit of %ld "
+                            + "will not be applied", dropped, ClipPlane.maxActivePlanes)
+                }
+            #endif
+        }
+    }
 
     /// Active measurement annotations displayed on the viewport.
     @Published public var measurements: [ViewportMeasurement] = []

@@ -311,7 +311,7 @@ public struct MetalViewportView: View {
             MetalViewRepresentable(
                 renderer: renderer,
                 backgroundColor: canvasBackgroundColor,
-                sampleCount: controller.configuration.msaaSampleCount,
+                sampleCount: renderer.pipelineSampleCount,
                 onScrollWheel: onScrollWheel,
                 onMouseDown: onMouseDown,
                 onDrag: onDrag,
@@ -328,7 +328,7 @@ public struct MetalViewportView: View {
             MetalViewRepresentable(
                 renderer: renderer,
                 backgroundColor: canvasBackgroundColor,
-                sampleCount: controller.configuration.msaaSampleCount
+                sampleCount: renderer.pipelineSampleCount
             )
         }
     #endif

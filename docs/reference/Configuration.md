@@ -11,7 +11,7 @@ These types control viewport appearance, rendering fidelity, and picking. `Viewp
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -263,7 +263,7 @@ Viewport background color as linear RGBA with premultiplied-alpha conventions. T
 public var msaaSampleCount: Int  // default: 4
 ```
 
-Metal MSAA sample count for the main color/depth attachments. Must be `1` (no MSAA) or `4` (4× MSAA). Use `1` in the `.performance` preset to reclaim fillrate on mobile.
+Requested Metal MSAA sample count for the main color/depth attachments: `1` for no MSAA, `4` (the default) for 4× MSAA. The renderer clamps the request to a count the device supports — values below `2` mean no MSAA, otherwise the largest of 8, 4 and 2 that does not exceed the request and that `MTLDevice.supportsTextureSampleCount(_:)` accepts, falling back to `1` — so an unsupported value degrades instead of failing renderer creation. `OffscreenRenderOptions.msaaSampleCount` uses the same mapping. Use `1` in the `.performance` preset to reclaim fillrate on mobile.
 
 ---
 
@@ -295,7 +295,7 @@ History blend weight for TAA. `0.0` = no history (effectively disables TAA), `1.
 public var enableSilhouettes: Bool  // default: true
 ```
 
-Whether a screen-space edge-darkening silhouette pass is applied after geometry rendering.
+Whether a screen-space edge-darkening silhouette pass is applied after geometry rendering. The pass (and SSAO) reads a depth prepass of opaque geometry-layer bodies only: translucent bodies, `RenderLayer.overlay` bodies (manipulators, gizmos) and point clouds get no silhouette or ambient occlusion.
 
 ---
 
@@ -316,6 +316,33 @@ public var silhouetteIntensity: Float  // default: 0.7
 ```
 
 Darkness of detected edges. `0.0` = invisible (silhouette pass does nothing), `1.0` = fully darkened.
+
+---
+
+### Selection outline
+
+#### `selectionOutline`
+
+```swift
+public var selectionOutline: SelectionOutlineStyle  // default: .selection
+```
+
+Colour and width of the outline ring drawn around bodies in `ViewportController.selectedBodyIDs`. The width is in drawable pixels, so the ring looks the same on a millimetre-scale part and a building. Set `width` to `0` to hide it. Not an `init` parameter; assign it on the value. See [`SelectionOutlineStyle`](#selectionoutlinestyle).
+
+```swift
+var config = ViewportConfiguration.cad
+config.selectionOutline = SelectionOutlineStyle(color: SIMD3(1.0, 0.6, 0.1), width: 4)
+```
+
+---
+
+#### `hoverOutline`
+
+```swift
+public var hoverOutline: SelectionOutlineStyle  // default: .hover
+```
+
+Outline for `ViewportController.hoveredBodyID` when that body is not also selected. Not an `init` parameter.
 
 ---
 
@@ -419,7 +446,7 @@ Simulated f-number. Smaller values produce a shallower (stronger) blur.
 public var dofFocalDistance: Float  // default: 0
 ```
 
-Focus distance in world units from the camera. `0` activates autofocus, centering focus on the selection or scene center.
+Focus distance in world units from the camera. `0` activates autofocus on the scene centre: the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied).
 
 ---
 
@@ -656,6 +683,28 @@ gizmo.renderLayer = .overlay  // always visible, never occluded
 
 ---
 
+## SelectionOutlineStyle
+
+```swift
+public struct SelectionOutlineStyle: Sendable, Hashable
+```
+
+Colour and width of the outline ring the live renderer draws around a selected or hovered body. Used by `ViewportConfiguration.selectionOutline` and `.hoverOutline`. The ring is drawn by pushing the body's vertices outward along their screen-space normals by `width` pixels, outside the body's stencil footprint, so it stays the same thickness at any zoom and model scale.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `color` | `SIMD3<Float>` | — | Outline colour, linear RGB. |
+| `width` | `Float` | `3.0` | Outline width in drawable pixels. `0` hides the outline. |
+
+| Preset | Colour | Width |
+|---|---|---|
+| `.selection` | `(0.1, 0.5, 1.0)` bright blue | 3 px |
+| `.hover` | `(0.4, 0.7, 1.0)` light blue | 3 px |
+
+The faint blue tint the shaded pass mixes into selected (15 %) and hovered (8 %) bodies is separate and fixed.
+
+---
+
 ## EdgeLineConfiguration
 
 ```swift
@@ -853,6 +902,8 @@ config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 
 
 Every pass that draws scene geometry honours the planes: shaded surfaces, edges, arcs, highlights, point clouds, the selection outline, the SSAO/silhouette depth prepass and the GPU pick pass, so clipped geometry is neither visible nor pickable. The shadow map, CPU `SceneRaycast` and `OffscreenRenderer` do not apply clip planes.
 
+**Limit:** the renderer applies at most `ClipPlane.maxActivePlanes` (4) enabled planes at once, taken in array order. Enabled planes past the fourth are not applied, and debug builds log a warning when `ViewportController.clipPlanes` is set with more. Disabled planes don't count.
+
 The plane equation is:
 
 ```
@@ -860,6 +911,16 @@ dot(normal, P) + distance = 0
 ```
 
 Points on the normal side (positive half-space) are kept; points on the opposite side are clipped.
+
+---
+
+### `maxActivePlanes`
+
+```swift
+public static let maxActivePlanes: Int  // 4
+```
+
+Maximum number of enabled clip planes the renderer applies at once. The shader uniform holds four planes.
 
 ---
 
