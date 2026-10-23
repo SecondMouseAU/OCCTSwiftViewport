@@ -356,33 +356,6 @@ enum RendererSharedSetup {
         )
     }
 
-    /// Selection-outline pipeline, drawing the body expanded along its normals.
-    ///
-    /// Paired with `makeStencilTestState(device:)` it lands only where stencil is not 1. Pass `directMeshVertexDescriptor()` for direct-mesh bodies; the shader reads position and
-    /// normal through `[[stage_in]]` either way.
-    static func makeSelectionOutlinePipelineState(
-        device: MTLDevice,
-        library: MTLLibrary,
-        sampleCount: Int,
-        depthFormat: MTLPixelFormat,
-        vertexDescriptor: MTLVertexDescriptor,
-        label: String? = nil
-    ) -> MTLRenderPipelineState? {
-        makePipelineState(
-            device: device,
-            label: label,
-            library: library,
-            vertexFunction: "selection_outline_vertex",
-            fragmentFunction: "selection_outline_fragment",
-            colorPixelFormat: .bgra8Unorm,
-            depthPixelFormat: depthFormat,
-            stencilPixelFormat: depthFormat,
-            sampleCount: sampleCount,
-            blending: .sourceOver,
-            vertexDescriptor: vertexDescriptor
-        )
-    }
-
     /// Per-triangle highlight pipeline (issue #25): composites `ViewportBody.triangleStyles` over
     /// the shaded surface.
     ///

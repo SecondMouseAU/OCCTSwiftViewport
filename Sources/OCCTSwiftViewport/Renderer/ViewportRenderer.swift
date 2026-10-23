@@ -112,13 +112,10 @@ struct AxisUniforms {
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct SelectionOutlineParams`).
-// Field order, types, and 16-byte alignment must stay identical. Total stride = 160 bytes.
+// Field order, types, and 16-byte alignment must stay identical. Total stride = 32 bytes.
 struct SelectionOutlineParamsSwift {
-    var viewProjectionMatrix: simd_float4x4  // offset   0
-    var modelMatrix: simd_float4x4  // offset  64
-    var outlineColor: SIMD3<Float>  // offset 128 (16 bytes, like Metal float3)
-    var outlineWidth: Float  // offset 144 — drawable pixels
-    var viewportSize: SIMD2<Float>  // offset 152 — drawable pixels
+    var selected: SIMD4<Float>  // offset  0: rgb = selected outline colour, w = width (pixels)
+    var hovered: SIMD4<Float>  // offset 16: rgb = hover outline colour, w = width (pixels)
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
@@ -368,13 +365,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// satisfies the descriptor's attribute 1.
     private let shadowDirectPipeline: MTLRenderPipelineState
     private let shadowMapManager: ShadowMapManager
-    // Selection outline
+    // Selection outline (#209): a full-screen dilation of the selection mask, which the
+    // single-sample selection-mask pass draws before the main pass.
     private let outlinePipeline: MTLRenderPipelineState
-    /// Direct-mesh selection outline pipeline.
-    ///
-    /// `selection_outline_vertex` with the two-buffer descriptor (position@0 / normal@2). The
-    /// outline expands along the normal, so the normal binding is read, not just satisfied.
-    private let outlineDirectPipeline: MTLRenderPipelineState
+    private var selectionMaskPipelines: SelectionMaskPipelines
+    private var selectionMaskTexture: MTLTexture?
     /// Colourless stencil masks marking each selected or hovered body's whole silhouette.
     ///
     /// The selection outline draws only where they left the stencil unmarked, which is the ring
@@ -418,12 +413,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let tessellatedDepthOnlyPipeline: MTLRenderPipelineState?
     // Internal (not private) so headless tests can tell whether the tessellated pick path ran.
     let tessellatedPickPipeline: MTLRenderPipelineState?
-    /// Highlight, outline and stencil mask on the tessellated surface (#202).
+    /// Highlight, stencil mask and selection mask on the tessellated surface (#202, #209).
     ///
     /// Drawn there rather than on the flat mesh under it. Internal so tests can see them.
     let tessellatedHighlightPipeline: MTLRenderPipelineState?
-    let tessellatedOutlinePipeline: MTLRenderPipelineState?
     let tessellatedStencilMaskPipeline: MTLRenderPipelineState?
+    /// Whether the tessellated pipelines came from the preserve-invariance library (#209).
+    let tessellationIsInvariant: Bool
     let tessellationEnabled: Bool
     /// The `maxTessellationFactor` the tessellated pipelines were built with (clamped, even).
     ///
@@ -560,20 +556,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         ) { device.supportsTextureSampleCount($0) }
         self.msaaSampleCount = sampleCount
 
-        // Load shader library.
-        // Xcode compiles .metal → default.metallib inside the resource bundle.
-        // Plain SPM copies the .metal source, so fall back to runtime compilation.
-        let library: MTLLibrary
-        if let compiled = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            library = compiled
-        } else if let metalURL = Bundle.module.url(forResource: "Shaders", withExtension: "metal"),
-            let src = try? String(contentsOf: metalURL, encoding: .utf8),
-            let fromSource = try? device.makeLibrary(source: src, options: nil)
-        {
-            library = fromSource
-        } else {
-            return nil
-        }
+        // Load shader library: the build-time default.metallib, else the bundled source.
+        guard let library = RendererSharedSetup.loadLibrary(device: device) else { return nil }
 
         let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
         let directVertexDesc = RendererSharedSetup.directMeshVertexDescriptor()
@@ -744,26 +728,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.shadowDirectPipeline = shadowDirectPipeline
         self.shadowMapManager = ShadowMapManager(device: device)
 
-        // Selection outline pipeline (MSAA, renders expanded geometry where stencil != 1)
+        // Selection outline (MSAA, the dilated selection mask where stencil != 1) and the
+        // single-sample selection-mask pipelines it reads (#209).
         guard
             let outlinePipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
                 device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat, vertexDescriptor: vertexDesc,
-                label: "selection_outline")
+                depthFormat: depthFormat, label: "selection_outline"),
+            let selectionMaskPipelines = RendererSharedSetup.makeSelectionMaskPipelines(
+                device: device, library: library)
         else {
             return nil
         }
         self.outlinePipeline = outlinePipeline
-
-        guard
-            let outlineDirectPipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat, vertexDescriptor: directVertexDesc,
-                label: "selection_outline_direct")
-        else {
-            return nil
-        }
-        self.outlineDirectPipeline = outlineDirectPipeline
+        self.selectionMaskPipelines = selectionMaskPipelines
 
         guard
             let stencilMaskPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
@@ -809,6 +786,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let tessMgr = TessellationManager(device: device, library: library)
         {
             self.tessellationManager = tessMgr
+            // The tessellated passes need bit-identical positions across pipelines, which
+            // only the preserve-invariance library guarantees (#209).
+            let invariantLibrary = RendererSharedSetup.invariantLibrary(device: device)
+            let tessLibrary = invariantLibrary ?? library
+            self.tessellationIsInvariant = invariantLibrary != nil
             let maxTessFactor = TessellationManager.clampedMaxFactor(
                 controller.configuration.tessellationMaxFactor)
             self.pipelineMaxTessFactor = maxTessFactor
@@ -817,7 +799,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedShadedPipeline =
                     try RendererSharedSetup.makeTessellatedShadedPipelineState(
-                        device: device, library: library, sampleCount: sampleCount,
+                        device: device, library: tessLibrary, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadedPipeline = nil
@@ -826,7 +808,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedShadowPipeline =
                     try RendererSharedSetup.makeTessellatedShadowPipelineState(
-                        device: device, library: library, maxFactor: maxTessFactor)
+                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadowPipeline = nil
                 diagErrors.append("shadow: \(error.localizedDescription)")
@@ -834,7 +816,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedDepthOnlyPipeline =
                     try RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
-                        device: device, library: library, maxFactor: maxTessFactor)
+                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedDepthOnlyPipeline = nil
                 diagErrors.append("depth: \(error.localizedDescription)")
@@ -842,7 +824,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedPickPipeline =
                     try RendererSharedSetup.makeTessellatedPickPipelineState(
-                        device: device, library: library, maxFactor: maxTessFactor)
+                        device: device, library: tessLibrary, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedPickPipeline = nil
                 diagErrors.append("pick: \(error.localizedDescription)")
@@ -850,29 +832,32 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             do {
                 self.tessellatedHighlightPipeline =
                     try RendererSharedSetup.makeTessellatedHighlightPipelineState(
-                        device: device, library: library, sampleCount: sampleCount,
+                        device: device, library: tessLibrary, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedHighlightPipeline = nil
                 diagErrors.append("highlight: \(error.localizedDescription)")
             }
             do {
-                self.tessellatedOutlinePipeline =
-                    try RendererSharedSetup.makeTessellatedOutlinePipelineState(
-                        device: device, library: library, sampleCount: sampleCount,
-                        depthFormat: depthFormat, maxFactor: maxTessFactor)
-            } catch {
-                self.tessellatedOutlinePipeline = nil
-                diagErrors.append("outline: \(error.localizedDescription)")
-            }
-            do {
                 self.tessellatedStencilMaskPipeline =
                     try RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
-                        device: device, library: library, sampleCount: sampleCount,
+                        device: device, library: tessLibrary, sampleCount: sampleCount,
                         depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedStencilMaskPipeline = nil
                 diagErrors.append("stencil mask: \(error.localizedDescription)")
+            }
+
+            if let maskPipeline = try? RendererSharedSetup.makeTessellatedPipelineState(
+                device: device, library: tessLibrary, label: "selection_mask_tessellated",
+                vertexFunction: "tessellated_depth_vertex",
+                fragmentFunction: "selection_mask_fragment",
+                colorPixelFormat: RendererSharedSetup.selectionMaskPixelFormat,
+                depthPixelFormat: .invalid, maxFactor: maxTessFactor)
+            {
+                self.selectionMaskPipelines.tessellated = maskPipeline
+            } else {
+                diagErrors.append("selection mask: pipeline failed")
             }
 
             self.tessellationEnabled = tessellatedShadedPipeline != nil
@@ -898,8 +883,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.tessellatedDepthOnlyPipeline = nil
             self.tessellatedPickPipeline = nil
             self.tessellatedHighlightPipeline = nil
-            self.tessellatedOutlinePipeline = nil
             self.tessellatedStencilMaskPipeline = nil
+            self.tessellationIsInvariant = false
             self.tessellationEnabled = false
             self.pipelineMaxTessFactor = 0
             #if DEBUG
@@ -1524,7 +1509,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     descriptor: shadowPass)
                 {
                     shadowEncoder.setDepthStencilState(depthState)
-                    shadowEncoder.setCullMode(.front)  // Reduce shadow acne with front-face culling
+                    // No culling (#209): a closed body's light-facing side is nearer the light
+                    // and wins the depth test anyway, while an open sheet casts a shadow
+                    // whichever way it faces. The old `.front` cull (with Metal's default
+                    // clockwise front faces and counter-clockwise meshes) dropped the faces
+                    // turned away from the light, so a sheet facing away cast none, and a
+                    // mirroring transform, which reverses the winding, flipped which side drew.
+                    shadowEncoder.setCullMode(.none)
                     shadowEncoder.setDepthBias(0.01, slopeScale: 1.5, clamp: 0.02)
                     // shadow_clip_fragment reads the section clip planes from the scene uniforms,
                     // so clipped-away geometry casts no shadow (#162).
@@ -1589,6 +1580,52 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // =========================================================
+        // Pass 0.5: Selection mask (#209)
+        // =========================================================
+        // The selected and hovered geometry bodies rasterised, without a depth test, into a
+        // single-sample mask the outline pass (4. below) dilates in screen space.
+        let selectedIDs = controller.selectedBodyIDs
+        let hoveredID = controller.hoveredBodyID
+        var selectionMaskDraws: [SelectionMaskDraw] = []
+        for (body, buffers, _) in frameVisibleBodies
+        where body.renderLayer == .geometry && body.primitiveKind != .point
+            && (selectedIDs.contains(body.id) || hoveredID == body.id)
+        {
+            guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0
+            else { continue }
+            let patches = drawnPatches(
+                of: buffers, useMeshShaders: useMeshShaders, useTessellation: useTessellation)
+            selectionMaskDraws.append(
+                SelectionMaskDraw(
+                    code: selectedIDs.contains(body.id)
+                        ? SelectionMaskCode.selected : SelectionMaskCode.hovered,
+                    modelMatrix: body.transform, vertexBuffer: vb,
+                    normalBuffer: buffers.normalBuffer, indexBuffer: ib,
+                    indexCount: buffers.indexCount, patches: patches,
+                    worldBounds: SelectionMaskDraw.worldBounds(
+                        local: buffers.localBoundingBox, transform: body.transform,
+                        tessellated: patches != nil)))
+        }
+        let outlineParams = RendererSharedSetup.selectionOutlineParams(
+            selected: controller.configuration.selectionOutline,
+            hovered: controller.configuration.hoverOutline)
+        let outlineScissor = RendererSharedSetup.selectionOutlineScissor(
+            bounds: selectionMaskDraws.map(\.worldBounds), viewProjection: viewProjection,
+            size: SIMD2(w, h), margin: max(outlineParams.selected.w, outlineParams.hovered.w))
+        var outlineMask: MTLTexture?
+        if !selectionMaskDraws.isEmpty, outlineScissor != nil,
+            let mask = RendererSharedSetup.selectionMaskTexture(
+                device: device, width: w, height: h, reusing: selectionMaskTexture)
+        {
+            selectionMaskTexture = mask
+            RendererSharedSetup.encodeSelectionMaskPass(
+                commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
+                pipelines: selectionMaskPipelines, uniforms: makeUniforms())
+            outlineMask = mask
+        }
+
+        // =========================================================
         // Pass 1: Main MSAA render (color-only, no pick texture)
         // =========================================================
         renderPassDescriptor.colorAttachments[1].texture = nil
@@ -1650,9 +1687,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // 3. Draw bodies
-        let selectedIDs = controller.selectedBodyIDs
-        let hoveredID = controller.hoveredBodyID
-
         // Transparent surfaces (issue #53) are deferred to a sorted back-to-front
         // pass after the opaque bodies, so they composite correctly.
         var transparentDraws: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
@@ -2077,79 +2111,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 indexBuffer: ib, indexBufferOffset: 0)
         }
 
-        // 4. Selection outline pass (stencil test: draw only where stencil != 1). Only bodies
-        // marked in the stencil above, all of them geometry-layer: overlay bodies are drawn later
-        // with always-pass depth and never mark the stencil, so they get no outline.
-        if !outlinedBodyIDs.isEmpty {
+        // 4. Selection outline pass (stencil test: draw only where stencil != 1): the selection
+        // mask dilated in screen space by each style's width, so every outlined body is ringed
+        // whatever its normals (#209). Only geometry-layer bodies are in the mask and the
+        // stencil: overlay bodies are drawn later with always-pass depth and get no outline.
+        if !outlinedBodyIDs.isEmpty, let mask = outlineMask, let scissor = outlineScissor {
             mainEncoder.setDepthStencilState(stencilTestState)
             mainEncoder.setStencilReferenceValue(1)
-
-            for body in bodies where body.isVisible && outlinedBodyIDs.contains(body.id) {
-                guard let buffers = bodyBufferCache[body.id],
-                    let vb = buffers.vertexBuffer,
-                    let ib = buffers.indexBuffer,
-                    buffers.indexCount > 0
-                else { continue }
-
-                let isHover = (hoveredID == body.id && !selectedIDs.contains(body.id))
-                let style =
-                    isHover
-                    ? controller.configuration.hoverOutline
-                    : controller.configuration.selectionOutline
-                guard style.width > 0 else { continue }
-
-                // Width is in drawable pixels; the vertex shader expands along the screen-space
-                // normal, so the ring no longer scales with the body's size (#136 L4).
-                var outlineParams = SelectionOutlineParamsSwift(
-                    viewProjectionMatrix: viewProjection,
-                    modelMatrix: body.transform,
-                    outlineColor: style.color,
-                    outlineWidth: style.width,
-                    viewportSize: SIMD2<Float>(
-                        Float(max(drawableSize.width, 1)), Float(max(drawableSize.height, 1)))
-                )
-
-                // Section clip planes (the outline fragment discards clipped fragments).
-                var outlineUniforms = makeUniforms()
-                if let patches = drawnPatches(
-                    of: buffers, useMeshShaders: useMeshShaders, useTessellation: useTessellation),
-                    let pipeline = tessellatedOutlinePipeline
-                {
-                    // Expanded from the tessellated silhouette, matching the mask (#202).
-                    mainEncoder.setFragmentBytes(
-                        &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
-                        index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
-                    RendererSharedSetup.encodeTessellatedDraw(
-                        encoder: mainEncoder, pipeline: pipeline, tessellation: patches,
-                        uniforms: &outlineParams)
-                    continue
-                }
-                if let nb = buffers.normalBuffer {
-                    // Direct-mesh body: position@0 + normal@2 (the outline expands along it).
-                    mainEncoder.setRenderPipelineState(outlineDirectPipeline)
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                } else {
-                    mainEncoder.setRenderPipelineState(outlinePipeline)
-                }
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                mainEncoder.setVertexBytes(
-                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
-                )
-                mainEncoder.setFragmentBytes(
-                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
-                )
-                mainEncoder.setFragmentBytes(
-                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle,
-                    indexCount: buffers.indexCount,
-                    indexType: .uint32,
-                    indexBuffer: ib,
-                    indexBufferOffset: 0
-                )
-            }
+            RendererSharedSetup.encodeSelectionOutline(
+                encoder: mainEncoder, pipeline: outlinePipeline, mask: mask,
+                params: outlineParams, scissor: scissor, targetSize: SIMD2(w, h))
         }
 
         // 5. Overlay pass: RenderLayer.overlay bodies, drawn after the selection outline with

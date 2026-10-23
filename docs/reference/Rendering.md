@@ -112,7 +112,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `gridSubdivisions` | `Int` | `10` | Subdivision factor between adaptive grid spacing levels, mirroring `ViewportConfiguration.gridSubdivisions`. |
 | `edgeLineConfiguration` | `EdgeLineConfiguration` | `.default` | Edge width and dash pattern, mirroring `ViewportConfiguration.edgeLineConfiguration`. See [`EdgeLineConfiguration`](Configuration.md#edgelineconfiguration). |
 | `explicitOrthoBounds` | `OrthoBounds?` | `nil` | Override projection with exact world-unit bounds. See `OrthoBounds`. |
-| `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge in pixels. `+x` = right, `+y` = down. Lightweight alternative to adjusting the camera for small registration corrections. |
+| `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge in pixels. `+x` = right, `+y` = down. Lightweight alternative to adjusting the camera for small registration corrections. The near/far fit counts overlay bodies inside the panned (and `explicitOrthoBounds`) view, so an overlay either brings into view is not clipped (#209). |
 | `measurements` | `[ViewportMeasurement]` | `[]` | Measurement annotations composited over the Metal pass via Core Graphics. World-space anchors must already be resolved on the input values. |
 | `edgeIntensity` | `Float` | `1.0` | Edge intensity, mirroring `ViewportController.edgeIntensity`: `1` is fully opaque, lower values fade edges linearly with view distance between the near and far clip planes, `0` hides them. |
 | `clipPlanes` | `[ClipPlane]` | `[]` | Section planes, mirroring `ViewportController.clipPlanes`. The first `ClipPlane.maxActivePlanes` (4) enabled planes clip every pass, the shadow map included. |
@@ -249,7 +249,7 @@ Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 
-> **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass, so per-body `isPickable` flags have no effect in the headless path. Selection and hover are drawn (tint and stencil outline) from `OffscreenRenderOptions.selectedBodyIDs` / `hoveredBodyID`.
+> **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass, so per-body `isPickable` flags have no effect in the headless path. Selection and hover are drawn (tint and outline ring) from `OffscreenRenderOptions.selectedBodyIDs` / `hoveredBodyID`.
 
 ### Parity with the live viewport
 

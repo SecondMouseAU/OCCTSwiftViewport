@@ -239,7 +239,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `backLight` | `LightSettings` | (required) | Rim/kicker light for edge definition |
 | `ambientIntensity` | `Float` | `0.3` | Hemisphere ambient strength, relative to 0.25 (the `.threePoint` reference level); 0 removes ambient |
 | `ambientColor` | `SIMD3<Float>` | `(1,1,1)` | Tint multiplied into the hemisphere ambient |
-| `shadowsEnabled` | `Bool` | `true` | Master switch for the shadow-map pass |
+| `shadowsEnabled` | `Bool` | `true` | Master switch for the shadow-map pass. The pass culls no faces, so an open sheet casts a shadow whichever way it faces, and a mirroring transform (negative determinant) shadows exactly like its unmirrored body (#209) |
 | `shadowSoftness` | `Float` | `0.3` | **Deprecated, ignored.** PCSS softness comes from `shadowLightSize` |
 | `shadowMapSize` | `Int` | `2048` | Shadow map resolution in pixels (width = height), spread over the world-space bounds of the visible `.geometry`-layer bodies; `.overlay` bodies neither cast into nor enlarge the shadow frustum |
 | `shadowIntensity` | `Float` | `0.4` | Opacity of cast shadows (0 = invisible, 1 = opaque) |
