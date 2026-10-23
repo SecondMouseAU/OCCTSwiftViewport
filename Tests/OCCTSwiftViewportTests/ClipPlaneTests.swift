@@ -105,4 +105,20 @@ struct ClipPlaneTests {
             #expect(near > 0 && near < far)
         }
     }
+
+    @Test("Near sits in front of every corner of an obliquely viewed AABB")
+    func nearInFrontOfObliqueAABB() {
+        // The camera looks past the box's nearest corner at an angle: that corner is 10.3 units
+        // away but only ~9.7 deep along the view axis. A near plane at the Euclidean distance
+        // clipped it off.
+        let bounds = BoundingBox(min: SIMD3<Float>(-2, 0, -12), max: SIMD3<Float>(2, 0, 0))
+        let camera = CameraState.lookAt(
+            target: SIMD3<Float>(0, 0, -5), from: SIMD3<Float>(0, 9, 5))
+        let (near, far) = camera.clipPlanes(sceneBounds: bounds)
+        let forward = simd_normalize(camera.viewDirection)
+        let frontDepth = simd_dot(SIMD3<Float>(0, 0, 0) - camera.position, forward)
+        #expect(near < frontDepth, "near \(near) clips the front corner at depth \(frontDepth)")
+        #expect(near >= frontDepth * 0.95, "near \(near) should still hug the front corner")
+        #expect(near > 0 && near < far)
+    }
 }

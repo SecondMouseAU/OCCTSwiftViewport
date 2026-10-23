@@ -24,11 +24,23 @@ extension CameraState {
         let radius = max(bounds.diagonalLength * 0.5, 1e-4)
         let camDist = simd_length(position - center)
 
-        // Compute actual minimum distance from camera to the AABB.
-        // This correctly handles the case when the camera is inside the scene bounds
-        // (returns 0), avoiding the section-view artifact where the near plane
-        // cut through geometry as the camera entered the bounding sphere.
-        let minDistToBox = bounds.distance(to: position)
+        // The near plane is a plane at a view-space depth, so fit it to the smallest view-space
+        // depth of the AABB (a linear function, so its minimum is at a corner), not the Euclidean
+        // distance to it. The distance is the depth only straight ahead: an AABB off to the side
+        // of the view axis is nearer in depth than in distance, so a near plane at that distance
+        // clipped the front of an obliquely viewed scene. A corner at or behind the camera plane
+        // (camera inside the box, or beside it) gives depth 0, so the floor below takes over,
+        // which also avoids the section-view artifact of #116.
+        let forward = simd_normalize(viewDirection)
+        var minDepthToBox = Float.greatestFiniteMagnitude
+        for corner in 0..<8 {
+            let point = SIMD3<Float>(
+                corner & 1 == 0 ? bounds.min.x : bounds.max.x,
+                corner & 2 == 0 ? bounds.min.y : bounds.max.y,
+                corner & 4 == 0 ? bounds.min.z : bounds.max.z)
+            minDepthToBox = min(minDepthToBox, simd_dot(point - position, forward))
+        }
+        minDepthToBox = max(minDepthToBox, 0)
 
         // Far reaches past the back of the scene with margin; near sits just in front of the
         // scene but is clamped so far/near never exceeds ~1e4. Without the margin, geometry on
@@ -36,7 +48,7 @@ extension CameraState {
         // body) lands exactly on the near plane at NDC z = 0, and rounding clips it (#156).
         var far = (camDist + radius) * 2.0
         far = max(far, radius * 2.0)
-        var near = max(minDistToBox * (1 - Self.nearPlaneMargin), far * 1e-4)
+        var near = max(minDepthToBox * (1 - Self.nearPlaneMargin), far * 1e-4)
         near = max(near, 1e-4)
         if near >= far { near = far * 1e-4 }
         return (near, far)

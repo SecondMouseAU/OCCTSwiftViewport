@@ -835,7 +835,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let tshDesc = MTLRenderPipelineDescriptor()
             tshDesc.label = "tessellated_shadow"
             tshDesc.vertexFunction = library.makeFunction(name: "tessellated_shadow_vertex")
-            tshDesc.fragmentFunction = library.makeFunction(name: "depth_only_fragment")
+            tshDesc.fragmentFunction = library.makeFunction(name: "shadow_clip_fragment")
             tshDesc.depthAttachmentPixelFormat = .depth32Float
             tshDesc.rasterSampleCount = 1
             configureTessellation(tshDesc)
@@ -959,8 +959,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
 
             let shadedFrag = library.makeFunction(name: "shaded_fragment")!
-            let depthFrag = library.makeFunction(name: "depth_only_fragment")
-            // SSAO/silhouette prepass honours section planes; the shadow map does not.
+            // Both the shadow map (#162) and the SSAO/silhouette prepass honour section planes.
+            let shadowFrag = library.makeFunction(name: "shadow_clip_fragment")
             let depthClipFrag = library.makeFunction(name: "depth_only_clip_fragment")
             let pickFrag = library.makeFunction(name: "meshlet_pick_fragment")
 
@@ -970,7 +970,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 samples: sampleCount, blend: true, label: "mesh_shaded"
             )
             self.meshShaderShadowPipeline = makeMeshPipeline(
-                meshFn: shadowMeshFunc, fragmentFn: depthFrag,
+                meshFn: shadowMeshFunc, fragmentFn: shadowFrag,
                 colorFormat: .invalid, depthFmt: .depth32Float,
                 label: "mesh_shadow"
             )
@@ -1601,6 +1601,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     shadowEncoder.setDepthStencilState(depthState)
                     shadowEncoder.setCullMode(.front)  // Reduce shadow acne with front-face culling
                     shadowEncoder.setDepthBias(0.01, slopeScale: 1.5, clamp: 0.02)
+                    // shadow_clip_fragment reads the section clip planes from the scene uniforms,
+                    // so clipped-away geometry casts no shadow (#162).
+                    var shadowClipUniforms = makeUniforms()
+                    shadowEncoder.setFragmentBytes(
+                        &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
                     for body in bodies where body.isVisible {
                         guard let buffers = bodyBufferCache[body.id] else { continue }

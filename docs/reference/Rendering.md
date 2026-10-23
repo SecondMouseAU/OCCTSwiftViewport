@@ -114,7 +114,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `explicitOrthoBounds` | `OrthoBounds?` | `nil` | Override projection with exact world-unit bounds. See `OrthoBounds`. |
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge in pixels. `+x` = right, `+y` = down. Lightweight alternative to adjusting the camera for small registration corrections. |
 | `measurements` | `[ViewportMeasurement]` | `[]` | Measurement annotations composited over the Metal pass via Core Graphics. World-space anchors must already be resolved on the input values. |
-| `edgeIntensity` | `Float` | `1.0` | Edge intensity, mirroring `ViewportController.edgeIntensity`: `1` is fully opaque, lower values fade edges with depth, `0` hides them. |
+| `edgeIntensity` | `Float` | `1.0` | Edge intensity, mirroring `ViewportController.edgeIntensity`: `1` is fully opaque, lower values fade edges linearly with view distance between the near and far clip planes, `0` hides them. |
 
 ### Initializer
 
