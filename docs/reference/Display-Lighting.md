@@ -183,6 +183,16 @@ if let key = mode.keyboardShortcut {
 
 Full scene-lighting rig. Assign to `ViewportController.lightingConfiguration` (or pass to `ViewportRenderer`) to reconfigure shading in the next render frame. All properties have defaults and the struct is `Sendable`, so configurations can be prepared on any actor and sent to the main actor.
 
+### Shading model
+
+Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal distribution, Smith geometry, Schlick Fresnel), not Blinn-Phong. Highlight size and sharpness come from each body's material (`ViewportBody.roughness`/`metallic`, or `PBRMaterial`), so the configuration has no shininess exponent. On top of the three direct lights the shader adds:
+
+- **Hemisphere ambient**: `ambientGroundColor` → `ambientSkyColor` by how far the normal points up, blended with two fixed side tints, then multiplied by `ambientColor × ambientIntensity / 0.25` (so `.threePoint`'s 0.25 is the reference level and 0 removes ambient). The world is **Z-up**: faces pointing +Z take the sky colour.
+- **Environment reflection**: image-based lighting when an environment map is loaded, otherwise a procedural ground→horizon→sky gradient, also Z-up.
+- **Fresnel rim**, **matcap** blend, **PCSS shadows** on the direct light, **SSAO**, and screen-space curvature shading.
+
+`specularIntensity` scales the direct-light GGX highlights (0.5 = the physically based lobe). It does not touch environment reflections.
+
 ### Stored Properties
 
 | Property | Type | Default | Description |
@@ -190,20 +200,20 @@ Full scene-lighting rig. Assign to `ViewportController.lightingConfiguration` (o
 | `keyLight` | `LightSettings` | (required) | Main directional light — typically the dominant, warm source |
 | `fillLight` | `LightSettings` | (required) | Secondary softer light to reduce shadow harshness |
 | `backLight` | `LightSettings` | (required) | Rim/kicker light for edge definition |
-| `ambientIntensity` | `Float` | `0.3` | Scalar ambient contribution (0–1) |
-| `ambientColor` | `SIMD3<Float>` | `(1,1,1)` | Tint applied to the ambient term |
+| `ambientIntensity` | `Float` | `0.3` | Hemisphere ambient strength, relative to 0.25 (the `.threePoint` reference level); 0 removes ambient |
+| `ambientColor` | `SIMD3<Float>` | `(1,1,1)` | Tint multiplied into the hemisphere ambient |
 | `shadowsEnabled` | `Bool` | `true` | Master switch for the shadow-map pass |
-| `shadowSoftness` | `Float` | `0.3` | PCSS penumbra softness (0 = hard, 1 = soft) |
+| `shadowSoftness` | `Float` | `0.3` | **Deprecated, ignored.** PCSS softness comes from `shadowLightSize` |
 | `shadowMapSize` | `Int` | `2048` | Shadow map resolution in pixels (width = height) |
 | `shadowIntensity` | `Float` | `0.4` | Opacity of cast shadows (0 = invisible, 1 = opaque) |
 | `shadowBias` | `Float` | `0.005` | Depth bias to prevent shadow acne |
-| `specularPower` | `Float` | `64.0` | Blinn-Phong shininess exponent (higher = tighter highlight) |
-| `specularIntensity` | `Float` | `0.5` | Specular highlight strength (0–1) |
+| `specularPower` | `Float` | `64.0` | **Deprecated, ignored.** Shading is GGX; set the body's `roughness` (or `PBRMaterial.roughness`) to tighten highlights |
+| `specularIntensity` | `Float` | `0.5` | Scales the direct-light GGX highlights: 0 = none, 0.5 = physically based, 1 = double |
 | `fresnelPower` | `Float` | `3.0` | Fresnel rim falloff exponent |
 | `fresnelIntensity` | `Float` | `0.3` | Fresnel rim brightness (0–1) |
 | `matcapBlend` | `Float` | `0.0` | Matcap blend factor (0 = pure lighting, 1 = pure matcap) |
-| `ambientSkyColor` | `SIMD3<Float>` | `(0.9,0.95,1.0)` | Hemisphere ambient — upper (sky) colour |
-| `ambientGroundColor` | `SIMD3<Float>` | `(0.3,0.25,0.2)` | Hemisphere ambient — lower (ground) colour |
+| `ambientSkyColor` | `SIMD3<Float>` | `(0.9,0.95,1.0)` | Hemisphere ambient — colour for normals pointing up (+Z) |
+| `ambientGroundColor` | `SIMD3<Float>` | `(0.3,0.25,0.2)` | Hemisphere ambient — colour for normals pointing down (−Z) |
 | `enableSSAO` | `Bool` | `true` | Enable screen-space ambient occlusion |
 | `ssaoRadius` | `Float` | `0.5` | SSAO sampling radius in view-space units |
 | `ssaoIntensity` | `Float` | `0.6` | SSAO darkening intensity (0 = none, 1 = maximum) |
@@ -211,10 +221,10 @@ Full scene-lighting rig. Assign to `ViewportController.lightingConfiguration` (o
 | `whitePoint` | `Float` | `1.0` | White point for tone-mapping normalization |
 | `shadowLightSize` | `Float` | `0.02` | PCSS light-source size (larger = softer penumbras) |
 | `shadowSearchRadius` | `Float` | `0.01` | PCSS blocker-search radius in light-space UV |
-| `environmentMapData` | `Data?` | `nil` | Legacy raw-bytes HDR: `Int32 width \| Int32 height \| RGBA32Float pixels` |
-| `environmentMapURL` | `URL?` | `nil` | File URL to a Radiance `.hdr` file; takes precedence over `environmentMapData` |
+| `environmentMapData` | `Data?` | `nil` | Legacy raw-bytes HDR: `Int32 width \| Int32 height \| RGBA32Float pixels`. Loaded automatically by both renderers when it changes; cleared when set back to `nil` |
+| `environmentMapURL` | `URL?` | `nil` | File URL to a Radiance `.hdr` file; takes precedence over `environmentMapData`. Loaded automatically like it; a file that fails to decode is skipped |
 | `environmentIntensity` | `Float` | `1.0` | IBL contribution multiplier |
-| `environmentRotationY` | `Float` | `0` | Y-axis rotation of the environment map in radians (0…2π) |
+| `environmentRotationY` | `Float` | `0` | Rotation of the environment about the world up axis (Z) in radians (0…2π). The panorama's horizon lies in the XY plane |
 | `backgroundExposure` | `Float` | `1.0` | Exposure for the visible skybox background; independent of `environmentIntensity` |
 | `drawBackground` | `Bool` | `false` | Render the environment map as a skybox; `false` uses a solid clear colour |
 
@@ -286,7 +296,7 @@ controller.lightingConfiguration = .threePoint
 public static let studio: LightingConfiguration
 ```
 
-Soft neutral studio lighting. All three lights are pure white; key intensity 0.8, fill 0.5, back 0.4. `ambientIntensity` 0.35, `shadowSoftness` 0.5, `specularPower` 32.0, `matcapBlend` 0.15. Good for product visualisation.
+Soft neutral studio lighting. All three lights are pure white; key intensity 0.8, fill 0.5, back 0.4. `ambientIntensity` 0.35, `specularIntensity` 0.6, `matcapBlend` 0.15. Good for product visualisation.
 
 ```swift
 controller.lightingConfiguration = .studio
@@ -298,7 +308,7 @@ controller.lightingConfiguration = .studio
 public static let architectural: LightingConfiguration
 ```
 
-Outdoor sun-sky simulation. Warm key (intensity 1.2, colour `(1.0, 0.95, 0.9)`), sky-blue fill (intensity 0.3), light back kicker (intensity 0.2). `ambientIntensity` 0.2, `shadowSoftness` 0.2. Good for architectural visualisation.
+Outdoor sun-sky simulation. Warm key (intensity 1.2, colour `(1.0, 0.95, 0.9)`), sky-blue fill (intensity 0.3), light back kicker (intensity 0.2). `ambientIntensity` 0.2. Good for architectural visualisation.
 
 ```swift
 controller.lightingConfiguration = .architectural
@@ -310,7 +320,7 @@ controller.lightingConfiguration = .architectural
 public static let flat: LightingConfiguration
 ```
 
-Technical flat lighting. Single on-axis key (direction `(0, 0, -1)`, intensity 0.8); fill and back lights are disabled (intensity 0.0). Shadows off, specular and Fresnel both 0.0, `exposure` 0.9. Closest to a 2D technical drawing look.
+Technical flat lighting. Single on-axis key (direction `(0, 0, -1)`, intensity 0.8); fill and back lights are disabled (intensity 0.0). `ambientIntensity` 0.3, shadows off, specular and Fresnel both 0.0, `exposure` 0.9. Closest to a 2D technical drawing look.
 
 ```swift
 controller.lightingConfiguration = .flat

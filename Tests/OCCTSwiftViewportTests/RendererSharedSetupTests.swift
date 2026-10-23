@@ -285,8 +285,10 @@ struct RendererSharedSetupTests {
 
         #expect(uniforms.cameraPosition == SIMD4<Float>(1, 2, 3, 0.25))
         #expect(uniforms.materialParams.w == 750)
-        #expect(uniforms.ambientSkyColor.w == lighting.specularPower)
-        #expect(uniforms.ambientGroundColor.w == lighting.specularIntensity)
+        #expect(uniforms.ambientSkyColor == SIMD4<Float>(lighting.ambientSkyColor, 0))
+        #expect(uniforms.ambientGroundColor == SIMD4<Float>(lighting.ambientGroundColor, 0))
+        // .threePoint is the reference: ambient and specular scales are exactly 1.
+        #expect(uniforms.lightingScales == SIMD4<Float>(1, 1, 1, 1))
         #expect(uniforms.lightViewProjectionMatrix == lightVP)
         #expect(uniforms.unlit == 1)
         // Optional parameters default to "no IBL, no clip planes", as the headless path expects.

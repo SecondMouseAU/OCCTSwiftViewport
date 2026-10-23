@@ -55,7 +55,7 @@ mesh topology without surface occlusion. Keyboard shortcut: **W**.
 
 ### `.shaded`
 
-Three-light Blinn-Phong + hemisphere ambient + Fresnel rim. The default and
+Three-light Cook-Torrance GGX + hemisphere ambient + Fresnel rim. The default and
 most common mode for geometry review. Keyboard shortcut: **S**.
 
 ![Shaded render of a box and sphere scene](images/display-shaded.png)

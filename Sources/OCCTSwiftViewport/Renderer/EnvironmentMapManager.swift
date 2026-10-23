@@ -52,6 +52,87 @@ final class EnvironmentMapManager {
         irradianceMap = nil
     }
 
+    // MARK: - Configuration-driven loading
+
+    /// Where a `LightingConfiguration` asks the environment map to come from.
+    enum ConfiguredSource {
+        case url(URL)
+        case data(Data)
+
+        /// The source `lighting` names, with `environmentMapURL` taking precedence.
+        nonisolated static func from(_ lighting: LightingConfiguration) -> ConfiguredSource? {
+            if let url = lighting.environmentMapURL { return .url(url) }
+            if let data = lighting.environmentMapData { return .data(data) }
+            return nil
+        }
+
+        /// Whether two sources name the same map, cheaply enough to ask every frame.
+        ///
+        /// Large `Data` is compared by storage identity rather than by content, so an unchanged
+        /// configuration costs a pointer compare; a fresh buffer with identical bytes reloads
+        /// once, which is harmless.
+        nonisolated static func same(_ a: ConfiguredSource?, _ b: ConfiguredSource?) -> Bool {
+            switch (a, b) {
+            case (nil, nil):
+                return true
+            case (.url(let x), .url(let y)):
+                return x == y
+            case (.data(let x), .data(let y)):
+                guard x.count == y.count else { return false }
+                if x.count <= 4096 { return x == y }
+                let px = x.withUnsafeBytes { $0.baseAddress }
+                let py = y.withUnsafeBytes { $0.baseAddress }
+                return px == py
+            default:
+                return false
+            }
+        }
+    }
+
+    /// What `sync(with:commandQueue:)` should do when the configured source moves on.
+    enum SyncAction: Equatable {
+        case none
+        case load
+        case clear
+    }
+
+    /// Decides how to react to the configuration's source changing from `previous` to `current`.
+    ///
+    /// Nothing happens while the source is unchanged, so a map loaded explicitly through
+    /// `ViewportRenderer.loadEnvironmentMap(...)` is not cleared by a configuration that never
+    /// named one.
+    nonisolated static func syncAction(
+        previous: ConfiguredSource?, current: ConfiguredSource?
+    ) -> SyncAction {
+        if ConfiguredSource.same(previous, current) { return .none }
+        return current == nil ? .clear : .load
+    }
+
+    /// The source last seen in a configuration, kept (with its `Data` retained) for comparison.
+    private var lastConfiguredSource: ConfiguredSource?
+
+    /// Loads or clears the environment map when the configuration's map source has changed.
+    ///
+    /// Called by both renderers once per frame. A URL that fails to decode is skipped, not
+    /// retried every frame, and the previous environment stays.
+    func sync(with lighting: LightingConfiguration, commandQueue: MTLCommandQueue) {
+        let current = ConfiguredSource.from(lighting)
+        let action = Self.syncAction(previous: lastConfiguredSource, current: current)
+        lastConfiguredSource = current
+        switch (action, current) {
+        case (.load, .url(let url)?):
+            // A bad file leaves the previous environment in place (see loadHDR); the failure is
+            // not retried until the configuration names a different source.
+            try? loadHDR(url: url, commandQueue: commandQueue)
+        case (.load, .data(let data)?):
+            loadEquirectangular(data: data, commandQueue: commandQueue)
+        case (.clear, _):
+            clear()
+        default:
+            break
+        }
+    }
+
     /// Loads equirectangular HDR bytes and derives the cubemap and both IBL textures from them.
     ///
     /// Expects the `Int32 width | Int32 height | RGBA32Float pixels` layout. Data too short to

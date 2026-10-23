@@ -208,6 +208,10 @@ public final class OffscreenRenderer: Sendable {
     private let matcapTexture: MTLTexture
     private let axisVertexBuffer: MTLBuffer
 
+    /// Image-based lighting from `LightingConfiguration.environmentMapURL`/`environmentMapData`,
+    /// loaded on demand so headless renders light like the interactive viewport.
+    private let environmentMapManager: EnvironmentMapManager
+
     // Cached textures (recreated if size changes)
     private var cachedWidth: Int = 0
     private var cachedHeight: Int = 0
@@ -291,6 +295,7 @@ public final class OffscreenRenderer: Sendable {
 
         guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else { return nil }
         self.matcapTexture = matcap
+        self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
     }
 
     // MARK: - Public API
@@ -377,6 +382,15 @@ public final class OffscreenRenderer: Sendable {
         let shadowParams2 = SIMD4<Float>(
             lighting.shadowLightSize, lighting.shadowSearchRadius, 0, 0)
 
+        // Auto-load (or clear) the environment named by lighting.environmentMapURL/Data.
+        environmentMapManager.sync(with: lighting, commandQueue: commandQueue)
+        let iblParams = SIMD4<Float>(
+            lighting.environmentIntensity,
+            lighting.environmentRotationY,
+            lighting.backgroundExposure,
+            environmentMapManager.hasEnvironmentMap ? 1.0 : 0.0
+        )
+
         func makeUniforms() -> Uniforms {
             Uniforms(
                 viewProjection: viewProjection,
@@ -388,6 +402,7 @@ public final class OffscreenRenderer: Sendable {
                 lightViewProjection: lightVP,
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
+                iblParams: iblParams,
                 unlit: options.displayMode == .unlit
             )
         }
@@ -464,6 +479,19 @@ public final class OffscreenRenderer: Sendable {
             return nil
         }
         mainEncoder.setDepthStencilState(depthState)
+
+        // IBL textures for shaded_fragment (slots 2–4), bound once for the whole pass.
+        if environmentMapManager.hasEnvironmentMap {
+            if let spec = environmentMapManager.prefilteredSpecularMap {
+                mainEncoder.setFragmentTexture(spec, index: 2)
+            }
+            if let diff = environmentMapManager.irradianceMap {
+                mainEncoder.setFragmentTexture(diff, index: 3)
+            }
+            if let brdf = environmentMapManager.brdfLUT {
+                mainEncoder.setFragmentTexture(brdf, index: 4)
+            }
+        }
 
         // Grid
         if options.showGrid {

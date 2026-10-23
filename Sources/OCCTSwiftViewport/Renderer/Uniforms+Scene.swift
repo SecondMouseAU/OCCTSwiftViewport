@@ -32,6 +32,28 @@ extension LightDataSwift {
 
 extension Uniforms {
 
+    /// The `ambientIntensity` that reproduces the hard-coded ambient the shader used before
+    /// `ambientIntensity` was wired in: the default `.threePoint` preset's value.
+    nonisolated static let referenceAmbientIntensity: Float = 0.25
+
+    /// The `specularIntensity` at which the GGX specular lobe is left at its physically based
+    /// strength: the `LightingConfiguration` default.
+    nonisolated static let referenceSpecularIntensity: Float = 0.5
+
+    /// Packs the global ambient and specular controls into `lightingScales`.
+    ///
+    /// `rgb` multiplies the shader's hemisphere ambient: `ambientColor × ambientIntensity`,
+    /// normalised so `.threePoint` (white, 0.25) is exactly 1 and keeps its look. `w` multiplies
+    /// the direct-light GGX specular: `specularIntensity / 0.5`, so 0 removes highlights and the
+    /// default 0.5 is the unscaled, physically based lobe. Negative inputs clamp to 0.
+    nonisolated static func lightingScales(for lighting: LightingConfiguration) -> SIMD4<Float> {
+        let ambient =
+            simd_max(lighting.ambientColor, .zero)
+            * (max(lighting.ambientIntensity, 0) / referenceAmbientIntensity)
+        let specular = max(lighting.specularIntensity, 0) / referenceSpecularIntensity
+        return SIMD4<Float>(ambient, specular)
+    }
+
     /// Builds the per-frame scene uniforms both renderers hand to the shaders.
     ///
     /// `modelMatrix` starts out as the identity; callers overwrite it per body.
@@ -75,9 +97,9 @@ extension Uniforms {
             light0: LightDataSwift(lighting.keyLight),
             light1: LightDataSwift(lighting.fillLight),
             light2: LightDataSwift(lighting.backLight),
-            ambientSkyColor: SIMD4<Float>(lighting.ambientSkyColor, lighting.specularPower),
-            ambientGroundColor: SIMD4<Float>(
-                lighting.ambientGroundColor, lighting.specularIntensity),
+            ambientSkyColor: SIMD4<Float>(lighting.ambientSkyColor, 0),
+            ambientGroundColor: SIMD4<Float>(lighting.ambientGroundColor, 0),
+            lightingScales: Self.lightingScales(for: lighting),
             materialParams: SIMD4<Float>(
                 lighting.fresnelPower, lighting.fresnelIntensity, lighting.matcapBlend, farPlane),
             lightViewProjectionMatrix: lightViewProjection,

@@ -17,7 +17,7 @@ Your App
 
 ## Features
 
-- **Metal renderer** — Blinn-Phong shading, 3-light setup, shadow maps, environment mapping
+- **Metal renderer** — PBR (Cook-Torrance GGX) shading, 3-light setup, shadow maps, environment mapping
 - **Camera system** — Arcball, turntable, and first-person rotation with inertia and animation
 - **ViewCube** — Interactive orientation widget with 26 clickable regions
 - **GPU picking** — TBDR imageblock-based pick ID buffer for body, face, edge and vertex selection, with an optional pick tolerance radius
@@ -458,7 +458,7 @@ ViewportController (@MainActor, ObservableObject — central hub)
   │   └─ CameraState (immutable value — rotation, distance, pivot, projection)
   ├─ PivotStrategy (dynamic orbit center based on zoom level)
   └─ ViewportRenderer (MTKViewDelegate — Metal render loop)
-      ├─ Shaded pipeline   (3-light Blinn-Phong + hemisphere ambient + Fresnel rim)
+      ├─ Shaded pipeline   (3-light Cook-Torrance GGX + hemisphere ambient + Fresnel rim)
       ├─ Wireframe pipeline (contrast-adaptive edges, depth-biased)
       ├─ Grid pipeline     (adaptive instanced dots)
       ├─ Axes pipeline     (RGB colored lines)

@@ -24,8 +24,10 @@ struct Uniforms {
     var light0: LightDataSwift
     var light1: LightDataSwift
     var light2: LightDataSwift
-    var ambientSkyColor: SIMD4<Float>  // rgb + specularPower in w
-    var ambientGroundColor: SIMD4<Float>  // rgb + specularIntensity in w
+    var ambientSkyColor: SIMD4<Float>  // rgb, w unused
+    var ambientGroundColor: SIMD4<Float>  // rgb, w unused
+    // rgb = ambient scale (ambientColor × ambientIntensity, 1 = .threePoint), w = specular scale
+    var lightingScales: SIMD4<Float>
     var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
     var lightViewProjectionMatrix: simd_float4x4  // for shadow mapping
     var shadowParams: SIMD4<Float>  // x = bias, y = intensity, z = enabled (1/0), w = edgeIntensity
@@ -1255,6 +1257,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             0
         )
 
+        // Auto-load (or clear) the environment named by lighting.environmentMapURL/Data.
+        environmentMapManager?.sync(with: lighting, commandQueue: commandQueue)
         let hasEnvMap: Float = (environmentMapManager?.hasEnvironmentMap ?? false) ? 1.0 : 0.0
         let iblParams = SIMD4<Float>(
             lighting.environmentIntensity,

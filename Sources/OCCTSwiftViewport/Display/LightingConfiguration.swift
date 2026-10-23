@@ -24,16 +24,31 @@ public struct LightingConfiguration: Sendable {
     public var backLight: LightSettings
 
     /// Ambient light intensity (0-1).
+    ///
+    /// Scales the hemisphere ambient (`ambientSkyColor`/`ambientGroundColor` plus the shader's
+    /// fixed side tints). It is relative to `.threePoint`'s 0.25, which gives the renderer's
+    /// reference ambient level; 0 removes ambient light entirely.
     public var ambientIntensity: Float
 
-    /// Ambient light color.
+    /// Ambient light colour, multiplied into the hemisphere ambient (white leaves it untinted).
     public var ambientColor: SIMD3<Float>
 
     /// Whether shadows are enabled.
     public var shadowsEnabled: Bool
 
-    /// Shadow softness (0 = hard, 1 = soft).
-    public var shadowSoftness: Float
+    /// Shadow softness (0 = hard, 1 = soft); ignored.
+    ///
+    /// The PCSS soft-shadow filter takes its penumbra width from `shadowLightSize` (and its
+    /// blocker search from `shadowSearchRadius`); this value was never read. Mapping it onto the
+    /// light size as well would give one penumbra two competing controls.
+    @available(
+        *, deprecated, message: "Ignored. Use shadowLightSize to soften PCSS shadow penumbras."
+    )
+    public var shadowSoftness: Float {
+        get { _shadowSoftness }
+        set { _shadowSoftness = newValue }
+    }
+    private var _shadowSoftness: Float
 
     /// Shadow map resolution (width and height in pixels).
     public var shadowMapSize: Int
@@ -44,10 +59,27 @@ public struct LightingConfiguration: Sendable {
     /// Depth bias to prevent shadow acne.
     public var shadowBias: Float
 
-    /// Specular shininess exponent (higher = tighter highlight).
-    public var specularPower: Float
+    /// Blinn-Phong shininess exponent; ignored.
+    ///
+    /// The shaded pipeline is Cook-Torrance GGX, not Blinn-Phong. Highlight tightness comes from
+    /// each body's `PBRMaterial.roughness` (and `clearcoatRoughness`); a scene-wide exponent
+    /// would override every material's roughness, so it is not mapped onto GGX.
+    @available(
+        *, deprecated,
+        message:
+            "Ignored: shading is GGX. Set the body's roughness (or PBRMaterial.roughness) instead."
+    )
+    public var specularPower: Float {
+        get { _specularPower }
+        set { _specularPower = newValue }
+    }
+    private var _specularPower: Float
 
-    /// Specular highlight strength (0–1).
+    /// Strength of the specular highlights from the three direct lights (0–1 typical).
+    ///
+    /// Scales the GGX specular lobe (base and clearcoat) relative to the default 0.5, which is
+    /// the unscaled, physically based strength: 0 removes direct highlights, 1 doubles them.
+    /// Environment reflections (IBL or the procedural sky) are not affected.
     public var specularIntensity: Float
 
     /// Fresnel rim falloff exponent.
@@ -90,20 +122,26 @@ public struct LightingConfiguration: Sendable {
     ///
     /// The legacy in-memory path, laid out as `Int32 width | Int32 height | RGBA32Float pixels`.
     /// Prefer `environmentMapURL` for `.hdr` files, which decodes them for you.
+    ///
+    /// Both renderers load it automatically when it changes, and clear it again when it (and
+    /// `environmentMapURL`) go back to nil. A map loaded explicitly with
+    /// `ViewportRenderer.loadEnvironmentMap(...)` stays until this configuration changes.
     public var environmentMapData: Data?
 
     /// File URL of a Radiance `.hdr` environment map, decoded through `HDRLoader`.
     ///
-    /// Takes precedence over `environmentMapData` when both are set.
+    /// Takes precedence over `environmentMapData` when both are set. Loaded automatically, like
+    /// `environmentMapData`; a file that fails to decode is skipped and the procedural sky stays.
     public var environmentMapURL: URL?
 
     /// Environment map intensity multiplier, scaling the IBL contribution to lighting.
     public var environmentIntensity: Float
 
-    /// Y-axis rotation of the environment, in radians.
+    /// Rotation of the environment about the world up axis (Z), in radians.
     ///
     /// Turns the reflections and image-based lighting without moving scene geometry, so it
-    /// aims the environment rather than the model. Typically 0...2π.
+    /// aims the environment rather than the model. Typically 0...2π. The name dates from when
+    /// the environment was treated as Y-up; the world (and the panorama's horizon) is Z-up.
     public var environmentRotationY: Float
 
     /// Exposure of the visible sky background, separate from how brightly it lights the scene.
@@ -158,11 +196,11 @@ public struct LightingConfiguration: Sendable {
         self.ambientIntensity = ambientIntensity
         self.ambientColor = ambientColor
         self.shadowsEnabled = shadowsEnabled
-        self.shadowSoftness = shadowSoftness
+        self._shadowSoftness = shadowSoftness
         self.shadowMapSize = shadowMapSize
         self.shadowIntensity = shadowIntensity
         self.shadowBias = shadowBias
-        self.specularPower = specularPower
+        self._specularPower = specularPower
         self.specularIntensity = specularIntensity
         self.fresnelPower = fresnelPower
         self.fresnelIntensity = fresnelIntensity
@@ -282,7 +320,7 @@ public struct LightingConfiguration: Sendable {
             intensity: 0.0,
             color: SIMD3<Float>(1, 1, 1)
         ),
-        ambientIntensity: 0.6,
+        ambientIntensity: 0.3,
         shadowsEnabled: false,
         specularIntensity: 0.0,
         fresnelIntensity: 0.0,

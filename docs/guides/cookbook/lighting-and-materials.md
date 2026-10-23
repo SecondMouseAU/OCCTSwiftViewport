@@ -6,7 +6,7 @@ nav_order: 5
 
 # Lighting & Materials
 
-OCCTSwiftViewport uses a physically based rendering (PBR) pipeline with a three-directional light rig, hemisphere ambient, optional shadow mapping, Fresnel rim lighting, screen-space ambient occlusion (SSAO), and image-based lighting (IBL) from HDR environment maps. Each of these is configured through `LightingConfiguration`, which lives on `ViewportController.lightingConfiguration` and is applied every frame.
+OCCTSwiftViewport uses a physically based rendering (PBR) pipeline (Cook-Torrance GGX, metallic-roughness) with a three-directional light rig, Z-up hemisphere ambient, optional shadow mapping, Fresnel rim lighting, screen-space ambient occlusion (SSAO), and image-based lighting (IBL) from HDR environment maps. Each of these is configured through `LightingConfiguration`, which lives on `ViewportController.lightingConfiguration` and is applied every frame.
 
 ---
 
@@ -27,19 +27,19 @@ Classic key/fill/back rig tuned for mechanical CAD. Warm key light from upper-ri
 
 ### `.studio`
 
-Neutral white lights from three directions at similar intensities. Softer shadows (`shadowSoftness` 0.5), matcap blend 0.15 for a soft product-shot feel. Good for plastics and painted surfaces.
+Neutral white lights from three directions at similar intensities. Brighter ambient (0.35), slightly stronger highlights (`specularIntensity` 0.6), matcap blend 0.15 for a soft product-shot feel. Good for plastics and painted surfaces.
 
 ![Studio lighting on a sphere](images/lighting-studio.png)
 
 ### `.architectural`
 
-Strong warm sunlight key (intensity 1.2, warm `1.0, 0.95, 0.9`), sky-blue fill, hard shadows (`shadowSoftness` 0.2). Matches outdoor daylight conditions.
+Strong warm sunlight key (intensity 1.2, warm `1.0, 0.95, 0.9`), sky-blue fill, lower ambient (0.2). Matches outdoor daylight conditions.
 
 ![Architectural lighting on a sphere](images/lighting-architectural.png)
 
 ### `.flat`
 
-Single frontal key at intensity 0.8, fill and back both disabled (intensity 0.0), ambient 0.6, shadows off, specular and Fresnel both zero. Use for technical drawings or whenever directional shading would distract.
+Single frontal key at intensity 0.8, fill and back both disabled (intensity 0.0), ambient 0.3, shadows off, specular and Fresnel both zero. Use for technical drawings or whenever directional shading would distract.
 
 ![Flat lighting on a sphere](images/lighting-flat.png)
 
@@ -52,15 +52,19 @@ Single frontal key at intensity 0.8, fill and back both disabled (intensity 0.0)
 ```swift
 var lighting = controller.lightingConfiguration
 
-// Increase shadow softness for a softer penumbra.
-lighting.shadowSoftness = 0.6       // 0 = hard, 1 = soft
+// Widen the PCSS penumbra for softer shadows.
+lighting.shadowLightSize = 0.05     // default 0.02
 
 // Reduce shadow opacity so geometry under shadow is still readable.
 lighting.shadowIntensity = 0.15     // 0 = invisible, 1 = fully opaque
 
-// Tighten specular highlights for a shinier appearance.
-lighting.specularPower = 128.0      // higher = smaller, tighter highlight
-lighting.specularIntensity = 0.8    // 0–1
+// Strengthen the direct-light highlights. Highlight *size* is per body: lower its
+// `roughness` (or `PBRMaterial.roughness`) for a tighter, shinier highlight.
+lighting.specularIntensity = 0.8    // 0 = none, 0.5 = physically based
+
+// Ambient level (0.25 = the .threePoint reference) and tint.
+lighting.ambientIntensity = 0.35
+lighting.ambientColor = SIMD3<Float>(1.0, 0.97, 0.92)
 
 // Strengthen the Fresnel rim glow on silhouette edges.
 lighting.fresnelPower = 2.5         // lower = broader rim
@@ -220,7 +224,7 @@ Supplying an HDR environment map upgrades ambient and specular contributions fro
 
 ### Loading from a `.hdr` File URL
 
-Set `environmentMapURL` in the lighting configuration. The renderer calls `HDRLoader.loadFromURL(_:)` (Radiance RGBE `.hdr`/`.rgbe`/`.pic`) and uploads the result automatically:
+Set `environmentMapURL` in the lighting configuration. Both the interactive renderer and `OffscreenRenderer` call `HDRLoader.loadFromURL(_:)` (Radiance RGBE `.hdr`/`.rgbe`/`.pic`) and upload the result automatically when the URL changes, and clear it again when it goes back to `nil`. The panorama is oriented Z-up: its top row is the sky above +Z.
 
 ```swift
 guard let url = Bundle.main.url(forResource: "studio_garden_2k", withExtension: "hdr") else {
@@ -232,7 +236,7 @@ lighting.environmentMapURL = url
 lighting.environmentIntensity = 1.0   // IBL contribution multiplier
 lighting.drawBackground = true        // render the map as a skybox background
 lighting.backgroundExposure = 0.8     // darken background without dimming lighting
-lighting.environmentRotationY = .pi / 4  // rotate environment 45° around Y
+lighting.environmentRotationY = .pi / 4  // rotate environment 45° about world up (Z)
 controller.lightingConfiguration = lighting
 ```
 
@@ -240,7 +244,7 @@ controller.lightingConfiguration = lighting
 
 ### Rotating the Environment
 
-`environmentRotationY` (radians, range 0…2π) rotates reflections and lighting without moving scene geometry. This lets you align a key reflection with a product silhouette:
+`environmentRotationY` (radians, range 0…2π) rotates reflections and lighting about the world up axis (Z) without moving scene geometry. This lets you align a key reflection with a product silhouette:
 
 ```swift
 lighting.environmentRotationY = .pi   // rotate 180°

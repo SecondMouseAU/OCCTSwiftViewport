@@ -26,7 +26,7 @@ Controls how geometry is drawn in the viewport or an offscreen render.
 | Case | Description |
 |------|-------------|
 | `.wireframe` | Edges only — no surface fill. |
-| `.shaded` | Lit surface shading (Blinn-Phong + hemisphere ambient + Fresnel rim). No edge overlay. |
+| `.shaded` | Lit surface shading (Cook-Torrance GGX + hemisphere ambient + Fresnel rim). No edge overlay. |
 | `.shadedWithEdges` | Shaded surfaces with a contrast-adaptive wireframe overlay. Default for `OffscreenRenderOptions`. |
 | `.flat` | Surface fill without smooth normal interpolation. |
 | `.unlit` | Flat-colour shading — each body drawn in its constant `color` with no lighting, ambient, shadows, Fresnel, or tone-mapping. Faithful per-body colour for diagnostic renders (v1.1.21+). |
