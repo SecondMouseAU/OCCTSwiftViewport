@@ -3,6 +3,7 @@
 
 import Testing
 import simd
+
 @testable import OCCTSwiftViewport
 
 @Suite("BoundingBox Tests")
@@ -64,6 +65,52 @@ struct BoundingBoxTests {
         )
 
         #expect(body.boundingBox == nil)
+    }
+
+    // MARK: - Edges count toward ViewportBody.boundingBox, issue #135
+
+    @Test("An edge-only body has bounds spanning its polylines")
+    func edgeOnlyBodyHasBounds() {
+        let body = ViewportBody(
+            id: "wire", vertexData: [], indices: [],
+            edges: [[SIMD3(-4, 0, 1), SIMD3(4, 0, 1)], [SIMD3(0, -2, 0), SIMD3(0, 3, 0)]],
+            color: SIMD4<Float>(1, 1, 1, 1))
+        let bb = body.boundingBox
+        #expect(bb?.min == SIMD3<Float>(-4, -2, 0))
+        #expect(bb?.max == SIMD3<Float>(4, 3, 1))
+    }
+
+    @Test("Edges outside the mesh extend a meshed body's bounds")
+    func edgesExtendMeshBounds() {
+        func v(_ x: Float, _ y: Float) -> [Float] { [x, y, 0, 0, 0, 1] }
+        let body = ViewportBody(
+            id: "meshed", vertexData: v(-1, -1) + v(1, -1) + v(1, 1), indices: [0, 1, 2],
+            edges: [[SIMD3(0, 0, 0), SIMD3(0, 0, 5)]], color: SIMD4<Float>(1, 1, 1, 1))
+        let bb = body.boundingBox
+        #expect(bb?.min == SIMD3<Float>(-1, -1, 0))
+        #expect(bb?.max == SIMD3<Float>(1, 1, 5))
+    }
+
+    @Test("A direct-mesh body's bounds still come from its positions")
+    func directMeshBounds() {
+        let body = ViewportBody.directMesh(
+            id: "direct", positions: [0, 0, 0, 2, 0, 0, 0, 3, 0],
+            normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+            indices: [0, 1, 2], color: SIMD4<Float>(1, 1, 1, 1))
+        #expect(body.boundingBox?.max == SIMD3<Float>(2, 3, 0))
+    }
+
+    @Test("The near clip plane is fitted to an edge in front of the mesh")
+    func nearPlaneCoversEdgeInFrontOfMesh() {
+        // Camera at +Z, distance 10. Mesh at z = 0, an edge at z = 1 (camera distance 9).
+        func v(_ x: Float, _ y: Float) -> [Float] { [x, y, 0, 0, 0, 1] }
+        let body = ViewportBody(
+            id: "meshed", vertexData: v(-1, 3) + v(1, 3) + v(1, 4), indices: [0, 1, 2],
+            edges: [[SIMD3(-4, 0, 1), SIMD3(4, 0, 1)]], color: SIMD4<Float>(1, 1, 1, 1))
+        let camera = CameraState(
+            rotation: simd_quatf(angle: 0, axis: SIMD3<Float>(0, 0, 1)), distance: 10, pivot: .zero)
+        let near = camera.clipPlanes(sceneBounds: body.boundingBox).near
+        #expect(near <= 9, "near \(near) would clip the edge at distance 9")
     }
 
     // MARK: - distance(to:), issue #116

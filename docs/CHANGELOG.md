@@ -11,6 +11,12 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   textures`), and any count other than 4 mismatched the pipelines. Pipelines are now built per sample
   count and cached (4 at init, others on first use). A count of 1 draws straight into the readback
   texture, and unsupported counts round down to one the device supports.
+- **Edges no longer disappear when they lie in front of the mesh** (issue #135). `ViewportBody.boundingBox`
+  only covered mesh positions, but both renderers fit the near clip plane to it (since #116), so an
+  edge nearer the camera than its body's mesh was clipped. It now includes every `edges` point as well.
+  The same box also drives frustum culling, shadow framing and `CameraState.fit(to:)`. Edge-only
+  bodies (wires, sketches) used to have no bounds, so they were never culled and fit-to-view ignored
+  them; both now work for them.
 - **Dash patterns now apply to edge-only bodies** (wires, sketches, sampled curves). The quad edge
   fragment shader returned the body colour for them before reaching the dash test, so they always drew
   solid; v1.2.2 documented this as a limitation. The dash test now runs first for every edge.
@@ -23,6 +29,9 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 ### Tests
 - `OffscreenSampleCountTests` (new): sample-count mapping, and a render at 1, 2, 4 and 8 samples on one
   renderer (#134).
+- `BoundingBoxTests`: four cases for #135 (edge-only bounds, edges extending a mesh, direct-mesh
+  bounds, and the near plane covering an edge in front of the mesh). `EdgeDashRenderingTests` now puts
+  its line in front of the mesh, with a solid-edge case that rendered nothing before the fix.
 - `NeighborhoodPickTests` (new, 14 cases): clamping at texture edges, and best-hit selection (vertex over
   edge over face, nearest of the same kind, 2D distance, ties, unknown bodies, layer map).
 - `EdgeDashRenderingTests` (new, 3 cases): headless renders counting dashes along a line, for an

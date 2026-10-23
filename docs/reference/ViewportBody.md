@@ -277,7 +277,9 @@ Per-body model matrix. Applied in the vertex shader on top of the scene model ma
 public var boundingBox: BoundingBox? { get }
 ```
 
-Returns the axis-aligned bounding box of all vertex positions in `vertexData` (stride 6, positions at offsets 0-2). Falls back to `vertices` when `vertexData` is empty, so `.point` bodies report a usable extent for shadow framing, pick culling, and `CameraState.fit(to:)`. Returns `nil` if both sources are empty.
+Returns the axis-aligned bounding box of everything the body draws: the mesh positions in `vertexData` (stride 6, positions at offsets 0-2), or `vertices` when `vertexData` is empty (point clouds and direct-mesh bodies), plus every point of every `edges` polyline. Used for near/far clip-plane fitting, frustum culling, shadow framing, pick culling and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
+
+Edges have counted since issue #135. Before that, an edge lying in front of its mesh could be cut off by the near plane, and an edge-only body had no bounds, so it was never culled and was ignored by fit-to-view.
 
 #### `var effectiveMaterial: PBRMaterial`
 
