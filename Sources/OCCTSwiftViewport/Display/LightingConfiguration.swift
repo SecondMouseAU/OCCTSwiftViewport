@@ -100,16 +100,27 @@ public struct LightingConfiguration: Sendable {
     /// Whether screen-space ambient occlusion is enabled.
     public var enableSSAO: Bool
 
-    /// SSAO sampling radius in view-space units.
+    /// SSAO sampling radius in world units.
+    ///
+    /// Projected to pixels at each fragment's depth (clamped to 2...64 px). Only surfaces
+    /// in front of a fragment's tangent plane within this distance occlude it, so flat and
+    /// convex surfaces are never darkened.
     public var ssaoRadius: Float
 
     /// SSAO darkening intensity (0 = none, 1 = maximum).
     public var ssaoIntensity: Float
 
     /// Tone mapping exposure multiplier (default 1.1).
+    ///
+    /// Lit surfaces are ACES tone mapped on every frame, in both `ViewportRenderer` and
+    /// `OffscreenRenderer`, whether or not SSAO or silhouettes are on. Unlit bodies, edges,
+    /// grid, axes, background and overlays are not tone mapped, so this does not affect them.
     public var exposure: Float
 
     /// White point for tone mapping normalization (default 1.0).
+    ///
+    /// The tone mapper's input is `color * exposure / whitePoint`. Applies wherever `exposure`
+    /// does.
     public var whitePoint: Float
 
     /// PCSS light source size (larger = softer shadow penumbras).
@@ -145,6 +156,8 @@ public struct LightingConfiguration: Sendable {
     public var environmentRotationY: Float
 
     /// Exposure of the visible sky background, separate from how brightly it lights the scene.
+    ///
+    /// The background is then tone mapped with `exposure` / `whitePoint`, like lit surfaces.
     ///
     /// Independent of `environmentIntensity`, so the background can be pulled down to a black
     /// product-shot backdrop while the environment keeps lighting the model.
@@ -351,7 +364,7 @@ public struct LightSettings: Sendable {
     /// Light intensity (0-2 typical range).
     public var intensity: Float
 
-    /// Light color (RGB, 0-1 range).
+    /// Light color (RGB, 0-1 range), as an sRGB value; the shader decodes it to linear.
     public var color: SIMD3<Float>
 
     /// Whether this light is enabled.

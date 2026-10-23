@@ -64,7 +64,8 @@ extension Uniforms {
     ///   - cameraPosition: World-space camera position.
     ///   - nearPlane: Near clip distance, packed into `cameraPosition.w`.
     ///   - farPlane: Far clip distance, packed into `materialParams.w`.
-    ///   - lighting: Light and material configuration for the frame.
+    ///   - lighting: Light and material configuration for the frame, including the tone-mapping
+    ///     `exposure` and `whitePoint` that `shaded_fragment` applies to every lit surface.
     ///   - lightViewProjection: Shadow-pass light matrix, or the identity when shadows are off.
     ///   - shadowParams: bias, intensity, enabled flag, edge intensity.
     ///   - shadowParams2: PCSS light size, search radius, and renderer-specific debug flags.
@@ -111,7 +112,9 @@ extension Uniforms {
             iblParams: iblParams,
             clipPlanes: clipPlanes,
             clipPlaneCount: clipPlaneCount,
-            unlit: unlit ? 1 : (flatShading ? 2 : 0)
+            unlit: unlit ? 1 : (flatShading ? 2 : 0),
+            toneMapExposure: lighting.exposure,
+            toneMapWhitePoint: lighting.whitePoint
         )
     }
 }

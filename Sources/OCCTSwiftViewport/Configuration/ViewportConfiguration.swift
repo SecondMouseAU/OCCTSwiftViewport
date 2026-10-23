@@ -109,7 +109,7 @@ public struct EdgeLineConfiguration: Sendable {
 
 /// Colour and width of the outline ring drawn around a selected or hovered body.
 public struct SelectionOutlineStyle: Sendable, Hashable {
-    /// Outline colour in linear RGB.
+    /// Outline colour as an sRGB (display) value, drawn as given.
     public var color: SIMD3<Float>
 
     /// Outline width in drawable pixels, constant at any zoom and model scale; 0 hides it.

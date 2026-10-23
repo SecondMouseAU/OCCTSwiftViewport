@@ -1464,6 +1464,10 @@ public final class OffscreenRenderer: Sendable {
                 options: options,
                 nearPlane: nearClip,
                 farPlane: farClip,
+                // SSAO radius projection: pixels per world unit at view depth 1 (perspective) or
+                // everywhere (orthographic, detected from the matrix so explicit bounds count).
+                pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
+                orthographic: projMatrix.columns.3.w > 0.5,
                 refined: refined,
                 makeUniforms: makeUniforms
             )
@@ -1576,8 +1580,8 @@ public final class OffscreenRenderer: Sendable {
     /// Encodes the live renderer's SSAO / silhouette post-process: a single-sample depth prepass,
     /// then the `ssao_fragment` composite from `targets.color` into `output`.
     ///
-    /// The composite shader also applies ACES tone mapping (`exposure`, `whitePoint`), as on the
-    /// live path. Depth of field is never applied offscreen.
+    /// Tone mapping is not part of the composite: `shaded_fragment` applies it to every lit
+    /// surface. Depth of field is never applied offscreen.
     private func encodeSSAOComposite(
         commandBuffer: MTLCommandBuffer,
         bodies: [ViewportBody],
@@ -1586,6 +1590,8 @@ public final class OffscreenRenderer: Sendable {
         options: OffscreenRenderOptions,
         nearPlane: Float,
         farPlane: Float,
+        pixelsPerUnit: Float,
+        orthographic: Bool,
         refined: RefinedPipelines?,
         makeUniforms: () -> Uniforms
     ) {
@@ -1649,8 +1655,8 @@ public final class OffscreenRenderer: Sendable {
             farPlane: farPlane,
             silhouetteThickness: options.enableSilhouettes ? options.silhouetteThickness : 0.0,
             silhouetteIntensity: options.enableSilhouettes ? options.silhouetteIntensity : 0.0,
-            exposure: lighting.exposure,
-            whitePoint: lighting.whitePoint,
+            pixelsPerUnit: pixelsPerUnit,
+            orthographic: orthographic ? 1.0 : 0.0,
             dofAperture: 0,
             dofFocalDistance: 0,
             dofMaxBlurRadius: 0,

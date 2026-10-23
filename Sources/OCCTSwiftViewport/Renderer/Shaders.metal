@@ -36,7 +36,8 @@ struct Uniforms {
     uint     clipPlaneCount;           // number of active clip planes (0–4)
     uint     unlit;                    // 1 = unlit/flat-colour (skip lighting + tone map),
                                        // 2 = faceted (light with per-triangle face normals)
-    float2   _clipPad;                 // padding to 16-byte alignment
+    float    toneMapExposure;          // LightingConfiguration.exposure
+    float    toneMapWhitePoint;        // LightingConfiguration.whitePoint
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).
@@ -53,6 +54,40 @@ struct BodyUniforms {
     float  _pad0;                  // offset 44
     float4 emissiveAndStrength;    // offset 48 — xyz = emissive linear RGB, w = strength
 };
+
+// MARK: - Colour Pipeline
+
+// Colour targets are plain bgra8Unorm and hold display-encoded (sRGB) values. Every authored
+// colour (body/material base colour, background, grid, axes, edges, overlays) is an sRGB value.
+// Lit surfaces are the one place that does maths on light, so `shaded_fragment` decodes its
+// reflectance inputs to linear, lights and tone maps in linear, and encodes back to sRGB once at
+// the end. Passes that only draw an authored colour (edges, grid, axes, unlit bodies,
+// highlights, overlays, the clear colour) would decode and re-encode the same value, so they
+// write it unchanged. Light colours, ambient colours, IBL radiance and emissive are lighting
+// quantities and are already linear.
+
+// IEC 61966-2-1 sRGB transfer functions.
+inline float3 srgbToLinear(float3 c) {
+    c = saturate(c);
+    return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+}
+
+inline float3 linearToSrgb(float3 c) {
+    c = saturate(c);
+    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);
+}
+
+// ACES filmic tone mapping (Narkowicz approximation) of a LINEAR colour, scaled by
+// exposure / white point. Returns linear [0, 1]; callers encode with `linearToSrgb`.
+inline float3 acesToneMap(float3 color, float exposure, float whitePoint) {
+    float3 x = max(color, 0.0) * exposure / max(whitePoint, 0.01);
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
 
 // MARK: - Fragment Output (color-only for MSAA pass)
 
@@ -328,6 +363,17 @@ fragment ShadedFragmentOut shaded_fragment(
         }
     }
     float3 V = normalize(uniforms.cameraPosition.xyz - in.worldPosition);
+    // A translucent body's far wall is seen through its near wall, and its vertex normals point
+    // away from the camera there. Light it as the side being looked at, or the Fresnel rim and
+    // the environment reflection (which peak as N·V → 0 and use reflect(-V, N)) light up the
+    // whole far wall. Opaque bodies are left alone: their far walls are hidden by depth, and
+    // interpolated normals that dip just past a silhouette must keep their side.
+    float alpha = bodyUniforms.color.a;
+    bool translucent = alpha < 0.999;
+    if (translucent && dot(N, V) < 0.0) {
+        N = -N;
+        viewN = -viewN;
+    }
     float NdotV = max(dot(N, V), 0.001);
 
     float fresnelPower = uniforms.materialParams.x;
@@ -336,7 +382,8 @@ fragment ShadedFragmentOut shaded_fragment(
 
     float roughness = clamp(bodyUniforms.roughness, 0.04, 1.0);
     float metallic = saturate(bodyUniforms.metallic);
-    float3 bodyColor = bodyUniforms.color.rgb;
+    // Body / material base colour is authored in sRGB; light it in linear.
+    float3 bodyColor = srgbToLinear(bodyUniforms.color.rgb);
     float clearcoat = saturate(bodyUniforms.clearcoat);
     float coatRoughness = clamp(bodyUniforms.clearcoatRoughness, 0.04, 1.0);
 
@@ -347,6 +394,7 @@ fragment ShadedFragmentOut shaded_fragment(
 
     // Accumulate lighting from up to 3 lights
     float3 Lo = float3(0.0); // Outgoing radiance
+    float3 specularLo = float3(0.0); // The specular share of Lo, for translucent alpha below
 
     for (int i = 0; i < 3; i++) {
         float enabled = uniforms.lights[i].colorAndEnabled.a;
@@ -354,7 +402,7 @@ fragment ShadedFragmentOut shaded_fragment(
 
         float lightTypeVal = uniforms.lights[i].typeAndParams.x;
         float intensity = uniforms.lights[i].directionAndIntensity.w;
-        float3 lightColor = uniforms.lights[i].colorAndEnabled.rgb;
+        float3 lightColor = srgbToLinear(uniforms.lights[i].colorAndEnabled.rgb);
         float3 L;
 
         if (lightTypeVal > 0.5) {
@@ -400,8 +448,11 @@ fragment ShadedFragmentOut shaded_fragment(
                 * uniforms.lightingScales.w;
             float attenuation = 1.0 - Fc * clearcoat;
             contribution = baseLobe * attenuation + coatSpec * clearcoat;
+            specularLo += (specular * attenuation + coatSpec * clearcoat)
+                * lightColor * intensity * NdotL;
         } else {
             contribution = baseLobe;
+            specularLo += specular * lightColor * intensity * NdotL;
         }
 
         Lo += contribution * lightColor * intensity * NdotL;
@@ -417,11 +468,15 @@ fragment ShadedFragmentOut shaded_fragment(
                                            uniforms.shadowParams2.x, uniforms.shadowParams2.y);
         float shadowDarkness = uniforms.shadowParams.y;
         Lo *= mix(1.0 - shadowDarkness, 1.0, shadowFactor);
+        specularLo *= mix(1.0 - shadowDarkness, 1.0, shadowFactor);
     }
 
     // Tri-axis ambient: vary ambient by normal in all 3 directions (not just up/down).
     // This breaks up uniform color on faces at the same elevation but different azimuths.
     // The world is Z-up (turntable, StandardView), so the sky/ground hemisphere follows N.z.
+    // The ambient rig (sky/ground colours and the side/depth tints) is authored and blended
+    // in sRGB, as it always was; the blended ambient level is then decoded to linear, so each
+    // face's ambient brightness reads as before.
     float3 skyColor = uniforms.ambientSkyColor.rgb;
     float3 groundColor = uniforms.ambientGroundColor.rgb;
     float3 ambientUp = mix(groundColor, skyColor, N.z * 0.5 + 0.5);
@@ -429,7 +484,8 @@ fragment ShadedFragmentOut shaded_fragment(
     float3 ambientX = mix(float3(0.35, 0.30, 0.28), float3(0.28, 0.30, 0.35), N.x * 0.5 + 0.5);
     // Depth axis: slightly brighter facing the front-view camera (−Y), darker facing away
     float3 ambientDepth = mix(float3(0.32, 0.32, 0.30), float3(0.25, 0.25, 0.27), N.y * 0.5 + 0.5);
-    float3 ambient = ((ambientUp * 0.6) + (ambientX * 0.2) + (ambientDepth * 0.2)) * bodyColor * (1.0 - metallic * 0.5);
+    float3 ambientLevel = srgbToLinear((ambientUp * 0.6) + (ambientX * 0.2) + (ambientDepth * 0.2));
+    float3 ambient = ambientLevel * bodyColor * (1.0 - metallic * 0.5);
     // ambientColor × ambientIntensity, normalised so the .threePoint preset's 0.25 is 1×.
     ambient *= uniforms.lightingScales.rgb;
 
@@ -471,7 +527,7 @@ fragment ShadedFragmentOut shaded_fragment(
         }
     } else {
         // Procedural environment fallback
-        float3 envColor = sampleEnvironment(R);
+        float3 envColor = srgbToLinear(sampleEnvironment(R));
         float envFresnel = pow(1.0 - NdotV, 5.0);
         float envStrength = mix(0.04, 1.0, metallic) * mix(0.3, 1.0, envFresnel) * (1.0 - roughness * 0.7);
         envContribution = envColor * mix(float3(dielectricF0), bodyColor, metallic) * envStrength;
@@ -479,7 +535,8 @@ fragment ShadedFragmentOut shaded_fragment(
 
     // Fresnel rim (reduced for metallic surfaces)
     float fresnel = fresnelIntensity * (1.0 - metallic * 0.5) * pow(1.0 - NdotV, fresnelPower);
-    float3 rimColor = float3(fresnel);
+    // The rim strength is tuned as a display-space amount; decode it like a colour.
+    float3 rimColor = srgbToLinear(float3(fresnel));
 
     // Combine lighting
     float3 litColor = Lo + ambient + envContribution + rimColor;
@@ -519,19 +576,37 @@ fragment ShadedFragmentOut shaded_fragment(
         float3 vn = normalize(viewN);
         float2 matcapUV = vn.xy * 0.5 + 0.5;
         constexpr sampler matcapSampler(filter::linear);
-        float3 matcapColor = matcapTexture.sample(matcapSampler, matcapUV).rgb;
+        float3 matcapColor = srgbToLinear(matcapTexture.sample(matcapSampler, matcapUV).rgb);
         litColor = mix(litColor, matcapColor * bodyColor, matcapBlend);
     }
 
-    // Selection tint: subtle blue overlay for selected, lighter for hovered
+    // Tone map in linear, then encode to sRGB once. This runs on every frame, so `exposure` /
+    // `whitePoint` apply whether or not the SSAO / silhouette composite runs, and live and
+    // offscreen output agree (#136 H6).
+    litColor = acesToneMap(litColor, uniforms.toneMapExposure, uniforms.toneMapWhitePoint);
+    litColor = linearToSrgb(litColor);
+
+    // Selection tint: subtle blue overlay for selected, lighter for hovered. Applied to the
+    // display-encoded colour, like the unlit path, so it reads the same in every mode.
     if (bodyUniforms.isSelected == 1) {
         litColor = mix(litColor, float3(0.3, 0.5, 1.0), 0.15);
     } else if (bodyUniforms.isSelected == 2) {
         litColor = mix(litColor, float3(0.4, 0.6, 1.0), 0.08);
     }
 
+    // Reflection is not attenuated by how transparent the surface is: glass at 10 % opacity
+    // still shows a full-strength highlight. With "over" blending the whole colour is scaled by
+    // alpha, so raise alpha where the direct specular is bright (tone mapped, as displayed). The
+    // rest of the surface keeps its own opacity.
+    if (translucent) {
+        float3 shownSpecular =
+            acesToneMap(specularLo, uniforms.toneMapExposure, uniforms.toneMapWhitePoint);
+        float specularLevel = dot(shownSpecular, float3(0.2126, 0.7152, 0.0722));
+        alpha = saturate(alpha + (1.0 - alpha) * specularLevel);
+    }
+
     ShadedFragmentOut out;
-    out.color = float4(litColor, bodyUniforms.color.a);
+    out.color = float4(litColor, alpha);
     return out;
 }
 
@@ -1342,8 +1417,8 @@ struct SSAOParams {
     float  farPlane;
     float  silhouetteThickness; // edge detection spread
     float  silhouetteIntensity; // edge darkness
-    float  exposure;            // tone mapping exposure (default 1.1)
-    float  whitePoint;          // tone mapping white point (default 1.0)
+    float  pixelsPerUnit;       // pixels per world unit at view depth 1 (ortho: everywhere)
+    float  orthographic;        // 1 = orthographic (depth buffer is linear), 0 = perspective
     float  dofAperture;         // depth of field aperture
     float  dofFocalDistance;    // depth of field focal distance (0 = auto)
     float  dofMaxBlurRadius;    // maximum CoC blur radius in pixels
@@ -1365,8 +1440,12 @@ vertex FullscreenVertexOut fullscreen_vertex(uint vertexID [[vertex_id]]) {
     return out;
 }
 
-// Linearize a reverse-Z depth value
-inline float linearizeDepth(float depth, float near, float far) {
+// View distance from a [0, 1] depth-buffer value (0 = near, 1 = far). Perspective depth is
+// hyperbolic in distance; orthographic depth is linear, and used to be decoded as perspective.
+inline float linearizeDepth(float depth, float near, float far, float orthographic) {
+    if (orthographic > 0.5) {
+        return near + depth * (far - near);
+    }
     return near * far / (far - depth * (far - near));
 }
 
@@ -1388,7 +1467,7 @@ fragment float4 ssao_fragment(
         return sceneColor;
     }
 
-    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane);
+    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
     float result_ao = 1.0;
     float result_edge = 0.0;
 
@@ -1409,16 +1488,59 @@ fragment float4 ssao_fragment(
         };
 
         float occlusion = 0.0;
-        float scaledRadius = params.radius / max(linearDepth, 0.1);
+        // Sample radius in pixels: `radius` world units projected at this pixel's depth. It
+        // used to be `radius / depth` texels × 4, a fraction of a pixel at normal viewing
+        // distances, so the samples hit the centre's own neighbours and AO never reached a
+        // real crease. Clamped so close-ups don't sample half the screen.
+        float radiusPx = params.radius * params.pixelsPerUnit
+            / (params.orthographic > 0.5 ? 1.0 : max(linearDepth, 1e-4));
+        radiusPx = clamp(radiusPx, 2.0, 64.0);
+
+        // Surface-oriented test (#136 H6). A sample only occludes if it lies in FRONT of the
+        // surface's tangent plane, i.e. in the normal-facing hemisphere. Comparing against the
+        // centre depth instead made every sloped or curved surface occlude itself: half its
+        // neighbours are always nearer the camera. The plane comes from the depth gradient:
+        // the stored depth is affine in screen space across a plane (perspective and ortho),
+        // so predicting it with a gradient is exact on flat faces. Each axis uses the smaller
+        // one-sided difference so the gradient doesn't straddle a silhouette.
+        float2 ts1 = params.texelSize;
+        float dL = depthTexture.sample(pointSampler, in.texCoord - float2(ts1.x, 0.0)).r;
+        float dR = depthTexture.sample(pointSampler, in.texCoord + float2(ts1.x, 0.0)).r;
+        float dD = depthTexture.sample(pointSampler, in.texCoord - float2(0.0, ts1.y)).r;
+        float dU = depthTexture.sample(pointSampler, in.texCoord + float2(0.0, ts1.y)).r;
+        float gradX = (abs(depth - dL) < abs(dR - depth)) ? (depth - dL) : (dR - depth);
+        float gradY = (abs(depth - dD) < abs(dU - depth)) ? (depth - dD) : (dU - depth);
+        // Tolerance for depth-buffer precision and tessellation facets, relative to distance.
+        float planeBias = 0.005 * linearDepth;
+        // Per-pixel kernel rotation and radius from a 4×4 ordered (Bayer) pattern, so the 16
+        // fixed taps don't print their octagon outline onto the occlusion as hard-edged bands.
+        // An ordered pattern reads as a fine, even dither rather than random grain.
+        const float bayer[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+        uint2 cell = uint2(in.position.xy) & 3u;
+        float noise = (bayer[cell.y * 4u + cell.x] + 0.5) / 16.0;
+        float2 rot = float2(cos(noise * 0.7853982), sin(noise * 0.7853982));  // taps repeat every 45°
+        // Radius jitter (decorrelated from the angle), so the rings don't show as halo bands.
+        float ringScale = mix(0.6, 1.0, fract(noise * 5.0));
 
         for (int i = 0; i < 16; i++) {
-            float2 sampleUV = in.texCoord + offsets[i] * scaledRadius * params.texelSize * 4.0;
+            // Inner ring at half the radius, outer ring at the full radius. Offsets are
+            // whole pixels: the depth is point-sampled, and a fractional offset would compare a
+            // texel's depth with the plane predicted at a different point.
+            float2 o = offsets[i] * (radiusPx * 0.5 * ringScale);
+            float2 offsetPx = round(float2(o.x * rot.x - o.y * rot.y, o.x * rot.y + o.y * rot.x));
+            float2 sampleUV = in.texCoord + offsetPx * params.texelSize;
+            // Off-screen taps would read the clamped border texel, which is not geometry there.
+            if (any(sampleUV < 0.0) || any(sampleUV > 1.0)) continue;
             float sampleDepth = depthTexture.sample(pointSampler, sampleUV).r;
-            float sampleLinear = linearizeDepth(sampleDepth, params.nearPlane, params.farPlane);
+            float sampleLinear = linearizeDepth(sampleDepth, params.nearPlane, params.farPlane, params.orthographic);
+            float planeDepth = saturate(depth + gradX * offsetPx.x + gradY * offsetPx.y);
+            float planeLinear = linearizeDepth(planeDepth, params.nearPlane, params.farPlane, params.orthographic);
 
-            float diff = linearDepth - sampleLinear;
-            float rangeCheck = smoothstep(0.0, 1.0, scaledRadius / (abs(diff) + 0.001));
-            occlusion += step(0.0005, diff) * rangeCheck;
+            float diff = planeLinear - sampleLinear;
+            // Occluders more than the radius in front are a separate object floating in front,
+            // not a crease: fade them out by twice the radius so they don't cast halos.
+            float rangeCheck = 1.0 - smoothstep(params.radius, 2.0 * params.radius, diff);
+            occlusion += smoothstep(planeBias, 2.0 * planeBias, diff) * rangeCheck;
         }
 
         result_ao = 1.0 - (occlusion / 16.0) * params.intensity;
@@ -1430,14 +1552,14 @@ fragment float4 ssao_fragment(
         float2 ts = params.texelSize * params.silhouetteThickness;
 
         // Sample 3x3 neighborhood depths
-        float d00 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x, -ts.y)).r, params.nearPlane, params.farPlane);
-        float d10 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(  0.0, -ts.y)).r, params.nearPlane, params.farPlane);
-        float d20 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x, -ts.y)).r, params.nearPlane, params.farPlane);
-        float d01 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x,   0.0)).r, params.nearPlane, params.farPlane);
-        float d21 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x,   0.0)).r, params.nearPlane, params.farPlane);
-        float d02 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x,  ts.y)).r, params.nearPlane, params.farPlane);
-        float d12 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(  0.0,  ts.y)).r, params.nearPlane, params.farPlane);
-        float d22 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x,  ts.y)).r, params.nearPlane, params.farPlane);
+        float d00 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x, -ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d10 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(  0.0, -ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d20 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x, -ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d01 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x,   0.0)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d21 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x,   0.0)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d02 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(-ts.x,  ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d12 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2(  0.0,  ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
+        float d22 = linearizeDepth(depthTexture.sample(pointSampler, in.texCoord + float2( ts.x,  ts.y)).r, params.nearPlane, params.farPlane, params.orthographic);
 
         // Sobel X and Y
         float sobelX = -d00 + d20 - 2.0*d01 + 2.0*d21 - d02 + d22;
@@ -1471,7 +1593,7 @@ fragment float4 ssao_fragment(
             float rawDepth = depthTexture.sample(pointSampler, sampleUV).r;
             // Skip background samples to avoid silhouette halos
             if (rawDepth > 0.9999) continue;
-            float sd = linearizeDepth(rawDepth, params.nearPlane, params.farPlane);
+            float sd = linearizeDepth(rawDepth, params.nearPlane, params.farPlane, params.orthographic);
             // Skip samples at very different depths (silhouette boundary)
             if (abs(sd - linearDepth) / max(linearDepth, 0.01) > 0.3) continue;
             blurredDepth += sd;
@@ -1486,9 +1608,10 @@ fragment float4 ssao_fragment(
         }
     }
 
-    // Combine: darken by AO, edge silhouettes, and depth contrast
-    float3 finalColor = sceneColor.rgb * result_ao * depthContrast;
-    finalColor = mix(finalColor, float3(0.1, 0.1, 0.12), result_edge);
+    // Combine: darken by AO, edge silhouettes, and depth contrast. The colour target holds
+    // sRGB, so decode, darken in linear, and re-encode once at the end.
+    float3 finalColor = srgbToLinear(sceneColor.rgb) * result_ao * depthContrast;
+    finalColor = mix(finalColor, srgbToLinear(float3(0.1, 0.1, 0.12)), result_edge);
 
     // --- Depth of Field (CoC-based disk blur) ---
     if (params.dofEnabled > 0.5) {
@@ -1512,7 +1635,7 @@ fragment float4 ssao_fragment(
             };
             for (int i = 0; i < 8; i++) {
                 float2 sampleUV = in.texCoord + dofOffsets[i] * params.texelSize * coc;
-                float3 sampleColor = colorTexture.sample(texSampler, sampleUV).rgb;
+                float3 sampleColor = srgbToLinear(colorTexture.sample(texSampler, sampleUV).rgb);
                 // Apply AO and depth contrast to sample too
                 blurColor += sampleColor * result_ao * depthContrast;
                 totalWeight += 1.0;
@@ -1524,22 +1647,11 @@ fragment float4 ssao_fragment(
         }
     }
 
-    // --- ACES Filmic Tone Mapping ---
-    // Compresses dynamic range so highlights don't clip and shadows retain detail.
-    // Uses the Narkowicz ACES approximation (industry standard).
-    {
-        float exposure = params.exposure;
-        float wp = max(params.whitePoint, 0.01);
-        float3 x = finalColor * exposure / wp;
-        float a = 2.51;
-        float b = 0.03;
-        float c = 2.43;
-        float d = 0.59;
-        float e = 0.14;
-        finalColor = saturate((x * (a * x + b)) / (x * (c * x + d) + e));
-    }
+    // Tone mapping is not done here: `shaded_fragment` already applied it to lit surfaces
+    // (it must happen before the bgra8 colour target clips HDR values, and must also run
+    // when this composite is skipped). Applying it again would double tone map.
 
-    return float4(finalColor, sceneColor.a);
+    return float4(linearToSrgb(finalColor), sceneColor.a);
 }
 
 // MARK: - Temporal Anti-Aliasing Resolve
@@ -2451,7 +2563,8 @@ fragment PickFragmentOut meshlet_pick_fragment(
 struct SkyboxUniforms {
     float4x4 inverseViewProjection;  // for reconstructing world-space view rays
     float4   params;                 // x = rotation about world up (Z), y = backgroundExposure,
-                                     // z = mipLevel (0 = sharp, 7 = blurred), w = unused
+                                     // z = mipLevel (0 = sharp, 7 = blurred),
+                                     // w = tone-map scale (exposure / whitePoint)
 };
 
 struct SkyboxVertexOut {
@@ -2486,5 +2599,7 @@ fragment float4 skybox_fragment(
 
     constexpr sampler skySampler(filter::linear, mip_filter::linear);
     float3 color = sky.sample(skySampler, rotDir, level(u.params.z)).rgb;
-    return float4(color * u.params.y, 1.0);
+    // HDR radiance is linear: tone map with the scene's exposure / white point (params.w),
+    // then encode, the same as lit surfaces.
+    return float4(linearToSrgb(acesToneMap(color * u.params.y, u.params.w, 1.0)), 1.0);
 }

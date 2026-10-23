@@ -20,7 +20,10 @@ import simd
 /// glTF 2.0 metallic-roughness.
 public struct PBRMaterial: Sendable, Codable, Hashable {
 
-    /// Base colour in linear RGB, read differently by dielectrics and metals.
+    /// Base colour as an sRGB (display) value, read differently by dielectrics and metals.
+    ///
+    /// Like every authored colour in the viewport it is sRGB-encoded; the shader decodes it
+    /// to linear before lighting (see `docs/reference/Display-Lighting.md`, Colour pipeline).
     ///
     /// Acts as albedo for dielectrics and as the F0 tint for metals, so the same value reads
     /// as paint on one material and as reflected-light colour on another.

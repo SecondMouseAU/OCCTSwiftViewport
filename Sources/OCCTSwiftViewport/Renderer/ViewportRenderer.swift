@@ -39,7 +39,8 @@ struct Uniforms {
     )
     var clipPlaneCount: UInt32 = 0
     var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map), 2 = faceted
-    var _clipPad: SIMD2<Float> = .zero
+    var toneMapExposure: Float = 1.1  // LightingConfiguration.exposure
+    var toneMapWhitePoint: Float = 1.0  // LightingConfiguration.whitePoint
 }
 
 // Per-body shader uniforms.
@@ -185,8 +186,9 @@ struct SSAOParamsSwift {
     var farPlane: Float
     var silhouetteThickness: Float
     var silhouetteIntensity: Float
-    var exposure: Float
-    var whitePoint: Float
+    // Pixels per world unit: at view depth 1 (perspective), or everywhere (orthographic).
+    var pixelsPerUnit: Float
+    var orthographic: Float  // 1 = orthographic depth (linear), 0 = perspective
     var dofAperture: Float
     var dofFocalDistance: Float
     var dofMaxBlurRadius: Float
@@ -204,7 +206,8 @@ struct TAAParamsSwift {
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct SkyboxUniforms`).
 struct SkyboxUniformsSwift {
     var inverseViewProjection: simd_float4x4
-    var params: SIMD4<Float>  // x = rotationY, y = backgroundExposure, z = mipLevel, w = unused
+    // x = rotationY, y = backgroundExposure, z = mipLevel, w = tone-map scale (exposure / whitePoint)
+    var params: SIMD4<Float>
 }
 
 // MARK: - Cached Body Buffers
@@ -1423,8 +1426,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             : nil
 
         let silhouettesEnabled = controller.configuration.enableSilhouettes
-        // Unlit mode bypasses the SSAO/tone-map composite pass entirely so diagnostic
-        // colours are never desaturated by ACES tone mapping (issue #77).
+        // Unlit mode bypasses the SSAO/silhouette composite pass entirely (issue #77). Tone
+        // mapping no longer lives in that pass; `shaded_fragment` applies it to lit surfaces
+        // on every frame and skips it for unlit bodies.
         let ssaoEnabled =
             (lighting.enableSSAO || silhouettesEnabled) && ssaoPipeline != nil
             && displayMode.showsSurfaces && displayMode != .unlit
@@ -2771,8 +2775,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         ? silhouetteConfig.silhouetteThickness : 0.0,
                     silhouetteIntensity: silhouetteConfig.enableSilhouettes
                         ? silhouetteConfig.silhouetteIntensity : 0.0,
-                    exposure: lighting.exposure,
-                    whitePoint: lighting.whitePoint,
+                    pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
+                    orthographic: cameraState.isOrthographic ? 1.0 : 0.0,
                     dofAperture: controller.dofAperture,
                     dofFocalDistance: dofFocalDist,
                     dofMaxBlurRadius: controller.dofMaxBlurRadius,

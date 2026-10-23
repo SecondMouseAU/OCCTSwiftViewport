@@ -24,7 +24,7 @@ public struct PBRMaterial: Sendable, Codable, Hashable
 
 glTF 2.0 metallic-roughness material with optional KHR_materials_clearcoat and
 KHR_materials_emissive_strength extensions. When `clearcoat == 0` the model reduces to standard
-glTF metallic-roughness. All values are in linear space.
+glTF metallic-roughness. `baseColor` is an sRGB (display) value, like every other authored colour in the viewport, and is decoded to linear for lighting; `emissive` is linear RGB. See [Colour pipeline](Display-Lighting.md#colour-pipeline).
 
 ### `init(baseColor:metallic:roughness:ior:clearcoat:clearcoatRoughness:emissive:emissiveStrength:opacity:)`
 
@@ -63,7 +63,7 @@ let material = PBRMaterial(
 public var baseColor: SIMD3<Float>
 ```
 
-Albedo in linear RGB. Acts as diffuse tint for dielectrics (`metallic == 0`) and as the F0
+Albedo as an sRGB (display) value, decoded to linear for lighting. Acts as diffuse tint for dielectrics (`metallic == 0`) and as the F0
 specular colour for metals (`metallic == 1`). Default `(0.8, 0.8, 0.8)`.
 
 #### `metallic`

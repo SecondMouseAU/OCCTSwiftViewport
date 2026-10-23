@@ -448,8 +448,10 @@ enum RendererSharedSetup {
         encoder.setDepthStencilState(depthState)
         var skyUniforms = SkyboxUniformsSwift(
             inverseViewProjection: simd_inverse(viewProjection),
-            // z = mip level: 0 for a sharp background.
-            params: SIMD4<Float>(lighting.environmentRotationY, lighting.backgroundExposure, 0, 0)
+            // z = mip level: 0 for a sharp background. w = tone-map scale (exposure / whitePoint).
+            params: SIMD4<Float>(
+                lighting.environmentRotationY, lighting.backgroundExposure, 0,
+                lighting.exposure / max(lighting.whitePoint, 0.01))
         )
         encoder.setVertexBytes(
             &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
