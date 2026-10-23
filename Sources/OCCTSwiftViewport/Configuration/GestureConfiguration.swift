@@ -64,6 +64,14 @@ public struct GestureConfiguration: Sendable {
             invertOrbitVertical ? -base : base)
     }
 
+    /// Which way an arcball drag outside the sphere rolls the view: `1` with the pointer for
+    /// `.rotateObject`, `-1` against it for `.orbitCamera`.
+    ///
+    /// The invert flags name the horizontal and vertical axes, so they leave the roll alone.
+    public var orbitRollSign: Float {
+        dragRotation == .rotateObject ? 1 : -1
+    }
+
     // MARK: - Inertia
 
     /// Whether to enable inertia (momentum) after gestures.
@@ -71,6 +79,17 @@ public struct GestureConfiguration: Sendable {
 
     /// Damping factor for inertia (0 = no damping, 1 = instant stop).
     public var dampingFactor: Float
+
+    /// Fraction of the release speed that orbit and pan momentum start with (default `0.06`).
+    ///
+    /// `1` carries the drag on at the speed the pointer was moving when released. The default
+    /// keeps the short, gentle coast the viewport has always had: the release velocity used to
+    /// be multiplied by 0.001 where the conversion from points per second to the camera's points
+    /// per 1/60 s needed 1/60, which is `0.06` of the release speed. With the default
+    /// `dampingFactor` of 0.1 the coast covers about `0.16 s × momentumScale` times the release
+    /// speed: a 1500 pt/s flick coasts about 14 pt at the default and about 240 pt at `1`.
+    /// `0` turns momentum off, as `enableInertia = false` does.
+    public var momentumScale: Float
 
     // MARK: - iOS Gesture Mapping
     //
@@ -172,6 +191,7 @@ public struct GestureConfiguration: Sendable {
         invertOrbitVertical: Bool = false,
         enableInertia: Bool = true,
         dampingFactor: Float = 0.1,
+        momentumScale: Float = 0.06,
         singleFingerDrag: GestureAction = .orbit,
         twoFingerDrag: GestureAction = .pan,
         pinchGesture: GestureAction = .zoom,
@@ -195,6 +215,7 @@ public struct GestureConfiguration: Sendable {
         self.invertOrbitVertical = invertOrbitVertical
         self.enableInertia = enableInertia
         self.dampingFactor = dampingFactor
+        self.momentumScale = momentumScale
         self.singleFingerDrag = singleFingerDrag
         self.twoFingerDrag = twoFingerDrag
         self.pinchGesture = pinchGesture
@@ -275,10 +296,11 @@ public struct GestureConfiguration: Sendable {
 /// With `.orbitCamera` the drag moves the camera around the pivot instead, so the model appears
 /// to turn the opposite way on both axes.
 ///
-/// The convention holds for every `RotationStyle`. `.firstPerson` in this library keeps the camera
-/// at `pivot + distance` and so also turns about the pivot: `.rotateObject` gives the touch
-/// "drag the scene" feel there and `.orbitCamera` the desktop mouse-look feel (drag right, look
-/// right).
+/// The convention holds for every `RotationStyle`. `.firstPerson` turns the camera in place
+/// rather than about the pivot, so there `.rotateObject` drags the scene with the finger (drag
+/// right and the view turns left, as in a touch panorama viewer) and `.orbitCamera` gives the
+/// desktop mouse-look feel (drag right, look right). For `.arcball` the convention also sets
+/// which way a drag outside the sphere rolls the view (`orbitRollSign`).
 public enum DragRotationConvention: String, CaseIterable, Sendable {
     /// Grab and turn the model: its near side follows the drag on both axes (default).
     case rotateObject

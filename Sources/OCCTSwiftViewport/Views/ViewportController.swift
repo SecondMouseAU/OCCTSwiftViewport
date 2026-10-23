@@ -304,22 +304,34 @@ public final class ViewportController: ObservableObject {
     }
 
     /// Ends orbit with velocity for inertia, snapping to a nearby axis view on gentle release.
+    ///
+    /// `velocity` is in points per second, signed like `handleOrbit(translation:)`. The momentum
+    /// starts at `GestureConfiguration.momentumScale` of it. A `.firstPerson` drag never snaps,
+    /// since snapping turns the view about the pivot and would move the camera.
     public func endOrbit(velocity: CGSize) {
+        defer { cameraController.endOrbitDrag() }
         let speed = sqrt(velocity.width * velocity.width + velocity.height * velocity.height)
 
         // If release velocity is low, check for snap to nearby axis view
-        if speed < 200 {
+        if speed < 200, cameraController.rotationStyle != .firstPerson {
             if let snapView = cameraController.nearestStandardView(threshold: 3.0) {
-                cameraController.animateTo(snapView, duration: 0.15)
+                // Snap the orientation only. `animateTo(StandardView)` also takes the view's
+                // projection, which turned a perspective camera orthographic on a slow release.
+                var target = cameraState
+                target.rotation = snapView.rotation
+                cameraController.animateTo(target, duration: 0.15)
                 return
             }
         }
 
-        cameraController.setAngularVelocity(
-            SIMD2<Float>(
-                Float(velocity.width) * 0.001,
-                Float(velocity.height) * 0.001
-            ))
+        cameraController.setAngularVelocity(momentum(fromReleaseVelocity: velocity))
+    }
+
+    /// Converts a release velocity in points per second into the camera's momentum, in points
+    /// per 1/60 s, scaled by `GestureConfiguration.momentumScale`.
+    func momentum(fromReleaseVelocity velocity: CGSize) -> SIMD2<Float> {
+        SIMD2(Float(velocity.width), Float(velocity.height))
+            * (configuration.gestureConfiguration.momentumScale / 60)
     }
 
     /// Handles pan gesture input.
@@ -331,12 +343,11 @@ public final class ViewportController: ObservableObject {
     }
 
     /// Ends pan with velocity for inertia.
+    ///
+    /// `velocity` is in points per second; the momentum starts at
+    /// `GestureConfiguration.momentumScale` of it.
     public func endPan(velocity: CGSize) {
-        cameraController.setPanVelocity(
-            SIMD2<Float>(
-                Float(velocity.width) * 0.001,
-                Float(velocity.height) * 0.001
-            ))
+        cameraController.setPanVelocity(momentum(fromReleaseVelocity: velocity))
     }
 
     /// Handles zoom gesture input, scaled by `GestureConfiguration.zoomSensitivity`.
@@ -439,6 +450,19 @@ public final class ViewportController: ObservableObject {
     /// Internal, used by the input router (`dispatch(_:)`).
     enum InputDragMode { case orbit, pan, zoom }
     var activeInputDragMode: InputDragMode = .orbit
+
+    /// The primary drag's pointer, in points from the view centre (y down); `nil` between drags.
+    ///
+    /// Internal, used by the input router.
+    var inputDragPointer: SIMD2<Float>?
+
+    /// Where the next primary drag starts, from `setDragOrigin(offsetFromCenter:)`.
+    var pendingDragOrigin: SIMD2<Float>?
+
+    /// Whether a two-finger drag is in progress.
+    ///
+    /// Internal, used by the input router.
+    var twoFingerDragActive = false
 
     /// Scene bodies that a `.focusOnPoint` double-tap or double-click raycasts against.
     ///
@@ -718,7 +742,9 @@ extension ViewportController {
     /// Computes and applies a dynamic pivot update.
     internal func updateDynamicPivot(bodies: [ViewportBody]) {
         let config = configuration.dynamicPivotConfiguration
-        guard config.isEnabled else { return }
+        // First-person turns the camera in place and the pivot just follows it; moving the
+        // pivot would move the camera.
+        guard config.isEnabled, cameraController.rotationStyle != .firstPerson else { return }
 
         if let newPivot = pivotStrategy.computePivot(
             cameraState: cameraState,

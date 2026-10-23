@@ -371,7 +371,7 @@ Applies an incremental orbit delta (in points, y down). This is the raw call: th
 public func endOrbit(velocity: CGSize)
 ```
 
-Ends an orbit gesture, optionally applying inertia from the release velocity. At low speeds snaps to the nearest standard view if within 3°.
+Ends an orbit gesture, optionally applying inertia from the release velocity (points per second; the momentum starts at `GestureConfiguration.momentumScale` of it). At low speeds snaps to the nearest standard view's orientation if within 3°, keeping the current projection (previously the snap also switched a perspective camera to orthographic), except in `.firstPerson`, where snapping would move the camera. Also ends the camera controller's orbit drag (`CameraController.endOrbitDrag()`), so the next `handleOrbit` begins a new one.
 
 #### `handlePan(translation:)`
 
@@ -387,7 +387,7 @@ Applies an incremental pan translation (in points).
 public func endPan(velocity: CGSize)
 ```
 
-Ends a pan gesture, optionally applying inertia.
+Ends a pan gesture, optionally applying inertia from the release velocity (points per second, scaled by `GestureConfiguration.momentumScale`).
 
 #### `handleZoom(magnification:)`
 

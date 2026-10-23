@@ -82,7 +82,7 @@ public struct MetalViewportView: View {
                 metalView
                     #if os(iOS) || os(visionOS)
                         .overlay { panGestureOverlay }
-                        .gesture(orbitGesture)
+                        .gesture(orbitGesture(viewSize: geometry.size))
                         // Pinch and rotate are both two-finger continuous gestures;
                         // they must be simultaneous or SwiftUI's default exclusivity
                         // lets pinch win and rotate never fires.
@@ -293,6 +293,11 @@ public struct MetalViewportView: View {
             }
             let onMouseDown: (CGPoint, CGSize, Int, ViewportModifierKeys) -> Void = {
                 location, viewSize, clickCount, modifiers in
+                // AppKit view coordinates are y-up; the drag origin is y-down from the centre.
+                controller.setDragOrigin(
+                    offsetFromCenter: SIMD2(
+                        Float(location.x - viewSize.width / 2),
+                        Float(viewSize.height / 2 - location.y)))
                 handlePickAt(location, viewSize: viewSize, count: clickCount, modifiers: modifiers)
             }
             // Only claim keys when a key-combination trigger is configured, so by default every
@@ -379,7 +384,7 @@ public struct MetalViewportView: View {
             )
         }
 
-        private var orbitGesture: some Gesture {
+        private func orbitGesture(viewSize: CGSize) -> some Gesture {
             // minimumDistance 8 (was 1): a 1pt threshold caught the sub-pixel jitter of a *tap* as a
             // micro-orbit, so SpatialTapGesture rarely fired and tap-to-select felt broken. 8pt cleanly
             // separates a tap (select) from a drag (orbit).
@@ -387,6 +392,13 @@ public struct MetalViewportView: View {
                 .onChanged { value in
                     guard !isPanning else { return }
 
+                    if lastDragValue == .zero {
+                        // First change of a drag: where it started, for the arcball's sphere.
+                        controller.setDragOrigin(
+                            offsetFromCenter: SIMD2(
+                                Float(value.startLocation.x - viewSize.width / 2),
+                                Float(value.startLocation.y - viewSize.height / 2)))
+                    }
                     let delta = CGSize(
                         width: value.translation.width - lastDragValue.width,
                         height: value.translation.height - lastDragValue.height

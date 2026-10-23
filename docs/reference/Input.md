@@ -37,6 +37,22 @@ Primary pointer drag changed. On macOS this is a mouse drag; on iOS a single-fin
 controller.dispatch(.dragChanged(delta: SIMD2(4, -2), modifiers: [.shift]))
 ```
 
+The first `.dragChanged` after a `.dragEnded` begins a new drag: it stops any orbit or pan momentum still coasting, rather than adding the new drag to it, and an orbit fixes its direction at that point (see `CameraController.beginOrbitDrag(at:signs:)`).
+
+#### `setDragOrigin(offsetFromCenter:)`
+
+```swift
+public func setDragOrigin(offsetFromCenter: SIMD2<Float>)   // on ViewportController
+```
+
+Optional: where the next drag starts, in points from the centre of the view (y down). The `.arcball` rotation style uses it to place the pointer on its virtual sphere, so that a drag that starts near the edge of the view and moves around the centre rolls the view. `MetalViewportView` calls it on mouse-down (macOS) and at the start of a one-finger drag (iOS / visionOS). Call it before the first `.dragChanged` when you dispatch drags from another source; without it the drag is taken to start at the centre.
+
+```swift
+controller.setDragOrigin(offsetFromCenter: SIMD2(Float(start.x - size.width / 2),
+                                                 Float(start.y - size.height / 2)))
+controller.dispatch(.dragChanged(delta: delta, modifiers: []))
+```
+
 ---
 
 ### `.dragEnded(velocity:modifiers:)`
@@ -45,7 +61,7 @@ controller.dispatch(.dragChanged(delta: SIMD2(4, -2), modifiers: [.shift]))
 case dragEnded(velocity: SIMD2<Float>, modifiers: ViewportModifierKeys)
 ```
 
-Primary pointer drag ended. `velocity` is the release velocity in points per second and is used to seed inertia when `GestureConfiguration.enableInertia` is `true`.
+Primary pointer drag ended. `velocity` is the release velocity in points per second and is used to seed inertia when `GestureConfiguration.enableInertia` is `true`. The momentum starts at `GestureConfiguration.momentumScale` of it (see [Inertia](#inertia)).
 
 ---
 
@@ -297,6 +313,7 @@ public var dragRotation: DragRotationConvention  // default .rotateObject
 public var invertOrbitHorizontal: Bool           // default false
 public var invertOrbitVertical: Bool             // default false
 public var orbitDragSigns: SIMD2<Float> { get }  // (1, 1) by default
+public var orbitRollSign: Float { get }          // 1 for .rotateObject, -1 for .orbitCamera
 ```
 
 `dragRotation` sets which way every drag that resolves to `.orbit` turns the view: the iOS / visionOS one-finger drag (and the two-finger drag when bound to `.orbit`), the macOS mouse drag, the navigation cube, and the release momentum of each.
@@ -306,7 +323,11 @@ public var orbitDragSigns: SIMD2<Float> { get }  // (1, 1) by default
 | `.rotateObject` (default) | the model's near side moves right, with the finger | the near side moves up, with the finger |
 | `.orbitCamera` | the camera moves right around the pivot, so the model turns left | the camera moves up, so the near side moves down |
 
-`.rotateObject` feels as if the finger is turning the object directly. It holds for every `RotationStyle`: turntable (the default), arcball, and first-person. In this library `.firstPerson` keeps the camera at `pivot + distance` along its back vector, so it also turns about the pivot and differs from turntable only in how it composes yaw and pitch; `.rotateObject` gives it the touch "drag the scene" feel, and `.orbitCamera` the desktop mouse-look feel (drag right, look right).
+`.rotateObject` feels as if the finger is turning the object directly. It holds for every `RotationStyle`: turntable (the default), arcball, and first-person.
+
+- **Turntable:** past the pole the camera is upside down, so each drag decides at its start which way a horizontal drag turns, and the model keeps following the finger.
+- **Arcball:** the convention also sets which way a drag outside the sphere rolls the view: with `.rotateObject` the model rolls with the pointer, with `.orbitCamera` against it (`orbitRollSign`). The invert flags leave the roll alone.
+- **First-person** turns the camera in place, so there is no object to turn: `.rotateObject` drags the scene with the finger, as in a touch panorama viewer (drag right and the view turns left), and `.orbitCamera` is desktop mouse-look (drag right, look right).
 
 Every preset uses `.rotateObject`. Blender's middle-mouse orbit and Fusion 360's orbit both carry the model's near side with the pointer on both axes, as do Shapr3D, Onshape and SolidWorks.
 
@@ -321,9 +342,14 @@ Every preset uses `.rotateObject`. Blender's middle-mouse orbit and Fusion 360's
 ```swift
 public var enableInertia: Bool    // default true
 public var dampingFactor: Float   // default 0.1
+public var momentumScale: Float   // default 0.06
 ```
 
 `enableInertia` enables post-gesture momentum. `dampingFactor` controls how quickly momentum decays: `0` means no damping (perpetual spin); `1` means instant stop. It is the fraction of velocity lost per 1/60 s, applied in proportion to elapsed time, so momentum coasts the same at 60 Hz, at 120 Hz, or when timer ticks coalesce. The `.visionOS` preset uses `0.15`.
+
+`momentumScale` is the fraction of the release speed that orbit and pan momentum start with. At `1` the view carries on at the speed the pointer was moving when it let go. The default `0.06` keeps the short, gentle coast the viewport has always had. The release velocity (points per second) used to be multiplied by 0.001 and treated as points per 1/60 s, where the conversion needed 1/60: momentum started at 0.06 of the release speed, by accident. The conversion is now exact and the scale is explicit. With the default damping a release coasts about `0.16 s × momentumScale` times its speed: a 1500 pt/s flick coasts about 14 pt at the default and about 240 pt at `1`. `0` turns momentum off, as `enableInertia = false` does.
+
+A new drag stops any momentum still coasting.
 
 ---
 
@@ -442,6 +468,7 @@ public init(
     invertOrbitVertical:   Bool         = false,
     enableInertia:        Bool          = true,
     dampingFactor:        Float         = 0.1,
+    momentumScale:        Float         = 0.06,
     singleFingerDrag:     GestureAction = .orbit,
     twoFingerDrag:        GestureAction = .pan,
     pinchGesture:         GestureAction = .zoom,
@@ -496,7 +523,7 @@ How an orbiting drag maps onto the view; set it with `GestureConfiguration.dragR
 - **`rotateObject`** turns the model under the finger: a drag right carries its near side right, a drag up carries it up.
 - **`orbitCamera`** moves the camera around the pivot, so the model appears to turn against the drag on both axes.
 
-Both hold in every `RotationStyle`. See [Drag direction](#drag-direction-dragrotation) for the presets, first-person behaviour and the invert flags.
+Both hold in every `RotationStyle`. For the arcball the convention also sets the roll direction, and in first-person `.rotateObject` drags the scene while `.orbitCamera` is mouse-look. See [Drag direction](#drag-direction-dragrotation) for the presets, these per-style details and the invert flags.
 
 ---
 
