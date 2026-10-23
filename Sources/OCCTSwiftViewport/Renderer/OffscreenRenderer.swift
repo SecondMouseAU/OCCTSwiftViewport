@@ -119,6 +119,66 @@ public enum OffscreenRenderError: Error, Sendable {
     case writeFailed
 }
 
+// MARK: - Sample-count-dependent pipelines
+
+/// The `OffscreenRenderer` pipelines that must be built for the main pass's sample count.
+///
+/// The shadow pipelines render into the single-sample shadow map and are not here.
+private struct SampledPipelines {
+    let shadedPipeline: MTLRenderPipelineState
+
+    /// Same shaders as `shadedPipeline`, but its vertex descriptor reads position from buffer 0 and
+    /// normal from buffer 2 (de-interleaved), so bodies built via `ViewportBody.directMesh(...)`
+    /// render without a CPU interleave.
+    let directMeshPipeline: MTLRenderPipelineState
+    let wireframePipeline: MTLRenderPipelineState
+    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
+    let quadEdgePipeline: MTLRenderPipelineState?
+    let gridPipeline: MTLRenderPipelineState
+    let axisPipeline: MTLRenderPipelineState
+    /// Visible point-cloud pipeline (issue #28).
+    ///
+    /// Optional only because pipeline construction could fail on a degenerate device.
+    let visiblePointPipeline: MTLRenderPipelineState?
+
+    init?(device: MTLDevice, library: MTLLibrary, sampleCount: Int) {
+        let depthFormat: MTLPixelFormat = .depth32Float_stencil8
+        let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
+        let directVertexDesc = RendererSharedSetup.directMeshVertexDescriptor()
+
+        guard
+            let shaded = RendererSharedSetup.makeShadedPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc),
+            let directMesh = RendererSharedSetup.makeShadedPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: directVertexDesc),
+            let wireframe = RendererSharedSetup.makeWireframePipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc),
+            let grid = RendererSharedSetup.makeGridPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat),
+            let axis = RendererSharedSetup.makeAxisPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat)
+        else { return nil }
+
+        shadedPipeline = shaded
+        directMeshPipeline = directMesh
+        wireframePipeline = wireframe
+        gridPipeline = grid
+        axisPipeline = axis
+        quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
+        visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, label: "offscreen_visible_point")
+    }
+}
+
 // MARK: - OffscreenRenderer
 
 /// Headless Metal renderer that renders [ViewportBody] to CGImage without MTKView.
@@ -127,25 +187,14 @@ public final class OffscreenRenderer: Sendable {
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    private let shadedPipeline: MTLRenderPipelineState
+    private let library: MTLLibrary
 
-    /// Direct-mesh shaded pipeline (Option A spike).
+    /// Main-pass pipelines, built once per sample count.
     ///
-    /// Same shaders as `shadedPipeline`, but its vertex descriptor reads position from buffer 0 and
-    /// normal from buffer 2 (de-interleaved), so bodies built via `ViewportBody.directMesh(...)`
-    /// render without a CPU interleave.
-    private let directMeshPipeline: MTLRenderPipelineState
-    private let wireframePipeline: MTLRenderPipelineState
-    /// Quad-expanded wireframe pipeline (variable width + dash patterns).
-    private let quadEdgePipeline: MTLRenderPipelineState?
-    private let gridPipeline: MTLRenderPipelineState
-    private let axisPipeline: MTLRenderPipelineState
-
-    /// Visible point-cloud pipeline (issue #28).
-    ///
-    /// Mirrors the live renderer's `visiblePointPipeline`. Optional only because pipeline
-    /// construction could fail on a degenerate device.
-    private let visiblePointPipeline: MTLRenderPipelineState?
+    /// Their `rasterSampleCount` must match the pass's attachments. The default count (4) is built
+    /// in `init` and any other on first use, so `OffscreenRenderOptions.msaaSampleCount` can change
+    /// between renders (issue #134).
+    private var pipelinesBySampleCount: [Int: SampledPipelines]
     private let shadowPipeline: MTLRenderPipelineState
 
     /// Direct-mesh shadow pipeline (Option A).
@@ -183,9 +232,6 @@ public final class OffscreenRenderer: Sendable {
         self.device = device
         self.commandQueue = commandQueue
 
-        let sampleCount = 4
-        let depthFormat: MTLPixelFormat = .depth32Float_stencil8
-
         // Load shader library
         let library: MTLLibrary
         if let compiled = try? device.makeDefaultLibrary(bundle: Bundle.module) {
@@ -199,52 +245,16 @@ public final class OffscreenRenderer: Sendable {
             return nil
         }
 
+        self.library = library
+
         let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
         let directVertexDesc = RendererSharedSetup.directMeshVertexDescriptor()
 
         guard
-            let shadedPipeline = RendererSharedSetup.makeShadedPipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat, vertexDescriptor: vertexDesc)
+            let defaultPipelines = SampledPipelines(
+                device: device, library: library, sampleCount: Self.defaultSampleCount)
         else { return nil }
-        self.shadedPipeline = shadedPipeline
-
-        guard
-            let directMeshPipeline = RendererSharedSetup.makeShadedPipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
-        else { return nil }
-        self.directMeshPipeline = directMeshPipeline
-
-        guard
-            let wireframePipeline = RendererSharedSetup.makeWireframePipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat, vertexDescriptor: vertexDesc)
-        else { return nil }
-        self.wireframePipeline = wireframePipeline
-
-        self.quadEdgePipeline = RendererSharedSetup.makeQuadEdgePipelineState(
-            device: device, library: library, sampleCount: sampleCount,
-            depthFormat: depthFormat,
-            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
-
-        guard
-            let gridPipeline = RendererSharedSetup.makeGridPipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat)
-        else { return nil }
-        self.gridPipeline = gridPipeline
-
-        guard
-            let axisPipeline = RendererSharedSetup.makeAxisPipelineState(
-                device: device, library: library, sampleCount: sampleCount,
-                depthFormat: depthFormat)
-        else { return nil }
-        self.axisPipeline = axisPipeline
-
-        self.visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
-            device: device, library: library, sampleCount: sampleCount,
-            depthFormat: depthFormat, label: "offscreen_visible_point")
+        self.pipelinesBySampleCount = [Self.defaultSampleCount: defaultPipelines]
 
         guard
             let shadowPipeline = RendererSharedSetup.makeShadowPipelineState(
@@ -291,12 +301,12 @@ public final class OffscreenRenderer: Sendable {
     {
         let w = options.width
         let h = options.height
-        let sampleCount = options.msaaSampleCount
+        let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
 
         ensureTextures(width: w, height: h, sampleCount: sampleCount)
-        guard let msaaColor = msaaColorTexture,
-            let msaaDepth = msaaDepthTexture,
-            let resolve = resolveTexture
+        guard let depthTexture = msaaDepthTexture,
+            let resolve = resolveTexture,
+            let pipelines = pipelines(forSampleCount: sampleCount)
         else { return nil }
 
         // Ensure buffers for all bodies
@@ -429,17 +439,23 @@ public final class OffscreenRenderer: Sendable {
         // Main pass
         let bg = options.backgroundColor
         let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].texture = msaaColor
-        passDesc.colorAttachments[0].resolveTexture = resolve
+        if sampleCount > 1, let msaaColor = msaaColorTexture {
+            passDesc.colorAttachments[0].texture = msaaColor
+            passDesc.colorAttachments[0].resolveTexture = resolve
+            passDesc.colorAttachments[0].storeAction = .multisampleResolve
+        } else {
+            // No MSAA: draw straight into the texture that is read back.
+            passDesc.colorAttachments[0].texture = resolve
+            passDesc.colorAttachments[0].storeAction = .store
+        }
         passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].storeAction = .multisampleResolve
         passDesc.colorAttachments[0].clearColor = MTLClearColor(
             red: Double(bg.x), green: Double(bg.y), blue: Double(bg.z), alpha: Double(bg.w))
-        passDesc.depthAttachment.texture = msaaDepth
+        passDesc.depthAttachment.texture = depthTexture
         passDesc.depthAttachment.loadAction = .clear
         passDesc.depthAttachment.storeAction = .dontCare
         passDesc.depthAttachment.clearDepth = 1.0
-        passDesc.stencilAttachment.texture = msaaDepth
+        passDesc.stencilAttachment.texture = depthTexture
         passDesc.stencilAttachment.loadAction = .clear
         passDesc.stencilAttachment.storeAction = .dontCare
 
@@ -452,7 +468,7 @@ public final class OffscreenRenderer: Sendable {
         if options.showGrid {
             RendererSharedSetup.encodeGrid(
                 encoder: mainEncoder,
-                pipeline: gridPipeline,
+                pipeline: pipelines.gridPipeline,
                 viewProjection: viewProjection,
                 cameraState: cameraState,
                 baseSpacing: options.gridBaseSpacing,
@@ -464,7 +480,7 @@ public final class OffscreenRenderer: Sendable {
         if options.showAxes {
             RendererSharedSetup.encodeAxes(
                 encoder: mainEncoder,
-                pipeline: axisPipeline,
+                pipeline: pipelines.axisPipeline,
                 vertexBuffer: axisVertexBuffer,
                 viewProjection: viewProjection
             )
@@ -501,11 +517,11 @@ public final class OffscreenRenderer: Sendable {
             {
                 if let nb = buffers.normalBuffer {
                     // Direct-mesh path (Option A): position@0 + normal@2, no interleave.
-                    mainEncoder.setRenderPipelineState(directMeshPipeline)
+                    mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
                     mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                     mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                 } else {
-                    mainEncoder.setRenderPipelineState(shadedPipeline)
+                    mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
                     mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -551,7 +567,7 @@ public final class OffscreenRenderer: Sendable {
                 )
 
                 if useQuadExpansion,
-                    let quadPipeline = quadEdgePipeline,
+                    let quadPipeline = pipelines.quadEdgePipeline,
                     let quadEdgeVB = buffers.quadEdgeVertexBuffer,
                     buffers.quadEdgeVertexCount > 0
                 {
@@ -573,7 +589,7 @@ public final class OffscreenRenderer: Sendable {
                         vertexCount: buffers.quadEdgeVertexCount)
                 } else {
                     // Native Metal line pipeline (backward compatible)
-                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
                         &uniforms,
@@ -616,11 +632,11 @@ public final class OffscreenRenderer: Sendable {
                 // Direct-mesh bodies (Option A) bind position@0 + normal@2 via directMeshPipeline;
                 // both pipelines share the same alpha-blend config so compositing is identical.
                 if let nb = t.buffers.normalBuffer {
-                    mainEncoder.setRenderPipelineState(directMeshPipeline)
+                    mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
                     mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                     mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                 } else {
-                    mainEncoder.setRenderPipelineState(shadedPipeline)
+                    mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
                     mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -637,7 +653,7 @@ public final class OffscreenRenderer: Sendable {
         // Point-cloud pass (issue #28). Walks `.point` bodies and draws them
         // as MTL point primitives via `visiblePointPipeline`. See
         // Shaders.metal `visible_point_vertex` for `pxPerWorldFactor` derivation.
-        if let pointPipeline = visiblePointPipeline {
+        if let pointPipeline = pipelines.visiblePointPipeline {
             let pxPerWorldFactor = Float(h) * projMatrix.columns.1.y * 0.5
             var didBindPipeline = false
             for body in bodies where body.isVisible && body.primitiveKind == .point {
@@ -760,17 +776,24 @@ public final class OffscreenRenderer: Sendable {
         guard width != cachedWidth || height != cachedHeight || sampleCount != cachedSampleCount
         else { return }
 
-        let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
-        colorDesc.textureType = .type2DMultisample
-        colorDesc.sampleCount = sampleCount
-        colorDesc.usage = [.renderTarget]
-        colorDesc.storageMode = .private
-        msaaColorTexture = device.makeTexture(descriptor: colorDesc)
+        // With one sample there is no multisample color target: the pass draws straight into
+        // `resolveTexture`, and depth is a plain 2D texture (Metal rejects a multisample texture
+        // with a sample count of 1, issue #134).
+        if sampleCount > 1 {
+            let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            colorDesc.textureType = .type2DMultisample
+            colorDesc.sampleCount = sampleCount
+            colorDesc.usage = [.renderTarget]
+            colorDesc.storageMode = .private
+            msaaColorTexture = device.makeTexture(descriptor: colorDesc)
+        } else {
+            msaaColorTexture = nil
+        }
 
         let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .depth32Float_stencil8, width: width, height: height, mipmapped: false)
-        depthDesc.textureType = .type2DMultisample
+        depthDesc.textureType = sampleCount > 1 ? .type2DMultisample : .type2D
         depthDesc.sampleCount = sampleCount
         depthDesc.usage = [.renderTarget]
         depthDesc.storageMode = .private
@@ -785,6 +808,35 @@ public final class OffscreenRenderer: Sendable {
         cachedWidth = width
         cachedHeight = height
         cachedSampleCount = sampleCount
+    }
+
+    /// Sample count `init` builds pipelines for, and the `OffscreenRenderOptions` default.
+    static let defaultSampleCount = 4
+
+    /// Maps a requested MSAA sample count to one the device supports.
+    ///
+    /// Values below 2 mean no MSAA (1). Otherwise the largest of 8, 4 and 2 that does not exceed
+    /// the request and that the device supports is used, falling back to 1.
+    nonisolated static func supportedSampleCount(
+        _ requested: Int, supports: (Int) -> Bool
+    ) -> Int {
+        guard requested > 1 else { return 1 }
+        return [8, 4, 2].first { $0 <= requested && supports($0) } ?? 1
+    }
+
+    private static func supportedSampleCount(_ requested: Int, device: MTLDevice) -> Int {
+        supportedSampleCount(requested) { device.supportsTextureSampleCount($0) }
+    }
+
+    /// Returns the pipelines for `sampleCount`, building and caching them on first use.
+    private func pipelines(forSampleCount sampleCount: Int) -> SampledPipelines? {
+        if let cached = pipelinesBySampleCount[sampleCount] { return cached }
+        guard
+            let built = SampledPipelines(
+                device: device, library: library, sampleCount: sampleCount)
+        else { return nil }
+        pipelinesBySampleCount[sampleCount] = built
+        return built
     }
 
     private func ensureBuffers(for body: ViewportBody) {
