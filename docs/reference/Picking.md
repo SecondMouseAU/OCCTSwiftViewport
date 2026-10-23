@@ -31,6 +31,18 @@ The sub-shape kind that a GPU pick resolves to. Encoded into bits 30–31 of the
 
 **Note:** A body that contains both `edges` and `arcs` reports `.edge` for both; callers must inspect `triangleIndex` to determine whether it indexes into `edges` or `arcs`.
 
+### Pick footprints
+
+How much of the pick texture each primitive covers, in drawable pixels:
+
+| Primitive | Footprint |
+|-----------|-----------|
+| Face | The triangle's own pixels. |
+| Edge, arc | With `EdgeLineConfiguration.useQuadExpansion` on (the default): a band as wide as the drawn edge, at least 1 pt (2 px on a 2× display). Dash gaps are pickable too. With it off: a 1 px line, like the drawn one. |
+| Vertex | An 8 × 8 pt square (16 × 16 px on a 2× display), centred on the vertex. |
+
+Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
+
 ---
 
 ## PickLayer

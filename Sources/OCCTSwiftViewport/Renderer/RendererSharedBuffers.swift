@@ -83,6 +83,10 @@ enum RendererSharedBuffers {
     ///   `side` (-0.5 or 0.5) is the perpendicular offset, in units of the line width.
     /// - `direction` is the normalized local-space segment direction.
     /// - Each segment produces 6 vertices: 4 corners plus 2 repeated vertices that break the strip.
+    ///   A zero-length segment still produces its 6 (zero-area) vertices, so segment `k` always
+    ///   starts at vertex `6k` and its triangles are `[[primitive_id]]` `6k...6k+5`: the quad edge
+    ///   pick shader recovers the segment index as `primitive_id / 6`, matching the native line
+    ///   buffer's numbering.
     static func quadEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
@@ -97,8 +101,10 @@ enum RendererSharedBuffers {
                 let b = polyline[i + 1]
                 let segment = b - a
                 let segmentLength = length(segment)
-                guard segmentLength > 0 else { continue }
-                let direction = segment / segmentLength
+                // Any unit direction will do for a zero-length segment: both ends coincide, so
+                // its quad has no area and draws nothing.
+                let direction =
+                    segmentLength > 0 ? segment / segmentLength : SIMD3<Float>(1, 0, 0)
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
                 // Strip order: start-left (twice), start-right, end-left, end-right (twice). With the
@@ -123,6 +129,22 @@ enum RendererSharedBuffers {
             }
         }
         return vertices
+    }
+
+    /// Samples an analytic arc to `segmentCount` segments: `segmentCount + 1` points from
+    /// `t = 0` to `t = 1`.
+    static func sampledArcPolyline(_ arc: ViewportArc, segmentCount: Int) -> [SIMD3<Float>] {
+        let segments = max(segmentCount, 1)
+        return (0...segments).map { arc.point(at: Float($0) / Float(segments)) }
+    }
+
+    /// Quad-strip vertices for one arc sampled to `segmentCount` segments.
+    ///
+    /// Same layout as `quadEdgeLineVertices(from:)` (stride 9, six vertices per segment), with the
+    /// arc length measured from the arc's start so dash patterns run continuously round it. Used by
+    /// both renderers so arcs honour `EdgeLineConfiguration` width and dashes like polyline edges.
+    static func arcQuadEdgeVertices(_ arc: ViewportArc, segmentCount: Int) -> [Float] {
+        quadEdgeLineVertices(from: [sampledArcPolyline(arc, segmentCount: segmentCount)])
     }
 
     /// Flattens edge polylines into line-segment pairs for native Metal line rendering.

@@ -191,7 +191,7 @@ Live lighting configuration. Assign a preset (`.threePoint`, `.studio`, `.archit
 @Published public var edgeIntensity: Float
 ```
 
-Edge / wireframe intensity multiplier. `0` = invisible, `1` = default, `>1` = bold. Default `1.0`.
+Edge / wireframe intensity. `1` (the default) draws edges fully opaque; lower values make them fainter, more so with depth, and `0` hides them. Values above `1` behave as `1`. Applies to both the quad-expanded and the native edge paths, including arcs and overlay edges. Edge-only bodies (no mesh) ignore it and draw in their body colour.
 
 #### `clipPlanes`
 
