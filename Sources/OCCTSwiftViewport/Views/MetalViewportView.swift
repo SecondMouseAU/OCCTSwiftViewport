@@ -57,8 +57,6 @@ public struct MetalViewportView: View {
     // in `ViewportController.dispatch(_:)`.
     #if os(iOS) || os(visionOS)
         @State private var touchDrags = TouchDragArbiter()
-        @State private var lastMagnification: CGFloat = 1.0
-        @State private var lastRotation: Angle = .zero
     #endif
 
     // MARK: - Initialization
@@ -80,13 +78,11 @@ public struct MetalViewportView: View {
                 // (SwiftUI gestures never fire over it on macOS 27, issue #127).
                 metalView
                     #if os(iOS) || os(visionOS)
-                        .overlay { panGestureOverlay }
+                        // Two-finger pan, pinch and rotate are UIKit recognizers on this overlay,
+                        // all simultaneous: they report a cancel and the fingers' current
+                        // centroid, which SwiftUI's MagnifyGesture/RotateGesture do not (#204).
+                        .overlay { twoFingerGestureOverlay }
                         .gesture(orbitGesture(viewSize: geometry.size))
-                        // Pinch and rotate are both two-finger continuous gestures;
-                        // they must be simultaneous or SwiftUI's default exclusivity
-                        // lets pinch win and rotate never fires.
-                        .simultaneousGesture(zoomGesture(viewSize: geometry.size))
-                        .simultaneousGesture(rollGesture)
                         .gesture(
                             SpatialTapGesture()
                                 .onEnded { value in
@@ -142,12 +138,13 @@ public struct MetalViewportView: View {
             viewportSize.width > 0 && viewportSize.height > 0
             ? Float(viewportSize.width / viewportSize.height)
             : Float(1.0)
-        let cs = controller.cameraState
-        let vpMatrix =
-            cs.projectionMatrix(aspectRatio: aspect, near: 0.01, far: 10000.0) * cs.viewMatrix
+        // The near/far planes the renderer fitted to the scene for its last frame (#204), so
+        // the overlay hides what the renderer clips rather than using a fixed 0.01/10000.
         return MeasurementOverlay(
             measurements: controller.measurements,
-            vpMatrix: vpMatrix,
+            vpMatrix: MeasurementOverlay.viewProjection(
+                cameraState: controller.cameraState, aspectRatio: aspect,
+                clipPlanes: renderer?.lastFrameClipPlanes),
             viewportSize: viewportSize
         )
     }
@@ -163,10 +160,7 @@ public struct MetalViewportView: View {
 
     /// Gesture centre → NDC (top-left UIKit/SwiftUI coords → −1…+1, y up).
     private func pinchCenterNDC(_ location: CGPoint, _ size: CGSize) -> SIMD2<Float> {
-        guard size.width > 0, size.height > 0 else { return .zero }
-        return SIMD2(
-            Float(location.x / size.width) * 2 - 1,
-            Float(1 - location.y / size.height) * 2 - 1)
+        TouchPinchRotate.ndc(location, viewSize: size)
     }
 
     /// Converts a view-space point to drawable pixel coordinates.
@@ -363,34 +357,66 @@ public struct MetalViewportView: View {
     // MARK: - iOS / visionOS Gestures
 
     #if os(iOS) || os(visionOS)
-        private var panGestureOverlay: some View {
-            TwoFingerPanGestureView(
-                onBegan: { centroid, viewSize in
+        private var twoFingerGestureOverlay: some View {
+            TwoFingerGestureView(
+                onPanBegan: { centroid, viewSize in
                     apply(touchDrags.twoFingerPanBegan())
                     controller.setTwoFingerDragOrigin(
                         offsetFromCenter: SIMD2(
                             Float(centroid.x - viewSize.width / 2),
                             Float(centroid.y - viewSize.height / 2)))
                 },
-                onChanged: { translation in
+                onPanChanged: { translation in
                     controller.dispatch(
                         .twoFingerPanChanged(
                             translation: SIMD2<Float>(
                                 Float(translation.width), Float(translation.height))
                         ))
                 },
-                onEnded: { velocity in
+                onPanEnded: { velocity, cancelled in
                     touchDrags.twoFingerPanEnded()
-                    controller.dispatch(
-                        .twoFingerPanEnded(
-                            velocity: SIMD2<Float>(Float(velocity.width), Float(velocity.height))
-                        ))
+                    if cancelled {
+                        // No momentum and no slow-release snap for a cancelled pan (#204).
+                        controller.interruptTwoFingerDrag()
+                    } else {
+                        controller.dispatch(
+                            .twoFingerPanEnded(
+                                velocity: SIMD2<Float>(
+                                    Float(velocity.width), Float(velocity.height))
+                            ))
+                    }
+                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                },
+                onPinch: { scale, centroid, viewSize in
+                    // Toward where the fingers are now, not where the pinch began (#204).
+                    if let event = TouchPinchRotate.pinchStep(
+                        scale: scale, centroid: centroid, viewSize: viewSize)
+                    {
+                        controller.dispatch(event)
+                    }
+                },
+                onPinchEnded: {
+                    controller.dispatch(.pinchEnded)
+                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
+                },
+                onRotate: { radians in
+                    controller.dispatch(.rotateChanged(radians: Float(radians)))
+                },
+                onRotateEnded: {
+                    controller.dispatch(.rotateEnded)
                 }
             )
         }
 
-        /// Sets the drag origin and dispatches the events of one `TouchDragArbiter` step.
+        /// Interrupts the last drag, sets the drag origin and dispatches the events of one
+        /// `TouchDragArbiter` step, in that order.
+        ///
+        /// The interruption comes first: ending a drag clears the pending origin, so a new
+        /// drag's origin set before it was lost and the drag began at the centre.
         private func apply(_ step: TouchDragArbiter.Step) {
+            if step.interruptsDrag {
+                controller.interruptDrag()
+            }
             if let origin = step.dragOrigin {
                 controller.setDragOrigin(offsetFromCenter: origin)
             }
@@ -415,37 +441,6 @@ public struct MetalViewportView: View {
                 .onEnded { value in
                     apply(touchDrags.dragEnded(velocity: value.velocity))
                     controller.scheduleDynamicPivotUpdate(bodies: bodies)
-                }
-        }
-
-        private func zoomGesture(viewSize: CGSize) -> some Gesture {
-            MagnifyGesture()
-                .onChanged { value in
-                    let delta = value.magnification / lastMagnification
-                    lastMagnification = value.magnification
-                    // Zoom toward the FINGERS, not the view centre.
-                    let ndc = pinchCenterNDC(value.startLocation, viewSize)
-                    let aspect = Float(viewSize.width / max(viewSize.height, 1))
-                    controller.dispatch(
-                        .pinchAtChanged(scale: Float(delta), centerNDC: ndc, aspectRatio: aspect))
-                }
-                .onEnded { _ in
-                    lastMagnification = 1.0
-                    controller.dispatch(.pinchEnded)
-                    controller.scheduleDynamicPivotUpdate(bodies: bodies)
-                }
-        }
-
-        private var rollGesture: some Gesture {
-            RotateGesture()
-                .onChanged { value in
-                    let delta = Float((value.rotation - lastRotation).radians)
-                    lastRotation = value.rotation
-                    controller.dispatch(.rotateChanged(radians: delta))
-                }
-                .onEnded { _ in
-                    lastRotation = .zero
-                    controller.dispatch(.rotateEnded)
                 }
         }
 
@@ -505,57 +500,71 @@ public struct MetalViewportView: View {
     }
 }
 
-// MARK: - iOS / visionOS Two-Finger Pan Gesture (Metal version)
+// MARK: - iOS / visionOS Two-Finger Gestures (Metal version)
 
 #if os(iOS) || os(visionOS)
     import UIKit
 
-    /// A transparent UIView overlay that recognizes two-finger pan gestures via UIKit.
-    private struct TwoFingerPanGestureView: UIViewRepresentable {
+    /// A transparent UIView overlay that recognizes the two-finger pan, pinch and rotation via
+    /// UIKit, all simultaneously.
+    ///
+    /// UIKit rather than SwiftUI's `MagnifyGesture` / `RotateGesture`, because a recognizer
+    /// reports `.cancelled` (SwiftUI skips `onEnded`) and its touches' current centroid
+    /// (`MagnifyGesture` only gives where the pinch started) (issue #204).
+    private struct TwoFingerGestureView: UIViewRepresentable {
         /// The pan began: the touches' centroid where they went down, and the view's size.
-        var onBegan: (CGPoint, CGSize) -> Void
-        var onChanged: (CGSize) -> Void
-        var onEnded: (CGSize) -> Void
+        var onPanBegan: (CGPoint, CGSize) -> Void
+        /// The pan moved by this translation since the last change.
+        var onPanChanged: (CGSize) -> Void
+        /// The pan ended with this velocity, or was cancelled (`true`).
+        var onPanEnded: (CGSize, Bool) -> Void
+        /// The pinch scaled by this much since the last step, centred on the touches' centroid
+        /// now; the view's size.
+        var onPinch: (CGFloat, CGPoint, CGSize) -> Void
+        /// The pinch ended or was cancelled.
+        var onPinchEnded: () -> Void
+        /// The twist turned by this many radians since the last step, clockwise positive.
+        var onRotate: (CGFloat) -> Void
+        /// The twist ended or was cancelled.
+        var onRotateEnded: () -> Void
 
         func makeUIView(context: Context) -> UIView {
             let view = UIView()
             view.backgroundColor = .clear
 
-            let recognizer = UIPanGestureRecognizer(
+            let pan = UIPanGestureRecognizer(
                 target: context.coordinator,
                 action: #selector(Coordinator.handlePan(_:))
             )
-            recognizer.minimumNumberOfTouches = 2
-            recognizer.maximumNumberOfTouches = 2
-            recognizer.delegate = context.coordinator
-            view.addGestureRecognizer(recognizer)
+            pan.minimumNumberOfTouches = 2
+            pan.maximumNumberOfTouches = 2
+            let pinch = UIPinchGestureRecognizer(
+                target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+            let rotation = UIRotationGestureRecognizer(
+                target: context.coordinator, action: #selector(Coordinator.handleRotation(_:)))
+            for recognizer in [pan, pinch, rotation] as [UIGestureRecognizer] {
+                recognizer.delegate = context.coordinator
+                view.addGestureRecognizer(recognizer)
+            }
 
             return view
         }
 
         func updateUIView(_ uiView: UIView, context: Context) {
-            context.coordinator.onBegan = onBegan
-            context.coordinator.onChanged = onChanged
-            context.coordinator.onEnded = onEnded
+            context.coordinator.view = self
         }
 
         func makeCoordinator() -> Coordinator {
-            Coordinator(onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
+            Coordinator(view: self)
         }
 
         @MainActor
         class Coordinator: NSObject, UIGestureRecognizerDelegate {
-            var onBegan: (CGPoint, CGSize) -> Void
-            var onChanged: (CGSize) -> Void
-            var onEnded: (CGSize) -> Void
+            /// The latest representable, for its callbacks.
+            var view: TwoFingerGestureView
 
-            init(
-                onBegan: @escaping (CGPoint, CGSize) -> Void,
-                onChanged: @escaping (CGSize) -> Void, onEnded: @escaping (CGSize) -> Void
-            ) {
-                self.onBegan = onBegan
-                self.onChanged = onChanged
-                self.onEnded = onEnded
+            init(view: TwoFingerGestureView) {
+                self.view = view
             }
 
             @objc func handlePan(_ recognizer: UIPanGestureRecognizer) {
@@ -565,16 +574,47 @@ public struct MetalViewportView: View {
                     // movement since touch-down; the centroid there is where the drag began.
                     let location = recognizer.location(in: recognizer.view)
                     let translation = recognizer.translation(in: recognizer.view)
-                    onBegan(
+                    view.onPanBegan(
                         CGPoint(x: location.x - translation.x, y: location.y - translation.y),
                         recognizer.view?.bounds.size ?? .zero)
                 case .changed:
                     let translation = recognizer.translation(in: recognizer.view)
-                    onChanged(CGSize(width: translation.x, height: translation.y))
+                    view.onPanChanged(CGSize(width: translation.x, height: translation.y))
                     recognizer.setTranslation(.zero, in: recognizer.view)
-                case .ended, .cancelled:
+                case .ended:
                     let velocity = recognizer.velocity(in: recognizer.view)
-                    onEnded(CGSize(width: velocity.x, height: velocity.y))
+                    view.onPanEnded(CGSize(width: velocity.x, height: velocity.y), false)
+                case .cancelled:
+                    view.onPanEnded(.zero, true)
+                default:
+                    break
+                }
+            }
+
+            @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+                switch recognizer.state {
+                case .began, .changed:
+                    // With one finger lifted the centroid is that one finger; wait for both.
+                    guard recognizer.numberOfTouches >= 2 else { return }
+                    view.onPinch(
+                        recognizer.scale, recognizer.location(in: recognizer.view),
+                        recognizer.view?.bounds.size ?? .zero)
+                    // Reset, so each step is relative to the last and nothing carries over.
+                    recognizer.scale = 1
+                case .ended, .cancelled:
+                    view.onPinchEnded()
+                default:
+                    break
+                }
+            }
+
+            @objc func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
+                switch recognizer.state {
+                case .began, .changed:
+                    view.onRotate(recognizer.rotation)
+                    recognizer.rotation = 0
+                case .ended, .cancelled:
+                    view.onRotateEnded()
                 default:
                     break
                 }

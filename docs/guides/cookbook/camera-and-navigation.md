@@ -24,7 +24,7 @@ public struct CameraState: Hashable, Codable, Sendable {
     public var fieldOfView: Float          // degrees, perspective only, default 45
     public var orthographicScale: Float    // world-height of viewport, ortho only, default 10
     public var isOrthographic: Bool        // default false
-    public var panOffset: SIMD2<Float>     // camera-relative fine offset
+    // panOffset is deprecated: it was never applied to the view (pan moves pivot).
 
     // Derived, read-only
     public var position: SIMD3<Float>      // world-space eye position
@@ -169,7 +169,7 @@ All animated moves go through `CameraController.animateTo(_:duration:)`, which:
 1. Captures `animationStart` and `animationTarget`.
 2. Runs a `Timer` at `CameraController.preferredFramesPerSecond` (default 120, set from `ViewportConfiguration.preferredFramesPerSecond`). Progress is time-based, so the rate affects smoothness only.
 3. Applies an ease-out curve (`t = 1 - (1 - progress)³`) at each tick.
-4. SLERPs `rotation` via `simd_slerp`; linearly interpolates `distance`, `pivot`, `fieldOfView`, `orthographicScale`, and `panOffset`.
+4. SLERPs `rotation` via `simd_slerp`; linearly interpolates `distance`, `pivot`, `fieldOfView`, and `orthographicScale` (and the deprecated, unused `panOffset`).
 5. Snaps `isOrthographic` at the midpoint.
 
 ```swift

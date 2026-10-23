@@ -347,8 +347,6 @@ struct TouchDragArbiterTests {
         .dragChanged(delta: delta, modifiers: [])
     }
 
-    private let endNoMomentum = ViewportInputEvent.dragEnded(velocity: .zero, modifiers: [])
-
     @Test("A one-finger drag sets its origin once and dispatches deltas, then its end")
     func plainDrag() {
         var arbiter = TouchDragArbiter()
@@ -356,6 +354,7 @@ struct TouchDragArbiterTests {
         let first = arbiter.dragChanged(
             start: start, translation: CGSize(width: 10, height: 0), viewSize: size)
         #expect(first.dragOrigin == SIMD2(100, -100))
+        #expect(!first.interruptsDrag)
         #expect(first.events == [changed(SIMD2(10, 0))])
         let second = arbiter.dragChanged(
             start: start, translation: CGSize(width: 14, height: 3), viewSize: size)
@@ -368,7 +367,9 @@ struct TouchDragArbiterTests {
     @Test("A two-finger pan the one-finger drag never saw does not swallow the next drag")
     func panAloneDoesNotSwallowNextDrag() {
         var arbiter = TouchDragArbiter()
-        #expect(arbiter.twoFingerPanBegan().events.isEmpty)
+        let began = arbiter.twoFingerPanBegan()
+        #expect(began.events.isEmpty)
+        #expect(!began.interruptsDrag)
         arbiter.twoFingerPanEnded()
         #expect(!arbiter.isTwoFingerPanActive)
         let step = arbiter.dragChanged(
@@ -383,10 +384,13 @@ struct TouchDragArbiterTests {
         let start = CGPoint(x: 200, y: 150)
         _ = arbiter.dragChanged(
             start: start, translation: CGSize(width: 10, height: 0), viewSize: size)
-        #expect(arbiter.twoFingerPanBegan().events == [endNoMomentum])
+        let began = arbiter.twoFingerPanBegan()
+        #expect(began.interruptsDrag)
+        #expect(began.events.isEmpty)
         let during = arbiter.dragChanged(
             start: start, translation: CGSize(width: 30, height: 0), viewSize: size)
         #expect(during.events.isEmpty)
+        #expect(!during.interruptsDrag)
         // The second finger lifts; the first keeps moving. Still the same drag: ignored.
         arbiter.twoFingerPanEnded()
         let after = arbiter.dragChanged(
@@ -404,7 +408,8 @@ struct TouchDragArbiterTests {
         let next = arbiter.dragChanged(
             start: CGPoint(x: 50, y: 60), translation: CGSize(width: 9, height: 0),
             viewSize: size)
-        #expect(next.events == [endNoMomentum, changed(SIMD2(9, 0))])
+        #expect(next.interruptsDrag)
+        #expect(next.events == [changed(SIMD2(9, 0))])
         #expect(next.dragOrigin == SIMD2(-150, -90))
     }
 

@@ -28,7 +28,7 @@ controller.animateTo(bookmark, duration: 0.4)
 
 ---
 
-### `init(rotation:distance:pivot:fieldOfView:orthographicScale:isOrthographic:panOffset:)`
+### `init(rotation:distance:pivot:fieldOfView:orthographicScale:isOrthographic:)`
 
 ```swift
 public init(
@@ -37,12 +37,13 @@ public init(
     pivot: SIMD3<Float> = .zero,
     fieldOfView: Float = 45.0,
     orthographicScale: Float = 10.0,
-    isOrthographic: Bool = false,
-    panOffset: SIMD2<Float> = .zero
+    isOrthographic: Bool = false
 )
 ```
 
 Designated initialiser. `rotation` is normalised on entry. All parameters are optional; the defaults produce a perspective view looking along +Y from 10 world units with a 45° vertical FoV.
+
+The overload that also takes `panOffset:` (now without a default) is deprecated along with [`panOffset`](#var-panoffset-simd2float-deprecated); calls that omit it use the initialiser above.
 
 ---
 
@@ -82,9 +83,15 @@ Vertical world-unit extent of the orthographic frustum, used only when `isOrthog
 
 ---
 
-### `var panOffset: SIMD2<Float>`
+### `var panOffset: SIMD2<Float>` *(deprecated)*
 
-Camera-relative pan offset, stored, interpolated and encoded with the state. Nothing reads it: `viewMatrix` and `projectionMatrix` ignore it, and `CameraController.pan(deltaX:deltaY:)` moves the pivot instead, so setting it does not move the view. Earlier versions of this page said `pan` managed it; it never did.
+Deprecated (issue #204): it was never applied to the view. It is still stored, compared, interpolated and encoded (`panOffsetX`/`panOffsetY`), so saved states keep round-tripping and existing code still compiles, with a deprecation warning. Nothing reads it: `viewMatrix` and `projectionMatrix` ignore it, and `CameraController.pan(deltaX:deltaY:)` moves the pivot instead, so setting it does not move the view. To pan programmatically, move `pivot` across the view:
+
+```swift
+var state = controller.cameraState
+state.pivot += state.rightVector * dx + state.upVector * dy
+controller.animateTo(state, duration: 0)
+```
 
 ---
 

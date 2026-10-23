@@ -303,7 +303,8 @@ enum ViewportRenderBattery {
         var camera = fittedCamera(for: standardBodies())
         camera.isOrthographic = true
         camera.orthographicScale = 2.4
-        camera.panOffset = SIMD2<Float>(0.35, -0.2)
+        // A pan moves the pivot across the view (the deprecated panOffset was never applied).
+        camera.pivot += camera.rightVector * 0.35 - camera.upVector * 0.2
         return camera
     }
 

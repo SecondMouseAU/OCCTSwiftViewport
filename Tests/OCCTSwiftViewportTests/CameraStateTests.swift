@@ -1,9 +1,10 @@
 // CameraStateTests.swift
 // OCCTSwiftViewport Tests
 
-import Testing
 import Foundation
+import Testing
 import simd
+
 @testable import OCCTSwiftViewport
 
 @Suite("CameraState Tests")
@@ -17,7 +18,6 @@ struct CameraStateTests {
         #expect(state.pivot == .zero)
         #expect(state.fieldOfView == 45.0)
         #expect(state.isOrthographic == false)
-        #expect(state.panOffset == .zero)
     }
 
     @Test("Position calculation")
@@ -90,8 +90,7 @@ struct CameraStateTests {
     func testFitCentresPivot() {
         let bounds = BoundingBox(min: SIMD3<Float>(2, 4, -1), max: SIMD3<Float>(6, 8, 3))
         let fitted = CameraState().fit(to: bounds, aspectRatio: 1.5, padding: 1.0)
-        #expect(fitted.pivot == bounds.center)        // (4, 6, 1)
-        #expect(fitted.panOffset == .zero)
+        #expect(fitted.pivot == bounds.center)  // (4, 6, 1)
     }
 
     @Test("Fit orthographic uses scale, not distance")
@@ -99,7 +98,7 @@ struct CameraStateTests {
         let bounds = BoundingBox(min: SIMD3<Float>(-1, -1, -1), max: SIMD3<Float>(1, 1, 1))
         var ortho = CameraState()
         ortho.isOrthographic = true
-        ortho.distance = 7   // sentinel — should be left untouched
+        ortho.distance = 7  // sentinel — should be left untouched
         let fitted = ortho.fit(to: bounds, aspectRatio: 1.0, padding: 1.0)
         // 2 · radius = 2√3 ≈ 3.464
         #expect(abs(fitted.orthographicScale - 3.464) < 0.05)
@@ -173,6 +172,30 @@ struct CameraStateTests {
         #expect(abs(decoded.distance - original.distance) < 0.001)
         #expect(decoded.isOrthographic == original.isOrthographic)
         #expect(abs(decoded.fieldOfView - original.fieldOfView) < 0.001)
+    }
+
+    @Test("The deprecated panOffset still round-trips through the coding keys (#204)")
+    func testPanOffsetKeysRoundTrip() throws {
+        // Saved states carry panOffsetX/Y; decoding keeps them and encoding writes them back,
+        // so the format stays stable although panOffset is deprecated and never applied.
+        let json = """
+            {"rotationX":0,"rotationY":0,"rotationZ":0,"rotationW":1,"distance":7,
+             "pivotX":1,"pivotY":2,"pivotZ":3,"fieldOfView":45,"orthographicScale":10,
+             "isOrthographic":false,"panOffsetX":0.25,"panOffsetY":-0.5}
+            """
+        let decoded = try JSONDecoder().decode(CameraState.self, from: Data(json.utf8))
+        let encoded = try JSONEncoder().encode(decoded)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["panOffsetX"] as? Double == 0.25)
+        #expect(object["panOffsetY"] as? Double == -0.5)
+        // It takes part in equality, as a stored value.
+        let plain = try JSONDecoder().decode(
+            CameraState.self,
+            from: Data(json.replacingOccurrences(of: "0.25", with: "0").utf8))
+        #expect(plain != decoded)
+        // And it does not move the view.
+        #expect(plain.viewMatrix == decoded.viewMatrix)
     }
 }
 
