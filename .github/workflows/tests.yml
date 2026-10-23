@@ -36,12 +36,14 @@ on:
       - 'Sources/**'
       - 'Tests/**'
       - 'Package.*'
+      - 'Samples/**'
       - '.github/workflows/tests.yml'
   pull_request:
     paths:
       - 'Sources/**'
       - 'Tests/**'
       - 'Package.*'
+      - 'Samples/**'
       - '.github/workflows/tests.yml'
   workflow_dispatch:
 
@@ -73,3 +75,9 @@ jobs:
 
       - name: swift test
         run: swift test
+
+      # Samples/CADInterface is a SwiftUI view consumers copy from, with no app target
+      # of its own. Compiling it here (viewport-only, no OCCT binary) keeps it from
+      # drifting off the public API unnoticed.
+      - name: Build CADInterface sample
+        run: swift build --package-path Samples/CADInterface

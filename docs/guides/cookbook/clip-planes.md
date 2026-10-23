@@ -27,7 +27,7 @@ public struct ClipPlane {
     public var isEnabled: Bool           // toggle without removing from the array
 
     public init(
-        normal:    SIMD3<Float> = SIMD3(0, 1, 0),
+        normal:    SIMD3<Float> = SIMD3(0, 0, 1),   // +Z, the viewport's up axis (+Y up to v1.2.3)
         distance:  Float        = 0,
         isEnabled: Bool         = true
     )
@@ -41,7 +41,8 @@ vector safely.
 
 ### Predefined presets
 
-Three static presets are provided for the most common axis-aligned sections:
+Static presets cover the axis-aligned sections. The viewport is Z-up, so the
+ground plane is the XY plane:
 
 | Preset | Normal | Clips |
 |---|---|---|
@@ -59,15 +60,15 @@ mutate it from the main actor; the renderer picks up the change automatically
 on the next frame.
 
 ```swift
-// Horizontal section: show only geometry above Y = 1.5
+// Horizontal section: show only geometry above Z = 1.5
 controller.clipPlanes = [
-    ClipPlane(normal: SIMD3(0, 1, 0), distance: -1.5)
+    ClipPlane(normal: SIMD3(0, 0, 1), distance: -1.5)
 ]
 ```
 
-**Distance sign convention:** To cut at world Y = h, set `distance = -h`.
-The plane equation is `dot(N, P) + d = 0`, so for normal `(0,1,0)`:
-`y + d = 0` → `d = -h`.
+**Distance sign convention:** To cut at world Z = h, set `distance = -h`.
+The plane equation is `dot(N, P) + d = 0`, so for normal `(0,0,1)`:
+`z + d = 0` → `d = -h`.
 
 To remove a section, clear the array:
 
@@ -84,7 +85,7 @@ the array for later re-use.
 
 ```swift
 // Start with the plane off
-var section = ClipPlane(normal: SIMD3(0, 1, 0), distance: -1.0, isEnabled: false)
+var section = ClipPlane(normal: SIMD3(0, 0, 1), distance: -1.0, isEnabled: false)
 controller.clipPlanes = [section]
 
 // Turn it on later (must reassign to trigger @Published)
@@ -118,15 +119,13 @@ struct SectionView: View {
                 .padding()
                 .onChange(of: cutHeight) { _, newValue in
                     controller.clipPlanes = [
-                        ClipPlane(normal: SIMD3(0, 1, 0), distance: -newValue)
+                        ClipPlane(normal: SIMD3(0, 0, 1), distance: -newValue)
                     ]
                 }
         }
         .onAppear {
-            // Initial cut at Y = 0
-            controller.clipPlanes = [
-                ClipPlane(normal: SIMD3(0, 1, 0), distance: 0)
-            ]
+            // Initial cut at Z = 0
+            controller.clipPlanes = [.groundPlane]
         }
     }
 }
@@ -154,7 +153,7 @@ struct AnimatedSectionView: View {
             .ignoresSafeArea()
             .onAppear {
                 controller.clipPlanes = [
-                    ClipPlane(normal: SIMD3(0, 1, 0), distance: -cutHeight)
+                    ClipPlane(normal: SIMD3(0, 0, 1), distance: -cutHeight)
                 ]
                 timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common)
                     .autoconnect()
@@ -162,7 +161,7 @@ struct AnimatedSectionView: View {
                         cutHeight += 0.05
                         if cutHeight > 5.0 { cutHeight = -5.0 }
                         controller.clipPlanes = [
-                            ClipPlane(normal: SIMD3(0, 1, 0), distance: -cutHeight)
+                            ClipPlane(normal: SIMD3(0, 0, 1), distance: -cutHeight)
                         ]
                     }
             }
@@ -181,16 +180,16 @@ Up to 4 planes can be active at once. Combine them to create quarter-section
 or box-crop views:
 
 ```swift
-// Quarter section: expose the front-right quadrant (positive X and positive Z)
+// Quarter section: keep the positive-X, positive-Y quadrant
 controller.clipPlanes = [
     ClipPlane(normal: SIMD3( 1, 0, 0), distance:  0),   // hide negative-X
-    ClipPlane(normal: SIMD3( 0, 0, 1), distance:  0),   // hide negative-Z
+    ClipPlane(normal: SIMD3( 0, 1, 0), distance:  0),   // hide negative-Y
 ]
 
-// Box crop: only show geometry inside a slab -1 ≤ Y ≤ 1
+// Box crop: only show geometry inside a slab -1 ≤ Z ≤ 1
 controller.clipPlanes = [
-    ClipPlane(normal: SIMD3(0,  1, 0), distance: -1),   // bottom face of slab
-    ClipPlane(normal: SIMD3(0, -1, 0), distance: -1),   // top face of slab (flipped normal)
+    ClipPlane(normal: SIMD3(0, 0,  1), distance: -1),   // bottom face of slab
+    ClipPlane(normal: SIMD3(0, 0, -1), distance: -1),   // top face of slab (flipped normal)
 ]
 ```
 

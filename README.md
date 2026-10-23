@@ -530,10 +530,10 @@ The `OCCTSwiftMetalDemo` app exercises 60+ OCCTSwift features through interactiv
 ### Running the Demo
 
 ```bash
-# macOS
-swift run OCCTSwiftMetalDemo
+# macOS (the demo is its own SwiftPM package)
+cd Examples/MetalDemo && swift run OCCTSwiftMetalDemo
 
-# iOS (requires Xcode project)
+# iOS (requires Xcode project; needs ../OCCTSwift checked out, see Build)
 xcodegen                    # Generate from project.yml
 open OCCTSwiftViewport.xcodeproj
 # Select OCCTSwiftMetalDemo_iOS scheme → Run
@@ -561,15 +561,21 @@ Test suites cover camera state and control, bounding boxes, clip planes, ray cas
 swift build                           # Debug build
 swift package clean && swift build    # Clean build (stale PCH fix)
 xcodegen                             # Regenerate Xcode project from project.yml
+xcodegen --spec project-verify.yml   # DirectMeshVerify rig only (no OCCTSwift needed)
+swift build --package-path Samples/CADInterface   # Compile the CAD interface sample
 ```
 
-**Note:** OCCTSwift is a local path dependency (`../OCCTSwift` in Package.swift). Clone both repositories as siblings:
+The library itself (`Package.swift`) has no OCCTSwift dependency. The Xcode demo project does: `project.yml` takes OCCTSwift as a local path dependency (`../OCCTSwift`), and `xcodegen` refuses to generate without it. Clone both repositories as siblings:
 
 ```bash
 git clone https://github.com/SecondMouseAU/OCCTSwift.git
 git clone https://github.com/SecondMouseAU/OCCTSwiftViewport.git
 # They should be at the same directory level
 ```
+
+`project-verify.yml` generates the OCCT-free `DirectMeshVerify` rig on its own, so it works without the sibling checkout (for example from a git worktree).
+
+The example packages under `Examples/` take the viewport as `.package(name: "OCCTSwiftViewport", path: "../..")`, so `DocFigures` and `DirectMeshLiveDemo` build from any checkout directory name. `MetalDemo` and `CookbookRender` also pull in OCCTSwiftTools, which depends on the viewport itself; the local copy only replaces Tools' copy when the checkout directory is named `OCCTSwiftViewport`, so build those two from a checkout with that name, not from a worktree or a renamed clone.
 
 ## Changelog
 

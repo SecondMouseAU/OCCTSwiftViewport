@@ -1048,11 +1048,11 @@ public var distance: Float
 
 Signed distance from the world origin along the normal. Positive values shift the clipping boundary away from the origin in the normal direction; negative values shift it toward the origin.
 
-**Example — clip at Y = 5 (keep Y > 5):**
+**Example — clip at Z = 5 (keep Z > 5):**
 
 ```swift
-// dot((0,1,0), P) + (-5) = 0  →  plane at Y=5
-let plane = ClipPlane(normal: SIMD3(0, 1, 0), distance: -5)
+// dot((0,0,1), P) + (-5) = 0  →  plane at Z=5
+let plane = ClipPlane(normal: SIMD3(0, 0, 1), distance: -5)
 ```
 
 ---
@@ -1071,7 +1071,7 @@ Whether this plane is active. A disabled plane in the `clipPlanes` array is igno
 
 ```swift
 public init(
-    normal: SIMD3<Float> = SIMD3(0, 1, 0),
+    normal: SIMD3<Float> = SIMD3(0, 0, 1),
     distance: Float = 0,
     isEnabled: Bool = true
 )
@@ -1079,7 +1079,7 @@ public init(
 
 Creates a clip plane. The `normal` is normalized at init time.
 
-- `normal`: Outward-facing normal (default: Y-up, clips below the ground plane).
+- `normal`: Outward-facing normal (default: `+Z`, the viewport's up axis, so `ClipPlane()` equals `.groundPlane` and clips below Z = 0). Up to v1.2.3 the default was `+Y`, a vertical cut in the Z-up world; pass `SIMD3(0, 1, 0)` or use `.yPlane` for that plane.
 - `distance`: Signed distance from origin along the normal (default: `0`).
 - `isEnabled`: Whether the plane is active immediately (default: `true`).
 
@@ -1139,13 +1139,13 @@ X-right plane at the origin — discards geometry on the negative-X side.
 public static let zPlane: ClipPlane
 ```
 
-Z-forward plane at the origin — discards geometry on the negative-Z side.
+Z-up plane at the origin — discards geometry on the negative-Z side. Same plane as `.groundPlane`.
 
 **Example — combine two planes for a quadrant section view:**
 
 ```swift
 controller.clipPlanes = [
     ClipPlane(normal: SIMD3(1, 0, 0), distance: 0),   // keep X ≥ 0
-    ClipPlane(normal: SIMD3(0, 0, 1), distance: 0),   // keep Z ≥ 0
+    ClipPlane(normal: SIMD3(0, 1, 0), distance: 0),   // keep Y ≥ 0
 ]
 ```
