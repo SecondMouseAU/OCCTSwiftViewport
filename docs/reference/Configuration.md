@@ -501,7 +501,7 @@ Simulated f-number. Smaller values produce a shallower (stronger) blur.
 public var dofFocalDistance: Float  // default: 0
 ```
 
-Focus distance in world units from the camera. `0` activates autofocus on the scene centre: the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied).
+Focus distance in world units from the camera, measured along the line of sight. `0` activates autofocus on the scene centre: the view depth of the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied). It used to be the straight-line distance from the eye, which put an off-axis centre out of focus (issue #215). In orthographic the composite pass still decodes depth as perspective depth, so the blur there does not yet follow these distances.
 
 ---
 

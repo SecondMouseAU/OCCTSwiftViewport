@@ -228,6 +228,9 @@ struct OrthographicFollowupTests {
     func orthographicSceneBoundsWatch() {
         var config = ViewportConfiguration()
         config.initialCameraState = camera(orthographic: false)
+        // The bodies alone: the axes join the watched bounds when shown (#215).
+        config.showGrid = false
+        config.showAxes = false
         let vc = ViewportController(configuration: config)
         // Perspective: nothing to watch, so a body edit triggers no re-placement.
         #expect(vc.orthographicSceneBounds(of: [box]) == nil)

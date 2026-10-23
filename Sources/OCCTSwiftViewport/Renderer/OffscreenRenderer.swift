@@ -725,9 +725,6 @@ public final class OffscreenRenderer: Sendable {
         }
         pruneBufferCache(keeping: bodies)
 
-        let cameraState = options.cameraState
-        let viewMatrix = cameraState.viewMatrix
-
         // Scene-adaptive clip planes (issue #57): fit near/far to the visible
         // geometry so depth precision isn't crushed by a fixed 0.01/10000 range.
         // The shadow frustum below reuses these model bounds, before the grid/axes widen them
@@ -736,17 +733,31 @@ public final class OffscreenRenderer: Sendable {
         let gridAxisSettings = GridAxisSettings(
             options: options, sceneBounds: modelBounds,
             background: options.resolvedBackgroundColor)
+
+        // An orthographic eye in front of the bodies, overlays and axes, as `MetalViewportView`
+        // keeps the live one (#215): an eye inside the scene would near-clip it.
+        let cameraState = Self.renderCamera(options: options) {
+            RendererSharedSetup.orthographicEyeBounds(
+                modelBounds: modelBounds, bodies: bodies, settings: gridAxisSettings,
+                showAxes: options.showAxes)
+        }
+        let viewMatrix = cameraState.viewMatrix
         let sceneBounds = GridAxisGeometry.clipBounds(
             sceneBounds: modelBounds,
             settings: gridAxisSettings,
-            cameraState: cameraState,
+            cameraState: options.cameraState,
             showGrid: options.showGrid,
             showAxes: options.showAxes
         )
         let clip = cameraState.clipPlanes(
             sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodies,
-                in: Self.wideViewFrustum(options: options)))
+                in: Self.wideViewFrustum(options: options, camera: cameraState),
+                // Orthographic: cap overlays as the eye placement does, as live (#215).
+                capBasis: Self.isOrthographic(options)
+                    ? RendererSharedSetup.overlayCapBasis(
+                        modelBounds: modelBounds, settings: gridAxisSettings,
+                        showAxes: options.showAxes) : nil))
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
 
@@ -785,7 +796,9 @@ public final class OffscreenRenderer: Sendable {
             Uniforms(
                 viewProjection: viewProjection,
                 viewMatrix: viewMatrix,
-                cameraPosition: cameraState.position,
+                // Parallel view vectors in orthographic, as live (#215).
+                cameraPosition: RendererSharedSetup.shadingEyePosition(
+                    of: cameraState, orthographic: Self.isOrthographic(options)),
                 nearPlane: nearClip,
                 farPlane: farClip,
                 lighting: lighting,
@@ -1018,7 +1031,7 @@ public final class OffscreenRenderer: Sendable {
                 depthState: depthState,
                 buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
-                cameraState: cameraState,
+                cameraState: options.cameraState,
                 settings: gridAxisSettings
             )
         }
@@ -1030,7 +1043,7 @@ public final class OffscreenRenderer: Sendable {
                 pipeline: pipelines.axisPipeline,
                 buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
-                cameraState: cameraState,
+                cameraState: options.cameraState,
                 settings: gridAxisSettings
             )
         }
@@ -1243,14 +1256,22 @@ public final class OffscreenRenderer: Sendable {
         // Transparent surface pass (issue #53): deferred translucent bodies,
         // back-to-front, depth test on / write off, composited over the opaque set.
         if displayMode.showsSurfaces, !transparentBodies.isEmpty {
-            let camPos = cameraState.position
-            func centerDistanceSq(_ t: (body: ViewportBody, buffers: BodyBuffersOffscreen)) -> Float
-            {
-                let localCenter = t.body.boundingBox?.center ?? SIMD3<Float>(0, 0, 0)
-                let c = t.body.transform * SIMD4<Float>(localCenter, 1)
-                return simd_length_squared(SIMD3<Float>(c.x, c.y, c.z) - camPos)
-            }
-            let sorted = transparentBodies.sorted { centerDistanceSq($0) > centerDistanceSq($1) }
+            // Depth along the line of sight in orthographic, as live (#215); an
+            // `explicitOrthoBounds` projection is orthographic whatever the camera says. Each
+            // key is computed once: `boundingBox` scans the body's vertices.
+            var sortCamera = cameraState
+            sortCamera.isOrthographic = Self.isOrthographic(options)
+            let sorted =
+                transparentBodies
+                .map { t in
+                    let localCenter = t.body.boundingBox?.center ?? SIMD3<Float>(0, 0, 0)
+                    let c = t.body.transform * SIMD4<Float>(localCenter, 1)
+                    let depth = RendererSharedSetup.transparentSortDepth(
+                        center: SIMD3<Float>(c.x, c.y, c.z), cameraState: sortCamera)
+                    return (t: t, depth: depth)
+                }
+                .sorted { $0.depth > $1.depth }
+                .map(\.t)
 
             for t in sorted {
                 var uniforms = makeUniforms()
@@ -1724,6 +1745,37 @@ public final class OffscreenRenderer: Sendable {
         supportedSampleCount(requested) { device.supportsTextureSampleCount($0) }
     }
 
+    /// Whether `render(bodies:options:)` projects orthographically: an orthographic camera, or
+    /// any camera with `explicitOrthoBounds`.
+    nonisolated static func isOrthographic(_ options: OffscreenRenderOptions) -> Bool {
+        options.cameraState.isOrthographic || options.explicitOrthoBounds != nil
+    }
+
+    /// The camera `render(bodies:options:)` draws with: `options.cameraState`, with an
+    /// orthographic eye moved back along the line of sight in front of `eyeBounds()` (see
+    /// `CameraState.placingOrthographicEye(inFrontOf:)`), which is only called then.
+    ///
+    /// It used to render the camera as given, so an orthographic camera whose eye sat inside the
+    /// scene, as one built with a small `distance` does, had its front near-clipped (#215).
+    ///
+    /// Moving the eye changes neither the projection nor the lit shading (see
+    /// `RendererSharedSetup.shadingEyePosition`). It changes the clip planes, so whatever reads
+    /// them changes too: the edge depth fade, and the composite pass (SSAO, silhouettes), which
+    /// still decodes orthographic depth as perspective depth. An `explicitOrthoBounds`
+    /// projection is orthographic whatever the camera's projection, so its eye is placed too;
+    /// the grid and axes keep sizing themselves from `options.cameraState`, as that camera's
+    /// `distance` sizes them.
+    nonisolated static func renderCamera(
+        options: OffscreenRenderOptions, eyeBounds: () -> BoundingBox?
+    ) -> CameraState {
+        var camera = options.cameraState
+        guard isOrthographic(options) else { return camera }
+        camera.isOrthographic = true
+        camera = camera.placingOrthographicEye(inFrontOf: eyeBounds())
+        camera.isOrthographic = options.cameraState.isOrthographic
+        return camera
+    }
+
     /// The projection `render(bodies:options:)` draws with: `explicitOrthoBounds` when set, else
     /// the camera's, then shifted by `pixelPan`.
     nonisolated static func projectionMatrix(
@@ -1753,10 +1805,17 @@ public final class OffscreenRenderer: Sendable {
     /// Built from `projectionMatrix(options:near:far:)`, so it follows `explicitOrthoBounds` and
     /// `pixelPan` like the image does (#209); the camera's own frustum missed an overlay they
     /// brought into view, and its depth then went unfitted and the near plane clipped it.
-    nonisolated static func wideViewFrustum(options: OffscreenRenderOptions) -> Frustum {
+    ///
+    /// `camera` is the camera drawn with, `renderCamera(options:eyeBounds:)`, when it differs
+    /// from `options.cameraState`: the frustum's near plane is just in front of the eye, so an
+    /// overlay between the given eye and the placed one fell outside it, and went unfitted
+    /// (#215). `nil` reads `options.cameraState`.
+    nonisolated static func wideViewFrustum(
+        options: OffscreenRenderOptions, camera: CameraState? = nil
+    ) -> Frustum {
         Frustum(
             viewProjection: projectionMatrix(options: options, near: 1e-3, far: 1e7)
-                * options.cameraState.viewMatrix)
+                * (camera ?? options.cameraState).viewMatrix)
     }
 
     /// Returns the pipelines for `sampleCount`, building and caching them on first use.

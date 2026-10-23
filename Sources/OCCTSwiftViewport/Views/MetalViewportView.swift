@@ -123,8 +123,8 @@ public struct MetalViewportView: View {
             if renderer == nil {
                 renderer = ViewportRenderer(controller: controller, bodies: $bodies)
             }
-            // An orthographic eye is kept in front of these bodies, so zooming or orbiting
-            // never takes it into the model (issue #211).
+            // An orthographic eye is kept in front of these bodies, their overlays and the
+            // axes, so zooming or orbiting never takes it into the model (#211, #215).
             let sceneBodies = $bodies
             controller.attachSceneBodies { sceneBodies.wrappedValue }
         }

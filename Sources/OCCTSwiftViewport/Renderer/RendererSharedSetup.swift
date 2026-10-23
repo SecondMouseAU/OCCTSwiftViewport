@@ -842,26 +842,33 @@ enum RendererSharedSetup {
     ///   - bounds: The clip-fit bounds so far (model, grid and axes).
     ///   - bodies: Scene bodies; only visible overlay-layer ones are read.
     ///   - view: The camera's frustum, with any near and far planes that enclose the scene (see
-    ///     `wideViewFrustum(cameraState:aspectRatio:)`); only its sides matter.
+    ///     `wideViewFrustum(cameraState:aspectRatio:)`); only its sides matter. `nil` counts
+    ///     every overlay, in view or not (see `orthographicEyeBounds`).
+    ///   - capBasis: The box the four-diagonal cap is measured around; `nil` uses `bounds`. In
+    ///     orthographic the renderers pass `overlayCapBasis` (model and axes), as the eye
+    ///     placement does, so the two cap alike (#215). That is tighter than `bounds` with a
+    ///     zoomed-out grid window in them: an overlay more than four model diagonals from the
+    ///     model is cut at the cap there, as it is in perspective without a grid.
     ///   - localBounds: A body's local-space box, before `transform`.
     /// - Returns: `bounds` widened by every in-view overlay body.
     static func clipFitBounds(
         _ bounds: BoundingBox?,
         includingOverlaysOf bodies: [ViewportBody],
-        in view: Frustum,
+        in view: Frustum?,
+        capBasis: BoundingBox? = nil,
         localBounds: (ViewportBody) -> BoundingBox? = { $0.boundingBox }
     ) -> BoundingBox? {
         // An overlay may reach at most a few model sizes past the model, so a huge widget (an
         // axis line 1e5 long) can't push `far`, and with it the `far * 1e-4` floor under `near`,
         // out until the model itself is clipped.
-        let limit: BoundingBox? = bounds.map { model in
+        let limit: BoundingBox? = (capBasis ?? bounds).map { model in
             let pad = SIMD3<Float>(repeating: max(model.diagonalLength, 1e-3) * 4)
             return BoundingBox(min: model.min - pad, max: model.max + pad)
         }
         var result = bounds
         for body in bodies where body.isVisible && body.renderLayer == .overlay {
             guard var box = localBounds(body)?.transformed(by: body.transform),
-                view.intersects(box)
+                view?.intersects(box) ?? true
             else { continue }
             if let limit {
                 box = BoundingBox(

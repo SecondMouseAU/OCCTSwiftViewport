@@ -444,9 +444,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Kept out of every live-path code path, so headless mode cannot perturb on-screen rendering.
     var headlessTargets: HeadlessRenderTargets?
 
-    /// Near/far planes the last encoded frame used.
+    /// Near/far planes the last encoded frame used, as depths from the controller camera's eye.
     ///
-    /// Internal so tests can check that a body's first frame is fitted (#157).
+    /// The frame may draw an orthographic camera with its eye placed further back along the line
+    /// of sight than the controller's (#215); the planes are shifted by that, so projecting
+    /// `controller.cameraState` with them gives the frame's depth range. Equal to the frame's
+    /// own planes otherwise. Internal so tests can check that a body's first frame is fitted
+    /// (#157).
     private(set) var lastFrameClipPlanes: (near: Float, far: Float)?
 
     /// Depth texture for the 1x pick pass (separate from the MSAA depth).
@@ -1226,12 +1230,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         guard let controller = controller else { return }
         let renderPassDescriptor = targets.mainPassDescriptor
 
-        let cameraState = controller.cameraState
         let drawableSize = targets.size
         lastDrawableSize = drawableSize
         let aspectRatio = Float(drawableSize.width / drawableSize.height)
-
-        let viewMatrix = cameraState.viewMatrix
 
         // Scene-adaptive clip planes (issue #57): fit near/far to the visible
         // geometry so hyperbolic depth precision isn't crushed by a fixed
@@ -1241,12 +1242,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // that first shows a body is fitted too, not drawn with the wide fallback (#157).
         // The shadow frustum below reuses these model bounds, before the grid/axes widen them
         // for the clip fit (issue #183).
-        let modelBounds = RendererSharedSetup.sceneBounds(of: bodiesBinding.wrappedValue) { body in
-            let cached =
-                self.bodyGeneration[body.id] == body.generation
-                ? self.bodyBufferCache[body.id]?.localBoundingBox : nil
-            return cached ?? body.boundingBox
-        }
+        let modelBounds = RendererSharedSetup.sceneBounds(
+            of: bodiesBinding.wrappedValue, localBounds: cachedLocalBounds(of:))
         let clearColor = renderPassDescriptor.colorAttachments[0].clearColor
         let gridAxisSettings = GridAxisSettings(
             configuration: controller.configuration,
@@ -1255,6 +1252,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 Float(clearColor.red), Float(clearColor.green), Float(clearColor.blue),
                 Float(clearColor.alpha))
         )
+        // An orthographic eye in front of the bodies, overlays and axes (#215). The controller of
+        // a `MetalViewportView` already keeps it there with these same bounds, so this changes
+        // nothing there; it covers a controller without a `sceneBoundsProvider`, and makes the
+        // frame match `OffscreenRenderer`, which places the eye of the camera it is given.
+        var cameraState = controller.cameraState
+        if cameraState.isOrthographic {
+            cameraState = cameraState.placingOrthographicEye(
+                inFrontOf: RendererSharedSetup.orthographicEyeBounds(
+                    modelBounds: modelBounds, bodies: bodiesBinding.wrappedValue,
+                    settings: gridAxisSettings, showAxes: controller.showAxes,
+                    localBounds: cachedLocalBounds(of:)))
+        }
+        let viewMatrix = cameraState.viewMatrix
         let sceneBounds = GridAxisGeometry.clipBounds(
             sceneBounds: modelBounds,
             settings: gridAxisSettings,
@@ -1266,14 +1276,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodiesBinding.wrappedValue,
                 in: RendererSharedSetup.wideViewFrustum(
-                    cameraState: cameraState, aspectRatio: aspectRatio)
-            ) { body in
-                let cached =
-                    self.bodyGeneration[body.id] == body.generation
-                    ? self.bodyBufferCache[body.id]?.localBoundingBox : nil
-                return cached ?? body.boundingBox
-            })
-        lastFrameClipPlanes = clip
+                    cameraState: cameraState, aspectRatio: aspectRatio),
+                // Orthographic: cap overlays as the eye placement does (#215).
+                capBasis: cameraState.isOrthographic
+                    ? RendererSharedSetup.overlayCapBasis(
+                        modelBounds: modelBounds, settings: gridAxisSettings,
+                        showAxes: controller.showAxes) : nil,
+                localBounds: cachedLocalBounds(of:)))
+        // As depths from the controller's eye, which the measurement overlay projects from:
+        // the frame's orthographic eye may sit further back along the line of sight (#215).
+        let eyeShift = cameraState.distance - controller.cameraState.distance
+        lastFrameClipPlanes = (clip.near - eyeShift, clip.far - eyeShift)
 
         var projMatrix = cameraState.projectionMatrix(
             aspectRatio: aspectRatio, near: clip.near, far: clip.far)
@@ -1355,7 +1368,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             Uniforms(
                 viewProjection: viewProjection,
                 viewMatrix: viewMatrix,
-                cameraPosition: cameraState.position,
+                // Parallel view vectors in orthographic (#215).
+                cameraPosition: RendererSharedSetup.shadingEyePosition(
+                    of: cameraState, orthographic: cameraState.isOrthographic),
                 nearPlane: nearPlane,
                 farPlane: farPlane,
                 lighting: lighting,
@@ -1828,15 +1843,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // bodies back-to-front with depth-test on / write off, so they composite
         // over the opaque set (and over each other in sorted order).
         if displayMode.showsSurfaces, !transparentDraws.isEmpty {
-            let camPos = cameraState.position
-            func centerDistanceSq(
+            // Depth along the line of sight in orthographic (#215).
+            func sortDepth(
                 _ d: (body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)
             ) -> Float {
                 let localCenter = d.buffers.localBoundingBox?.center ?? SIMD3<Float>(0, 0, 0)
                 let c = d.body.transform * SIMD4<Float>(localCenter, 1)
-                return simd_length_squared(SIMD3<Float>(c.x, c.y, c.z) - camPos)
+                return RendererSharedSetup.transparentSortDepth(
+                    center: SIMD3<Float>(c.x, c.y, c.z), cameraState: cameraState)
             }
-            let sorted = transparentDraws.sorted { centerDistanceSq($0) > centerDistanceSq($1) }
+            let sorted = transparentDraws.sorted { sortDepth($0) > sortDepth($1) }
 
             mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
             mainEncoder.setFragmentTexture(matcapTexture, index: 0)
@@ -2755,10 +2771,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let dofEnabled = controller.enableDepthOfField
                 var dofFocalDist = controller.dofFocalDistance
                 if dofEnabled && dofFocalDist == 0 {
-                    // Auto-focus: use distance to the world-space scene center
+                    // Auto-focus: the view depth of the world-space scene center
                     dofFocalDist = Self.autoFocusDistance(
-                        bodies: bodies, cameraPosition: cameraState.position,
-                        fallback: cameraState.distance)
+                        bodies: bodies, cameraState: cameraState)
                 }
                 var ssaoParams = SSAOParamsSwift(
                     texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
@@ -2810,17 +2825,46 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             device: device, body: body, triangleCount: triangleCount)
     }
 
+    /// A body's local bounds: the buffer cache's when current for its generation, else read from
+    /// the body, so the frame that first shows a body is fitted too (#157).
+    private func cachedLocalBounds(of body: ViewportBody) -> BoundingBox? {
+        let cached =
+            bodyGeneration[body.id] == body.generation
+            ? bodyBufferCache[body.id]?.localBoundingBox : nil
+        return cached ?? body.boundingBox
+    }
+
     // MARK: - Depth-of-field autofocus
 
-    /// Distance from `cameraPosition` to the mean of the visible geometry bodies' world-space
-    /// bounding-box centres, or `fallback` when no such body has bounds.
+    /// The view depth of the mean of the visible geometry bodies' world-space bounding-box
+    /// centres, or the pivot's depth (`distance`) when no such body has bounds.
     ///
     /// Bounds are transformed by each body's `transform` first, so a body positioned by its
     /// transform is focused where it is drawn rather than at its local origin (#136 M12).
     /// Overlay-layer bodies are ignored.
+    ///
+    /// The depth is measured along the line of sight from the eye, as the composite pass
+    /// linearizes the depth buffer it blurs by, so it is the pivot plane's depth (`distance`)
+    /// plus the focus point's depth past that plane. It used to be the straight-line distance
+    /// from the eye, which also counted how far off-axis the centre lies (#215). In
+    /// orthographic the composite pass still decodes depth as perspective depth, so the blur
+    /// there does not yet follow this. A centre at or behind the eye's plane focuses just in
+    /// front of the eye.
     nonisolated static func autoFocusDistance(
-        bodies: [ViewportBody], cameraPosition: SIMD3<Float>, fallback: Float
+        bodies: [ViewportBody], cameraState: CameraState
     ) -> Float {
+        let fallback = cameraState.distance
+        guard let center = autoFocusCenter(bodies: bodies) else { return fallback }
+        let depth =
+            fallback
+            + simd_dot(center - cameraState.pivot, simd_normalize(cameraState.viewDirection))
+        // A centre at or behind the eye: focus just in front of it rather than at a depth the
+        // composite pass has no pixels at (0 would also mean "autofocus").
+        return max(depth, 1e-3)
+    }
+
+    /// The mean of the visible geometry bodies' world-space bounding-box centres, or `nil`.
+    nonisolated static func autoFocusCenter(bodies: [ViewportBody]) -> SIMD3<Float>? {
         var sceneCenter = SIMD3<Float>.zero
         var count: Float = 0
         for body in bodies where body.isVisible && body.renderLayer == .geometry {
@@ -2828,8 +2872,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             sceneCenter += bb.center
             count += 1
         }
-        guard count > 0 else { return fallback }
-        return simd_distance(cameraPosition, sceneCenter / count)
+        guard count > 0 else { return nil }
+        return sceneCenter / count
     }
 
     // MARK: - SSAO depth prepass classification
