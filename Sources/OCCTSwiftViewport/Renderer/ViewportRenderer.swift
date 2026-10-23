@@ -2866,24 +2866,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return max(depth, 1e-3)
     }
 
-    /// The depth from the frame's eye the composite pass focuses at for a manual
-    /// `dofFocalDistance`.
-    ///
-    /// In perspective that is `focalDistance`, measured from the eye. In orthographic the eye is
-    /// only placed in front of the scene, and moves back whenever the scene's bounds grow, so a
-    /// distance from it put the focal plane wherever the eye happened to be (#217). There
-    /// `focalDistance` is measured from a reference eye `PivotStrategy.zoomDistance(of:)` in
-    /// front of the pivot, the distance a perspective camera showing the same height would sit
-    /// at, so the focal plane stays put as the eye moves and a matching perspective framing
-    /// focuses on the same plane. A focal plane behind the eye focuses just in front of it.
-    nonisolated static func manualFocusDistance(
-        _ focalDistance: Float, cameraState: CameraState
-    ) -> Float {
-        guard cameraState.isOrthographic else { return focalDistance }
-        let pastPivot = focalDistance - PivotStrategy.zoomDistance(of: cameraState)
-        return max(cameraState.distance + pastPivot, 1e-3)
-    }
-
     /// The mean of the visible geometry bodies' world-space bounding-box centres, or `nil`.
     nonisolated static func autoFocusCenter(bodies: [ViewportBody]) -> SIMD3<Float>? {
         var sceneCenter = SIMD3<Float>.zero

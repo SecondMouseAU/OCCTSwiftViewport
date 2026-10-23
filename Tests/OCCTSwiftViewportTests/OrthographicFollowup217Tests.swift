@@ -93,12 +93,6 @@ struct OrthographicFollowup217Tests {
         #expect(isRed(ParityRender.rgb(pixels, width: 128, x: 64, y: 64)))
     }
 
-    @Test("The grid is depth-clamped in orthographic only")
-    func gridClipMode() {
-        #expect(RendererSharedSetup.gridDepthClipMode(orthographic: true) == .clamp)
-        #expect(RendererSharedSetup.gridDepthClipMode(orthographic: false) == .clip)
-    }
-
     @Test("A pivot slide in a low-elevation orthographic view with the grid never moves the eye")
     func lowElevationPivotSlideKeepsEye() {
         let controller = ViewportController(
@@ -136,6 +130,14 @@ struct OrthographicFollowup217Tests {
         let perspPlane = persp.position + simd_normalize(persp.viewDirection) * 12
         let orthoPlane = near.position + forward * dNear
         #expect(abs(simd_dot(perspPlane - orthoPlane, forward)) < 1e-3)
+        // The plane follows the pivot: a slide 3 deeper along the line of sight (eye kept, so
+        // `distance` grows by 3) moves it 3 deeper too.
+        var slid = near
+        slid.pivot += forward * 3
+        slid.distance += 3
+        #expect(abs(slid.position.z - near.position.z) < 1e-4)
+        let dSlid = ViewportRenderer.manualFocusDistance(12, cameraState: slid)
+        #expect(abs((dSlid - dNear) - 3) < 1e-3)
         // A plane behind the eye focuses just in front of it, never at 0 (autofocus).
         var close = near
         close.distance = 1

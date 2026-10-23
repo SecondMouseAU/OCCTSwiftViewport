@@ -414,12 +414,13 @@ public struct ViewportConfiguration: Sendable {
     /// DoF aperture (smaller = shallower depth of field).
     public var dofAperture: Float
 
-    /// DoF focal distance, measured along the line of sight from the eye.
+    /// DoF focal distance, measured along the line of sight from the eye (in orthographic,
+    /// from a reference eye in front of the pivot).
     ///
     /// 0 autofocuses on the view depth of the world-space centre of the visible geometry. In
     /// orthographic the composite pass still decodes depth as perspective depth, so the blur
-    /// there does not yet follow it (#215). In orthographic it is measured from a reference eye
-    /// in front of the pivot, not the placed eye (see `docs/reference/Configuration.md`, #217).
+    /// there does not yet follow it (#215). The orthographic reference is described in
+    /// `docs/reference/Configuration.md` (#217).
     public var dofFocalDistance: Float
 
     /// Maximum blur radius in pixels for DoF.

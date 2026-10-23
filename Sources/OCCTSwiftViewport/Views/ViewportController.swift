@@ -153,10 +153,10 @@ public final class ViewportController: ObservableObject {
     /// DoF aperture (smaller = shallower).
     @Published public var dofAperture: Float = 2.8
 
-    /// DoF focal distance along the line of sight from the eye.
+    /// DoF focal distance along the line of sight: from the eye in perspective, from a
+    /// reference eye in front of the pivot in orthographic.
     ///
-    /// 0 autofocuses on the view depth of the visible geometry's centre. In orthographic it is
-    /// measured from a reference eye in front of the pivot; see
+    /// 0 autofocuses on the view depth of the visible geometry's centre; see
     /// `ViewportConfiguration.dofFocalDistance`.
     @Published public var dofFocalDistance: Float = 0
 
