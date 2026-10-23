@@ -125,6 +125,10 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `enableSilhouettes` | `Bool` | `true` | Screen-space depth silhouettes, mirroring `ViewportConfiguration.enableSilhouettes`. Shares one composite pass with SSAO, which also applies ACES tone mapping; the pass is skipped in `.wireframe` and `.unlit`. |
 | `silhouetteThickness` | `Float` | `1.0` | Mirrors `ViewportConfiguration.silhouetteThickness`. |
 | `silhouetteIntensity` | `Float` | `0.7` | Mirrors `ViewportConfiguration.silhouetteIntensity`. |
+| `renderingQuality` | `RenderingQuality` | `.standard` | Surface path, mirroring `ViewportConfiguration.renderingQuality`: GPU PN-triangle tessellation at `.enhanced`; mesh shaders at `.maximum` on Apple9 GPUs (M3, A17 and later), falling back to tessellation elsewhere. Direct-mesh bodies, and bodies whose `faceIndices` don't cover every triangle, draw their mesh as given. |
+| `tessellationMaxFactor` | `Int` | `32` | Mirrors `ViewportConfiguration.tessellationMaxFactor`; clamped to `2...64` and rounded up to even. |
+| `adaptiveTessellation` | `Bool` | `true` | Mirrors `ViewportConfiguration.adaptiveTessellation`. Adaptive factors depend only on the camera, the output size and `tessellationMaxFactor`. |
+| `uniformTessellationFactor` | `UniformTessellationFactor` | `.loadAdaptive()` | Factor when `adaptiveTessellation` is `false`. `.fixed(n)` uses `n`; `.loadAdaptive` has no load to follow offscreen and always uses `tessellationMaxFactor`, so the same options always give the same image. |
 
 > **Behaviour change (issue #136):** the default options now run the SSAO / silhouette composite (as the live viewport's defaults do), so a lit render is ambient-occluded, silhouetted and ACES tone-mapped. Set `enableSilhouettes = false` and `lightingConfiguration.enableSSAO = false` for the previous look.
 >
@@ -168,7 +172,11 @@ public init(
     normalSmoothingCreaseAngle: Float = 0.524,
     enableSilhouettes: Bool = true,
     silhouetteThickness: Float = 1.0,
-    silhouetteIntensity: Float = 0.7
+    silhouetteIntensity: Float = 0.7,
+    renderingQuality: RenderingQuality = .standard,
+    tessellationMaxFactor: Int = 32,
+    adaptiveTessellation: Bool = true,
+    uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive()
 )
 
 @MainActor
@@ -190,7 +198,7 @@ Offscreen defaults follow onscreen. `MetalViewportView` follows the SwiftUI colo
 
 | `RenderAppearance` | Background |
 |---|---|
-| `.system` (default) | As `.dark` when the system is in dark mode at render time (macOS: the user's Light/Dark setting; iOS/visionOS: `UITraitCollection.current`), otherwise as `.light` |
+| `.system` (default) | As `.dark` when the appearance in effect at render time is dark, otherwise as `.light`. macOS: `NSApp.effectiveAppearance` when the process has an `NSApplication`, so an app that forces its own appearance with `NSApp.appearance` renders in it; a plain headless process with no application uses the user's Light/Dark setting. iOS/visionOS: `UITraitCollection.current` |
 | `.light` | `backgroundColor` |
 | `.dark` | `darkModeBackgroundColor`, or `backgroundColor` when that is `nil` |
 
@@ -247,14 +255,14 @@ The renderer caches GPU buffers per body ID and regenerates them only when a bod
 
 For the same bodies and settings, `OffscreenRenderer` produces the same image as a headless frame of `ViewportRenderer` (pinned per scene by `OffscreenParityTests`). `OffscreenRenderOptions(matching:width:height:)` copies those settings from a live `ViewportController`.
 
-Reproduced offscreen: the shadow map, grid, axes, opaque and transparent surfaces (interleaved and direct-mesh), edges (native and quad-expanded), analytic arcs, point clouds, per-triangle highlights (`triangleStyles`), the selection/hover tint and outline, the overlay render layer (drawn last on top of all geometry, casting no shadows), clip planes (first four enabled, shadow map included), `edgeIntensity`, crease-aware normal smoothing, the SSAO / silhouette composite with its ACES tone mapping (`exposure`, `whitePoint`), and image-based lighting plus the HDR skybox (`drawBackground`) from the environment map named by `LightingConfiguration.environmentMapURL` / `environmentMapData`.
+Reproduced offscreen: the shadow map, grid, axes, opaque and transparent surfaces (interleaved and direct-mesh), edges (native and quad-expanded), analytic arcs, point clouds, per-triangle highlights (`triangleStyles`), the selection/hover tint and outline, the overlay render layer (drawn last on top of all geometry, casting no shadows), clip planes (first four enabled, shadow map included), `edgeIntensity`, crease-aware normal smoothing, the SSAO / silhouette composite with its ACES tone mapping (`exposure`, `whitePoint`), image-based lighting plus the HDR skybox (`drawBackground`) from the environment map named by `LightingConfiguration.environmentMapURL` / `environmentMapData`, and the `renderingQuality` surface paths: PN-triangle tessellation (`.enhanced`, `tessellationMaxFactor`, `adaptiveTessellation`, `uniformTessellationFactor`) and mesh shaders (`.maximum` on Apple9) in the shaded, shadow-map and SSAO depth passes. Overlay bodies, outlines and highlights draw the untessellated mesh, as live.
 
 Not reproduced offscreen:
 
 | Live feature | Offscreen behaviour |
 |---|---|
 | An environment map loaded imperatively with `ViewportRenderer.loadEnvironmentMap(...)` | Lives on that renderer and is not seen offscreen. Name the map in `LightingConfiguration` instead. |
-| PN-triangle tessellation and mesh shaders (`RenderingQuality.enhanced` / `.maximum`, `tessellationMaxFactor`, `adaptiveTessellation`) | Every body renders through the standard vertex pipeline, as at `.standard` (the `ViewportConfiguration` default). Under `.cadHighQuality` the live view rounds curved silhouettes further than an offscreen render does; `autoSmoothNormals`, which that preset also turns on, is honoured. |
+| The tessellation load governor (`uniformTessellationFactor = .loadAdaptive`) | Not run: offscreen tessellates uniformly at `tessellationMaxFactor`, so output is deterministic. A live view under load may be tessellating more coarsely. |
 | TAA and progressive accumulation | Not run; MSAA (`msaaSampleCount`) is the only anti-aliasing. |
 | Depth of field | Never applied by the composite pass. |
 | Frustum culling | Not run; it only affects performance. |
@@ -483,7 +491,7 @@ func renderHeadless(
 
 `draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the R32Uint pick pass, the TAA resolve, and the SSAO/silhouette/tone-map composite. `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
 
-This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA, depth of field, tessellation, mesh shaders or pick pass, whereas this path *is* the live renderer.
+This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA, depth of field or pick pass, whereas this path *is* the live renderer.
 
 Notes:
 

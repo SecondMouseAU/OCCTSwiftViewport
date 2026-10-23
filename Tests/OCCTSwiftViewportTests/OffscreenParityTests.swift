@@ -578,6 +578,19 @@ struct OffscreenLiveParityTests {
         }
         var smoothing = ViewportConfiguration()
         smoothing.autoSmoothNormals = true
+        // Refined surface paths (#165), grid and axes off so only the bodies are compared.
+        func quality(
+            _ quality: RenderingQuality, adaptive: Bool = true,
+            uniform: UniformTessellationFactor = .loadAdaptive()
+        ) -> ViewportConfiguration {
+            var config = ViewportConfiguration()
+            config.renderingQuality = quality
+            config.adaptiveTessellation = adaptive
+            config.uniformTessellationFactor = uniform
+            config.showGrid = false
+            config.showAxes = false
+            return config
+        }
         var skyLighting = LightingConfiguration.threePoint
         skyLighting.environmentMapData = ParityRender.greenEnvironment()
         skyLighting.drawBackground = true
@@ -611,6 +624,15 @@ struct OffscreenLiveParityTests {
                 lighting: ViewportRenderBattery.shadowLighting(),
                 clipPlanes: [ClipPlane(normal: SIMD3(1, 0, 0), distance: 0)]),
             Scene(name: "xray", displayMode: .xray, selectedBodyIDs: ["sphere"]),
+            Scene(name: "enhanced", configuration: quality(.enhanced)),
+            Scene(
+                name: "enhanced-uniform",
+                configuration: quality(.enhanced, adaptive: false, uniform: .fixed(6))),
+            Scene(
+                name: "enhanced-shadows", configuration: quality(.enhanced),
+                bodies: ViewportRenderBattery.shadowBodies(),
+                lighting: ViewportRenderBattery.shadowLighting()),
+            Scene(name: "maximum", configuration: quality(.maximum)),
         ]
     }
 
@@ -646,7 +668,8 @@ struct OffscreenLiveParityTests {
         arguments: [
             "default-shaded", "shaded-with-edges", "selection", "clip-plane", "arcs", "highlight",
             "transparency", "auto-smooth", "silhouettes-only", "selected-translucent",
-            "environment-skybox", "selected-wireframe", "clipped-shadows", "xray",
+            "environment-skybox", "selected-wireframe", "clipped-shadows", "xray", "enhanced",
+            "enhanced-uniform", "enhanced-shadows", "maximum",
         ])
     func matchesLive(sceneName: String) throws {
         let scene = try #require(Self.scenes().first { $0.name == sceneName })
