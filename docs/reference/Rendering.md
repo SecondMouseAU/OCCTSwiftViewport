@@ -95,6 +95,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `height` | `Int` | `768` | Output image height in pixels. |
 | `cameraState` | `CameraState` | `CameraState()` | Camera pose, projection, and FOV. |
 | `displayMode` | `DisplayMode` | `.shadedWithEdges` | Visual representation style. |
+| `xrayOpacity` | `Float` | `DisplayMode.defaultXRayOpacity` (0.4) | Surface opacity ceiling in `.xray`; same default as `ViewportConfiguration.xrayOpacity`. Clamped to `0...1`. |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, IBL. |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1.0)` | RGBA background colour in the light appearance, linear space. |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `ViewportConfiguration.defaultDarkModeBackgroundColor` | Background in the dark appearance; `nil` uses `backgroundColor` for both. Matches `ViewportConfiguration.darkModeBackgroundColor`. |
@@ -123,6 +124,7 @@ public init(
     height: Int = 768,
     cameraState: CameraState = CameraState(),
     displayMode: DisplayMode = .shadedWithEdges,
+    xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
     lightingConfiguration: LightingConfiguration = .threePoint,
     backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
     darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration.defaultDarkModeBackgroundColor,
@@ -198,7 +200,7 @@ Thrown by `OffscreenRenderer.renderToPNG(bodies:url:options:)`.
 public final class OffscreenRenderer: Sendable
 ```
 
-Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1) are deferred to a back-to-front sorted pass. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
+Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody` values without requiring `MTKView` or a window. Uses MSAA 4× by default, an MSAA resolve pass, and a CPU-side blit readback. Translucent bodies (opacity < 1, or every body in `.xray`) have their surfaces deferred to a back-to-front sorted pass; their edges still draw. Point-cloud bodies (`primitiveKind == .point`) are drawn via a dedicated point-sprite pipeline.
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 

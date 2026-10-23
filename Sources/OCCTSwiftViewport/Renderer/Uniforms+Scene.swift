@@ -72,6 +72,8 @@ extension Uniforms {
     ///   - clipPlanes: Up to four active section planes.
     ///   - clipPlaneCount: How many entries of `clipPlanes` are active.
     ///   - unlit: Whether the unlit display mode is active (skips lighting and tone mapping).
+    ///   - flatShading: Whether to light each triangle with its face normal (`.flat`). Ignored
+    ///     when `unlit` is set.
     init(
         viewProjection: simd_float4x4,
         viewMatrix: simd_float4x4,
@@ -87,7 +89,8 @@ extension Uniforms {
             .zero, .zero, .zero, .zero
         ),
         clipPlaneCount: UInt32 = 0,
-        unlit: Bool
+        unlit: Bool,
+        flatShading: Bool = false
     ) {
         self.init(
             viewProjectionMatrix: viewProjection,
@@ -108,7 +111,7 @@ extension Uniforms {
             iblParams: iblParams,
             clipPlanes: clipPlanes,
             clipPlaneCount: clipPlaneCount,
-            unlit: unlit ? 1 : 0
+            unlit: unlit ? 1 : (flatShading ? 2 : 0)
         )
     }
 }

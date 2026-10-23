@@ -47,7 +47,7 @@ controller.displayMode = .shadedWithEdges
 
 #### `flat`
 
-Flat (facet) shading — Gouraud interpolation disabled. Surface normals are computed per-triangle rather than smoothed at vertices.
+Faceted shading. Lit exactly like `.shaded` (same lights, materials, shadows and IBL), but each triangle is lit with its own face normal instead of the interpolated vertex normals, so the tessellation's facets show. The face normal is rebuilt in the fragment shader from the screen-space derivatives of the world position and oriented to the vertex normals' side, so it needs no extra vertex data and works for interleaved, direct-mesh, tessellated and mesh-shader bodies alike. The screen-space curvature shading term is skipped in this mode.
 
 ```swift
 controller.displayMode = .flat
@@ -63,15 +63,18 @@ controller.displayMode = .unlit
 
 #### `xray`
 
-Transparent rendering with visible internal edges. Useful for inspecting hidden structure without clipping.
+See-through surfaces with edges. Every geometry-layer body's surface goes through the sorted translucent pass (issue #53's back-to-front, depth-test-on / depth-write-off pass) at `min(material opacity, xrayOpacity)`, so bodies and edges behind a surface show through it. Edges are drawn opaque before the surfaces, so they stay crisp and are only tinted by the surfaces in front of them. Overlay-layer bodies are unaffected. Selected bodies keep their tint and selection outline. In the pick buffer surfaces stay pickable (the nearest one wins) and so do edges; see [Picking](Picking.md#display-mode-and-pick-content).
+
+`xrayOpacity` is a setting, default `DisplayMode.defaultXRayOpacity` (0.4), clamped to `0...1`. Change it live with `ViewportController.xrayOpacity` (seeded from `ViewportConfiguration.xrayOpacity`); headless renders take `OffscreenRenderOptions.xrayOpacity`, which has the same default. Lower is more see-through; at 1 x-ray surfaces draw opaque.
 
 ```swift
 controller.displayMode = .xray
+controller.xrayOpacity = 0.25   // more see-through
 ```
 
 #### `rendered`
 
-Full rendering with materials and environment-map–based reflections.
+Draws exactly like `.shaded`. The shaded path is already the full physically based renderer: PBR materials, image-based lighting, shadows, SSAO and TAA. Each of those is switched by `LightingConfiguration` and `ViewportController` settings, not by the display mode, so `.rendered` adds nothing on top of `.shaded`. It exists so an app can label a "final look" view; turn on the quality features you want through the lighting configuration.
 
 ```swift
 controller.displayMode = .rendered
@@ -109,7 +112,7 @@ Text(controller.displayMode.displayName)
 public var showsSurfaces: Bool { get }
 ```
 
-`true` for every mode except `.wireframe`. Indicates whether the renderer runs the shaded surface pipeline.
+`true` for every mode except `.wireframe`. Indicates whether the renderer runs the shaded surface pipeline. Surfaces are written to the GPU pick buffer only when this is `true`.
 
 ```swift
 if controller.displayMode.showsSurfaces {
@@ -123,7 +126,7 @@ if controller.displayMode.showsSurfaces {
 public var showsEdges: Bool { get }
 ```
 
-`true` for `.wireframe`, `.shadedWithEdges`, and `.xray`. Indicates whether the renderer draws edge polylines.
+`true` for `.wireframe`, `.shadedWithEdges`, and `.xray`. Indicates whether the renderer draws edge polylines for bodies that have a surface mesh. Edge-only bodies draw their edges in every mode; see `drawsEdges(bodyHasMesh:)`.
 
 ```swift
 if controller.displayMode.showsEdges {
@@ -137,7 +140,7 @@ if controller.displayMode.showsEdges {
 public var usesSmoothShading: Bool { get }
 ```
 
-`false` only for `.flat`; `true` for all other modes. When `false` the renderer skips Gouraud interpolation and uses per-face normals.
+`false` only for `.flat`; `true` for all other modes. When `false`, both renderers light each triangle with its face normal instead of the interpolated vertex normals (see [`flat`](#flat)).
 
 #### `usesTransparency`
 
@@ -145,13 +148,47 @@ public var usesSmoothShading: Bool { get }
 public var usesTransparency: Bool { get }
 ```
 
-`true` only for `.xray`. Indicates that the transparency (alpha-blend) pipeline is active.
+`true` only for `.xray`. When `true`, both renderers send every geometry-layer surface through the sorted translucent pass at `surfaceOpacity(forMaterialOpacity:)`. Bodies whose material opacity is below 1 use that pass in every mode.
 
 ```swift
 if controller.displayMode.usesTransparency {
-    // translucent sort pass is active
+    // every surface is see-through
 }
 ```
+
+#### `defaultXRayOpacity`
+
+```swift
+public static let defaultXRayOpacity: Float  // 0.4
+```
+
+The default opacity ceiling for surfaces in `.xray`. It is the default of `ViewportConfiguration.xrayOpacity` (which seeds `ViewportController.xrayOpacity`) and of `OffscreenRenderOptions.xrayOpacity`, so live and headless renders match unless you change one.
+
+#### `clampedXRayOpacity(_:)`
+
+```swift
+public static func clampedXRayOpacity(_ opacity: Float) -> Float
+```
+
+Clamps an x-ray opacity to `0...1`; NaN or infinity becomes `defaultXRayOpacity`. Every `xrayOpacity` setter applies it.
+
+#### `surfaceOpacity(forMaterialOpacity:xrayOpacity:)`
+
+```swift
+public func surfaceOpacity(
+    forMaterialOpacity opacity: Float, xrayOpacity: Float = defaultXRayOpacity
+) -> Float
+```
+
+The opacity a surface with the given material opacity is drawn with in this mode: unchanged, except in a mode that `usesTransparency`, where it's capped at the (clamped) `xrayOpacity`. A body whose result is below 1 is drawn in the translucent pass.
+
+#### `drawsEdges(bodyHasMesh:)`
+
+```swift
+public func drawsEdges(bodyHasMesh: Bool) -> Bool
+```
+
+Whether a body's edges are drawn, and written to the pick buffer, in this mode: `showsEdges`, or always for a body with no surface mesh, which would otherwise be invisible.
 
 #### `keyboardShortcut`
 

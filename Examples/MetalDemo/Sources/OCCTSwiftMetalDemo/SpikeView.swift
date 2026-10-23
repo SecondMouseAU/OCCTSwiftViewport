@@ -1777,11 +1777,17 @@ struct SpikeView: View {
     private var displayModeSection: some View {
         Section("Display Mode") {
             Picker("Mode", selection: $controller.displayMode) {
-                Text("Shaded").tag(DisplayMode.shaded)
-                Text("Wireframe").tag(DisplayMode.wireframe)
-                Text("Shaded + Edges").tag(DisplayMode.shadedWithEdges)
+                ForEach(DisplayMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
             }
             .pickerStyle(.inline)
+
+            // Live x-ray surface opacity (#136): tune on device, applies in X-Ray mode.
+            VStack(alignment: .leading) {
+                Text("X-Ray Opacity: \(controller.xrayOpacity, specifier: "%.2f")")
+                Slider(value: $controller.xrayOpacity, in: 0...1)
+            }
 
             VStack(alignment: .leading) {
                 Text("Edge Intensity: \(controller.edgeIntensity, specifier: "%.1f")")

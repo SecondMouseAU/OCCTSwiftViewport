@@ -39,6 +39,18 @@ public final class ViewportController: ObservableObject {
     /// Current display mode.
     @Published public var displayMode: DisplayMode
 
+    /// Opacity ceiling for surfaces in `.xray` mode, `0...1`, adjustable live.
+    ///
+    /// Starts at `configuration.xrayOpacity` (default `DisplayMode.defaultXRayOpacity`) and is
+    /// clamped on set with `DisplayMode.clampedXRayOpacity(_:)`. Lower is more see-through; at 1
+    /// x-ray surfaces are drawn opaque.
+    @Published public var xrayOpacity: Float {
+        didSet {
+            let clamped = DisplayMode.clampedXRayOpacity(xrayOpacity)
+            if clamped != xrayOpacity { xrayOpacity = clamped }
+        }
+    }
+
     /// Whether the ViewCube is visible.
     @Published public var showViewCube: Bool
 
@@ -192,6 +204,7 @@ public final class ViewportController: ObservableObject {
         self.configuration = configuration
         self.cameraState = configuration.effectiveInitialCameraState
         self.displayMode = configuration.displayMode
+        self.xrayOpacity = DisplayMode.clampedXRayOpacity(configuration.xrayOpacity)
         self.showViewCube = configuration.showViewCube
         self.showAxes = configuration.showAxes
         self.showGrid = configuration.showGrid

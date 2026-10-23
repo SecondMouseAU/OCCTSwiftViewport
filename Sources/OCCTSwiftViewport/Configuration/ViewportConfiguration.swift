@@ -226,6 +226,17 @@ public struct ViewportConfiguration: Sendable {
     /// Display mode for geometry.
     public var displayMode: DisplayMode
 
+    /// Opacity ceiling for surfaces in `.xray` mode, `0...1`.
+    ///
+    /// Clamped on set with `DisplayMode.clampedXRayOpacity(_:)`. Seeds
+    /// `ViewportController.xrayOpacity`, which is what the renderer reads and what to change live.
+    public var xrayOpacity: Float = DisplayMode.defaultXRayOpacity {
+        didSet {
+            let clamped = DisplayMode.clampedXRayOpacity(xrayOpacity)
+            if clamped != xrayOpacity { xrayOpacity = clamped }
+        }
+    }
+
     /// Lighting configuration.
     public var lightingConfiguration: LightingConfiguration
 
@@ -458,6 +469,7 @@ public struct ViewportConfiguration: Sendable {
         defaultFieldOfView: Float? = nil,
         gestureConfiguration: GestureConfiguration = .default,
         displayMode: DisplayMode = .shaded,
+        xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
         lightingConfiguration: LightingConfiguration = .threePoint,
         showViewCube: Bool = true,
         viewCubePosition: ViewCubePosition = .bottomTrailing,
@@ -504,6 +516,7 @@ public struct ViewportConfiguration: Sendable {
         self.defaultFieldOfView = defaultFieldOfView
         self.gestureConfiguration = gestureConfiguration
         self.displayMode = displayMode
+        self.xrayOpacity = DisplayMode.clampedXRayOpacity(xrayOpacity)
         self.lightingConfiguration = lightingConfiguration
         self.showViewCube = showViewCube
         self.viewCubePosition = viewCubePosition

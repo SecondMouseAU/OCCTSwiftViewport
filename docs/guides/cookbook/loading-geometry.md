@@ -209,7 +209,7 @@ body.material = PBRMaterial(
 )
 ```
 
-Surface transparency is driven by `color.w` (or `PBRMaterial.opacity`). Bodies with opacity < 1 are sorted back-to-front and rendered in a separate translucent pass.
+Surface transparency is driven by `color.w` (or `PBRMaterial.opacity`). Bodies with opacity < 1 are sorted back-to-front and rendered in a separate translucent pass. Their edges are still drawn, and a selected translucent body gets the usual selection tint and outline ring. The `.xray` display mode sends every body's surface through this pass.
 
 ---
 

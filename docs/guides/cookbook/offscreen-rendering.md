@@ -175,9 +175,10 @@ matters.
 | `.wireframe` | no | yes | — |
 | `.shaded` | yes | no | yes |
 | `.shadedWithEdges` (default) | yes | yes | yes |
-| `.flat` | yes | no | yes (flat normals) |
+| `.flat` | yes | no | yes (per-triangle face normals) |
 | `.unlit` | yes | no | **no** |
-| `.xray` | yes (transparent) | yes | yes |
+| `.xray` | yes (see-through, at most `xrayOpacity`, default 0.4) | yes | yes |
+| `.rendered` | yes | no | yes (identical to `.shaded`) |
 
 ### `.unlit` — faithful diagnostic colour renders
 

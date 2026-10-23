@@ -38,7 +38,7 @@ struct Uniforms {
         .zero, .zero, .zero, .zero
     )
     var clipPlaneCount: UInt32 = 0
-    var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map)
+    var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map), 2 = faceted
     var _clipPad: SIMD2<Float> = .zero
 }
 
@@ -388,6 +388,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     // without depth-fighting; depth write off so later passes aren't disturbed.
     private let highlightDepthState: MTLDepthStencilState
     private let transparentSurfaceDepthState: MTLDepthStencilState
+    /// `transparentSurfaceDepthState` plus a stencil write, for selected translucent bodies.
+    private let transparentStencilWriteState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
     private let msaaSampleCount: Int
     // Skybox (HDR background draw — IBL cubemap as fullscreen background)
@@ -1101,6 +1103,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.transparentSurfaceDepthState = transparentSurfaceDepthState
 
+        // Same, but writing the stencil reference for selected translucent bodies (as
+        // `stencilWriteState` does for opaque ones) so the selection outline stays a ring.
+        let transparentStencilWriteDesc = MTLDepthStencilDescriptor()
+        transparentStencilWriteDesc.depthCompareFunction = .less
+        transparentStencilWriteDesc.isDepthWriteEnabled = false
+        transparentStencilWriteDesc.frontFaceStencil = writeStencil
+        transparentStencilWriteDesc.backFaceStencil = writeStencil
+        guard
+            let transparentStencilWriteState = device.makeDepthStencilState(
+                descriptor: transparentStencilWriteDesc)
+        else {
+            return nil
+        }
+        self.transparentStencilWriteState = transparentStencilWriteState
+
         // Axis cylinders + grid-line cache.
         guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
@@ -1445,7 +1462,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 iblParams: iblParams,
                 clipPlanes: clipPlaneVecs,
                 clipPlaneCount: clipPlaneCount,
-                unlit: controller.displayMode == .unlit
+                unlit: controller.displayMode == .unlit,
+                flatShading: !controller.displayMode.usesSmoothShading
             )
         }
         // Quad-expanded edges (body edges, arcs, overlay edges) and their pick footprints.
@@ -1454,6 +1472,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let bodies = bodiesBinding.wrappedValue
         let displayMode = controller.displayMode
+        let xrayOpacity = controller.xrayOpacity
 
         // Build index map for picking: objectIndex → bodyID
         var indexMap: [Int: String] = [:]
@@ -1772,14 +1791,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // below — skip the mesh + wireframe paths so a `.point` body that
             // happens to also carry stray vertexData/edges doesn't double-draw.
             if body.primitiveKind == .point { continue }
-            // Translucent geometry bodies are deferred to the sorted transparent
-            // pass below (a body with edges only — no mesh — is unaffected).
-            if body.renderLayer == .geometry,
-                body.effectiveMaterial.opacity < 1.0,
-                buffers.vertexBuffer != nil, buffers.indexCount > 0
-            {
+            // Translucent geometry bodies' surfaces are deferred to the sorted transparent
+            // pass below (a body with edges only — no mesh — is unaffected). Their edges still
+            // draw here, so a translucent body keeps its edges, and `.xray` (which makes every
+            // surface translucent) has them.
+            let defersSurface =
+                body.renderLayer == .geometry
+                && buffers.vertexBuffer != nil && buffers.indexCount > 0
+                && displayMode.surfaceOpacity(
+                    forMaterialOpacity: body.effectiveMaterial.opacity, xrayOpacity: xrayOpacity)
+                    < 1.0
+            if defersSurface {
                 transparentDraws.append((body, buffers, bodyObjectIndex))
-                continue
             }
 
             var uniforms = makeUniforms()
@@ -1799,7 +1822,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
 
             // Shaded pass (mesh bodies only)
-            if displayMode.showsSurfaces, hasMesh {
+            if displayMode.showsSurfaces, hasMesh, !defersSurface {
                 // Write stencil=1 for selected bodies
                 if selState > 0 {
                     mainEncoder.setDepthStencilState(stencilWriteState)
@@ -1919,8 +1942,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             for d in sorted {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = d.body.transform
+                let selState: UInt32 =
+                    selectedIDs.contains(d.body.id) ? 1 : (hoveredID == d.body.id ? 2 : 0)
                 var bodyUniforms = BodyUniforms(
-                    body: d.body, objectIndex: d.objectIndex, isSelected: 0)
+                    body: d.body, objectIndex: d.objectIndex, isSelected: selState)
+                bodyUniforms.color.w = displayMode.surfaceOpacity(
+                    forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
+                // Selected/hovered bodies mark the stencil, as in the opaque pass, so the
+                // selection outline below draws a ring around them instead of a filled silhouette.
+                if selState > 0 {
+                    mainEncoder.setDepthStencilState(transparentStencilWriteState)
+                    mainEncoder.setStencilReferenceValue(1)
+                } else {
+                    mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
+                }
                 mainEncoder.setFragmentBytes(
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
@@ -1929,6 +1964,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder, buffers: d.buffers, uniforms: &uniforms,
                     useMeshShaders: useMeshShaders, useTessellation: useTessellation)
             }
+            // Don't let a selected body's stencil-writing state leak into the passes below.
+            mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
         }
 
         // 3.35 Analytic arc edge pass (issue #48).
@@ -2352,7 +2389,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             buffers.vertexBuffer != nil && buffers.indexBuffer != nil
                             && buffers.indexCount > 0
 
-                        if hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer {
+                        // Faces are stamped only when the display mode draws them, so hidden
+                        // surfaces (`.wireframe`) can't win a pick.
+                        if displayMode.showsSurfaces, hasMesh, let vb = buffers.vertexBuffer,
+                            let ib = buffers.indexBuffer
+                        {
                             var uniforms = makeUniforms()
                             uniforms.modelMatrix = body.transform
                             var bodyUniforms = BodyUniforms(
@@ -2472,7 +2513,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 guard !body.edgeIndices.isEmpty,
                                     let buffers = bodyBufferCache[body.id],
                                     let edgeVB = buffers.edgeVertexBuffer,
-                                    buffers.edgePrimitiveCount > 0
+                                    buffers.edgePrimitiveCount > 0,
+                                    // Same rule as the visible edge pass: edges hidden by the
+                                    // display mode (`.shaded`, ...) can't win a pick.
+                                    displayMode.drawsEdges(bodyHasMesh: buffers.indexCount > 0)
                                 else { continue }
 
                                 var uniforms = makeUniforms()
