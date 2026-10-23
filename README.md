@@ -50,7 +50,7 @@ This package provides two library products:
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.2.2")
+    .package(url: "https://github.com/SecondMouseAU/OCCTSwiftViewport.git", from: "1.2.3")
 ],
 targets: [
     .target(

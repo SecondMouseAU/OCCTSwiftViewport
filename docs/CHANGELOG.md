@@ -4,7 +4,36 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-10-23
+
+The high-severity findings from the hard-coded values audit (issue #136), plus #134 and #135.
+
 ### Fixed
+- **Shadows on transformed bodies** (#136, H2). The shaded fragment applied `body.transform` a second
+  time before the shadow-map lookup, so any body with a non-identity `transform` sampled the shadow map
+  in the wrong place. Transformed receivers now shadow exactly like the same geometry baked into vertices.
+- **Section clip planes apply everywhere** (#136, H3). Clip planes were ignored by GPU picking, the
+  SSAO/silhouette depth prepass, the selection outline and point clouds.
+  - Clicking a sectioned model now picks the visible geometry, not the clipped-away body in front of it.
+    This covers faces, edges, arcs and vertices on the standard, tessellated and mesh-shader paths.
+  - Silhouettes and SSAO no longer outline or darken around removed geometry.
+  - The outline is cut exactly where the section cuts the body.
+  - Point clouds are sectioned.
+- **Pick ID limits are guarded** (#136, H4). Picks pack a 16-bit body index and a 14-bit primitive index
+  into one R32Uint.
+  - Beyond 65,536 visible bodies, later bodies used to corrupt other bodies' picks; they now read back
+    as a miss.
+  - On a body with more than 16,384 primitives of the picked kind, the index used to wrap silently.
+    Tap picks and tap-to-measure now resolve wrapped face indices with a CPU ray test, and every
+    result carries `isPrimitiveIndexAmbiguous`.
+- **Direct-mesh selection** (#136, H5). Selecting or hovering a `ViewportBody.directMesh(...)` body, or
+  giving it `triangleStyles`, drew garbage. The outline and highlight passes now have direct-mesh
+  pipelines.
+- **Face picks at higher rendering quality** (#136, H7 and L10). Under `.enhanced`, the tessellated pick
+  reported the B-Rep face index instead of the triangle index. Under `.maximum` on Apple9 GPUs, the
+  mesh-shader pick reported a meshlet-local index (0-63). Both now report the global triangle index, so
+  `faceIndices[triangleIndex]` lookups and tap-to-measure work at every quality level.
+- **Tap-to-measure on direct-mesh bodies.** `worldHitPoint(ray:triangleIndex:)` returned `nil` for them.
 - **`OffscreenRenderOptions.msaaSampleCount` is honoured** (issue #134). `OffscreenRenderer` built every
   main-pass pipeline for a hard-coded 4 samples and always made multisample textures. A count of `1`,
   documented as "disabled", aborted on Metal validation (`sampleCount must be > 1 for multisample
@@ -22,12 +51,31 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   fragment shader returned the body colour for them before reaching the dash test, so they always drew
   solid; v1.2.2 documented this as a limitation. The dash test now runs first for every edge.
 
+### Added
+- `PickResult.isPrimitiveIndexAmbiguous`, `PickResult.maxPickableBodies` (65,536) and
+  `PickResult.maxPrimitivesPerKind` (16,384). The limits are documented in the Picking reference and
+  cookbook.
+- `ViewportBody.resolveWrappedTriangleIndex(_:ray:)` resolves a wrapped face-pick index with a CPU ray
+  test.
+- `PickResult.init(rawValue:indexMap:layerMap:ambiguousKinds:)`. The new parameter is optional, so
+  existing call sites are unaffected.
+
 ### Changed
+- Tap picks and tap-to-measure resolve wrapped face indices before publishing `pickResult` or adding a
+  measurement point. A face tap that can't be resolved on such a body adds no measurement point.
 - The neighborhood pick behind `PickingConfiguration.pickRadius` (#118) is split into two pure functions,
   `clampPickNeighborhood` and `bestNeighborhoodPickResult`, as `performRegionPick` already was. No
   behaviour change.
 
 ### Tests
+- `ShadowTransformTests` (new): a transformed caster and receiver shadow identically to the same geometry
+  baked into vertices (H2).
+- `ClipPlanePassTests` (new): headless `ViewportRenderer` tests for clip planes in the pick, point-cloud,
+  selection-outline and SSAO/silhouette passes (H3).
+- `PickEncodingLimitsTests` (new): object-index guard, wrap detection and resolution, and headless GPU
+  checks that the tessellated and mesh-shader pick paths report input triangle indices (H4, H7).
+- `DirectMeshSelectionTests` (new): selection outline, hover outline and `triangleStyles` match between
+  interleaved and direct-mesh builds of the same sphere (H5).
 - `OffscreenSampleCountTests` (new): sample-count mapping, and a render at 1, 2, 4 and 8 samples on one
   renderer (#134).
 - `BoundingBoxTests`: six cases for #135 (edge-only bounds, edges extending a mesh, arc-only and tilted
