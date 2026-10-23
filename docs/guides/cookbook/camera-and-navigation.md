@@ -66,7 +66,7 @@ let proj = cameraState.projectionMatrix(
     aspectRatio: Float(viewSize.width / viewSize.height), near: near, far: far)
 ```
 
-`near` sits 1% in front of the scene's bounding box, so a face square-on to the camera at the front of the box (a top view of a plate, a flat sketch) is never clipped by it.
+`near` sits 1% in front of the nearest corner of the scene's bounding box, measured as depth along the view direction, so neither a face square-on to the camera at the front of the box (a top view of a plate, a flat sketch) nor the near corner of an obliquely viewed scene is clipped by it.
 
 ---
 

@@ -538,6 +538,11 @@ public final class OffscreenRenderer: Sendable {
                     enc.setDepthStencilState(depthState)
                     enc.setCullMode(.front)
                     enc.setDepthBias(0.01, slopeScale: 1.5, clamp: 0.02)
+                    // shadow_clip_fragment reads the section clip planes from the scene uniforms,
+                    // so clipped-away geometry casts no shadow (#162).
+                    var shadowClipUniforms = makeUniforms()
+                    enc.setFragmentBytes(
+                        &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
                     for body in bodies where body.isVisible {
                         guard let buffers = bodyBufferCache[body.id],

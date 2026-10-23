@@ -69,15 +69,19 @@ struct VertexIn {
 struct ShadedVertexOut {
     float4 clipPosition [[position]];
     float3 worldNormal;
-    float3 worldPosition;
+    // Centroid-sampled (#164): with MSAA, a pixel whose centre lies outside the triangle but
+    // whose samples do not would otherwise interpolate worldPosition at the centre, i.e.
+    // extrapolate it past the triangle's edge. On a surface seen nearly edge-on that moves the
+    // point a long way, so the section clip test in shaded_fragment kept samples of a
+    // clipped-away wall and left a ghost line along its silhouette.
+    float3 worldPosition [[centroid_perspective]];
     float3 viewNormal;       // for matcap UV
     float4 clipPositionCopy; // for depth-based effects
 };
 
 struct WireframeVertexOut {
     float4 clipPosition [[position]];
-    float4 clipPositionCopy; // for depth-based edge alpha
-    float3 worldPosition;    // for clip plane testing
+    float3 worldPosition;    // for clip plane testing and the edge depth fade
 };
 
 // MARK: - Grid / Axis Structs
@@ -771,6 +775,7 @@ struct ShadowUniforms {
 
 struct ShadowVertexOut {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // for clip plane testing (shadow_clip_fragment)
 };
 
 vertex ShadowVertexOut shadow_vertex(
@@ -780,6 +785,7 @@ vertex ShadowVertexOut shadow_vertex(
     ShadowVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
@@ -796,9 +802,14 @@ vertex PickVertexOut depth_only_vertex(
     return out;
 }
 
-// Empty fragment — only depth is written. Used by the shadow-map pipelines, whose vertex
-// stages carry no world position (and whose ShadowUniforms carry no clip planes).
-fragment void depth_only_fragment() {
+// Shadow-map fragment: only depth is written, but geometry a section clip plane removed must
+// not cast a shadow into what is left (#162). The frame's scene Uniforms (for its clip planes)
+// are bound at fragment buffer 1; ShadowUniforms stay vertex-only.
+fragment void shadow_clip_fragment(
+    ShadowVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]]
+) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
 }
 
 // Depth-only fragment for the SSAO/silhouette prepass: honours section clip planes so the
@@ -853,7 +864,6 @@ vertex WireframeVertexOut wireframe_vertex(
             out.clipPosition.z = biasedDepth * out.clipPosition.w;
         }
     }
-    out.clipPositionCopy = out.clipPosition;
     out.worldPosition = worldPos.xyz;
     return out;
 }
@@ -861,6 +871,16 @@ vertex WireframeVertexOut wireframe_vertex(
 struct WireframeFragmentOut {
     float4 color [[color(0)]];
 };
+
+// Edge depth fade: 0 at the near plane, 1 at the far plane, linear in view-space distance (#181).
+// Measured from the fragment's world position, not its clip-space z/w: perspective NDC depth is
+// hyperbolic, so mapping it straight to 0-1 faded nearly everything past twice the near distance
+// and changed the fade whenever the fitted near/far range changed. Using the world position also
+// keeps the vertex stages' edge depth bias out of the fade. The camera looks down view-space -z.
+inline float edgeFadeDepth(float3 worldPosition, float4x4 viewMatrix, float nearPlane, float farPlane) {
+    float viewDepth = -(viewMatrix * float4(worldPosition, 1.0)).z;
+    return saturate((viewDepth - nearPlane) / max(farPlane - nearPlane, 1e-6));
+}
 
 fragment WireframeFragmentOut wireframe_fragment(
     WireframeVertexOut in [[stage_in]],
@@ -896,9 +916,7 @@ fragment WireframeFragmentOut wireframe_fragment(
     // Depth-based edge alpha: near edges fully opaque, far edges fade
     float nearPlane = uniforms.cameraPosition.w;
     float farPlane = uniforms.materialParams.w;
-    float clipZ = in.clipPositionCopy.z;
-    float clipW = in.clipPositionCopy.w;
-    float linearDepth = saturate((clipZ / clipW - nearPlane / farPlane) / (1.0 - nearPlane / farPlane));
+    float linearDepth = edgeFadeDepth(in.worldPosition, uniforms.viewMatrix, nearPlane, farPlane);
     // edgeIntensity: 0 = invisible, 1 = normal, 2 = fully opaque at all depths
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
@@ -921,7 +939,6 @@ struct QuadEdgeVertexIn {
 
 struct QuadEdgeVertexOut {
     float4 clipPosition [[position]];
-    float4 clipPositionCopy;
     float3 worldPosition;
     float arcLength;
     float2 quadCorner;
@@ -1021,7 +1038,6 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
 
     QuadEdgeVertexOut out;
     out.clipPosition = expandedClipPos;
-    out.clipPositionCopy = expandedClipPos;
     out.worldPosition = worldPos.xyz;
     out.arcLength = in.arcLength;
     out.quadCorner = in.quadCorner;
@@ -1090,9 +1106,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float edgeIntensity = max(uniforms.edgeParams.y, 0.0);
     float nearPlane = uniforms.cameraPosition.w;
     float farPlane = uniforms.materialParams.w;
-    float linearDepth = saturate(
-        (in.clipPositionCopy.z / in.clipPositionCopy.w - nearPlane / farPlane)
-        / (1.0 - nearPlane / farPlane));
+    float linearDepth = edgeFadeDepth(in.worldPosition, uniforms.viewMatrix, nearPlane, farPlane);
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
 
@@ -1134,7 +1148,7 @@ fragment PickFragmentOut pick_quad_edge_fragment(
 
 struct HighlightVertexOut {
     float4 clipPosition [[position]];
-    float3 worldPosition;
+    float3 worldPosition [[centroid_perspective]];  // MSAA-safe clip test, as ShadedVertexOut (#164)
 };
 
 vertex HighlightVertexOut highlight_vertex(
@@ -1983,6 +1997,7 @@ vertex ShadowVertexOut tessellated_shadow_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     ShadowVertexOut out;
     out.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
     return out;
 }
 
@@ -2093,7 +2108,7 @@ struct MeshletPayload {
 struct MeshVertex {
     float4 clipPosition [[position]];
     float3 worldNormal;
-    float3 worldPosition;
+    float3 worldPosition [[centroid_perspective]];  // as ShadedVertexOut (#164)
     float3 viewNormal;
     float4 clipPositionCopy;
 };
@@ -2193,6 +2208,7 @@ void meshlet_mesh(
 
 struct ShadowMeshVertex {
     float4 clipPosition [[position]];
+    float3 worldPosition;    // for clip plane testing (shadow_clip_fragment)
 };
 
 using ShadowMeshOutput = mesh<ShadowMeshVertex, void, 64, 64, topology::triangle>;
@@ -2217,6 +2233,7 @@ void meshlet_shadow_mesh(
         float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
         ShadowMeshVertex v;
         v.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+        v.worldPosition = worldPos.xyz;
         output.set_vertex(tid, v);
     }
 

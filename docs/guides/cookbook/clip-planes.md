@@ -226,16 +226,19 @@ for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
 
 That covers the shaded surfaces (including the tessellated and mesh-shader paths),
 wireframe and quad-expanded edges, analytic arcs, per-triangle highlights,
-point clouds, the selection outline, the SSAO/silhouette depth prepass, and the
-GPU pick pass for faces, edges, arcs and vertices. Clipped-away geometry is
-therefore not drawn, not outlined, does not darken what is behind it, and
-**cannot be picked**: a click on a sectioned model hits the visible geometry
-behind the cut.
+point clouds, the selection outline, the SSAO/silhouette depth prepass, the
+shadow map, and the GPU pick pass for faces, edges, arcs and vertices.
+Clipped-away geometry is therefore not drawn, not outlined, casts no shadow,
+does not darken what is behind it, and **cannot be picked**: a click on a
+sectioned model hits the visible geometry behind the cut.
+
+With MSAA on, the clip test runs on a centroid-sampled world position, so a
+pixel only partly covered by a wall the plane removes does not keep that wall's
+samples. Before this, walls seen nearly edge-on left a faint one-pixel ghost of
+the removed part along their silhouette.
 
 Not covered:
 
-- **Shadows.** The shadow-map pass ignores clip planes, so clipped geometry still
-  casts shadows onto what remains.
 - **`OffscreenRenderer`.** `OffscreenRenderOptions` has no clip planes, so headless
   renders are never sectioned.
 

@@ -343,6 +343,9 @@ enum RendererSharedSetup {
     ///
     /// Pass `directMeshVertexDescriptor()` for the direct-mesh sibling: the shadow shader reads only
     /// position, and the normal binding just satisfies the descriptor's attribute 1.
+    ///
+    /// The fragment stage discards geometry behind the section clip planes (#162), so the shadow
+    /// pass must bind the frame's `Uniforms` at fragment buffer 1.
     static func makeShadowPipelineState(
         device: MTLDevice,
         library: MTLLibrary,
@@ -354,7 +357,7 @@ enum RendererSharedSetup {
             label: label,
             library: library,
             vertexFunction: "shadow_vertex",
-            fragmentFunction: "depth_only_fragment",
+            fragmentFunction: "shadow_clip_fragment",
             depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDescriptor
         )
