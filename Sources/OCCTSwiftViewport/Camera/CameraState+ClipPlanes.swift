@@ -30,13 +30,21 @@ extension CameraState {
         // cut through geometry as the camera entered the bounding sphere.
         let minDistToBox = bounds.distance(to: position)
 
-        // Far reaches past the back of the scene with margin; near hugs the front
-        // of the scene but is clamped so far/near never exceeds ~1e4.
+        // Far reaches past the back of the scene with margin; near sits just in front of the
+        // scene but is clamped so far/near never exceeds ~1e4. Without the margin, geometry on
+        // the camera-facing face of the AABB (a top-view box face, a flat panel, an edge-only
+        // body) lands exactly on the near plane at NDC z = 0, and rounding clips it (#156).
         var far = (camDist + radius) * 2.0
         far = max(far, radius * 2.0)
-        var near = max(minDistToBox, far * 1e-4)
+        var near = max(minDistToBox * (1 - Self.nearPlaneMargin), far * 1e-4)
         near = max(near, 1e-4)
         if near >= far { near = far * 1e-4 }
         return (near, far)
     }
+
+    /// Fraction of the camera-to-scene distance the near plane is pulled back from the front of
+    /// the scene bounds, so geometry on the AABB's camera-facing face sits at a small positive
+    /// depth rather than exactly on the near plane. 1% costs a negligible share of depth
+    /// precision (the far/near ratio rises by ~1%).
+    static let nearPlaneMargin: Float = 0.01
 }

@@ -138,9 +138,13 @@ Returns a perspective or orthographic projection matrix in Metal NDC (z in [0, 1
 public func clipPlanes(sceneBounds: BoundingBox?) -> (near: Float, far: Float)
 ```
 
-Returns scene-adaptive near/far clip distances. When `sceneBounds` is `nil` (empty scene) returns `(0.01, 10_000)`. Otherwise `far` reaches past the back of the scene's bounding sphere, while `near` is the true distance from the camera to the bounding **box** (`BoundingBox.distance(to:)`), clamping the `far/near` ratio to ≤ 1e4 to preserve depth-buffer precision regardless of model scale.
+Returns scene-adaptive near/far clip distances. When `sceneBounds` is `nil` (empty scene) returns `(0.01, 10_000)`. Otherwise `far` reaches past the back of the scene's bounding sphere, while `near` sits just in front of the bounding **box**: the true camera-to-box distance (`BoundingBox.distance(to:)`) pulled back by `nearPlaneMargin` (1%), clamping the `far/near` ratio to ≤ 1e4 to preserve depth-buffer precision regardless of model scale.
 
 Measuring `near` against the box rather than the sphere matters for non-cubic scenes. A camera that is clear of the geometry but inside its circumscribed sphere used to collapse `near` to the `far * 1e-4` floor, throwing away roughly four orders of magnitude of depth precision and producing section-view artifacts (issue #116). `near` still falls back to that floor when the camera is genuinely inside the geometry, where the distance to the box is `0`.
+
+The 1% margin keeps geometry on the box's camera-facing face (the top face in a top view, a flat panel, an edge-only sketch, which since #135 defines the box itself) at a small positive depth. With `near` exactly on the box, that geometry sat at NDC z = 0 and rounding could clip it away (issue #156). The margin raises the `far/near` ratio by about 1%, a negligible share of depth precision.
+
+`ViewportRenderer` fits these planes on every frame, including a body's first one: it uses the body's cached bounds when they are current and computes them from the body otherwise, so a frame never falls back to the wide `(0.01, 10_000)` range just because a body is new (issue #157). `OffscreenRenderer` computes them from the bodies on every render.
 
 ```swift
 let (near, far) = state.clipPlanes(sceneBounds: sceneBB)

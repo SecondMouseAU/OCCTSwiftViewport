@@ -421,6 +421,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Kept out of every live-path code path, so headless mode cannot perturb on-screen rendering.
     var headlessTargets: HeadlessRenderTargets?
 
+    /// Near/far planes the last encoded frame used.
+    ///
+    /// Internal so tests can check that a body's first frame is fitted (#157).
+    private(set) var lastFrameClipPlanes: (near: Float, far: Float)?
+
     /// Depth texture for the 1x pick pass (separate from the MSAA depth).
     private var pickDepthTexture: MTLTexture?
     private var pickDepthWidth: Int = 0
@@ -1303,16 +1308,22 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Scene-adaptive clip planes (issue #57): fit near/far to the visible
         // geometry so hyperbolic depth precision isn't crushed by a fixed
-        // 0.01/10000 range. Uses the cached per-body AABBs (from the previous
-        // frame on the first frame — bounds change slowly, so that's fine).
+        // 0.01/10000 range. Uses the cached per-body AABB when the cache is current for the
+        // body's generation; otherwise (the body's first frame, or new geometry not yet
+        // re-uploaded by `ensureBuffers` further down) computes it from the body, so the frame
+        // that first shows a body is fitted too, not drawn with the wide fallback (#157).
         var sceneBounds: BoundingBox? = nil
         for body in bodiesBinding.wrappedValue where body.isVisible && body.renderLayer == .geometry
         {
-            guard let localBox = bodyBufferCache[body.id]?.localBoundingBox else { continue }
+            let cached =
+                bodyGeneration[body.id] == body.generation
+                ? bodyBufferCache[body.id]?.localBoundingBox : nil
+            guard let localBox = cached ?? body.boundingBox else { continue }
             let worldBox = localBox.transformed(by: body.transform)
             sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
         }
         let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
+        lastFrameClipPlanes = clip
 
         var projMatrix = cameraState.projectionMatrix(
             aspectRatio: aspectRatio, near: clip.near, far: clip.far)
