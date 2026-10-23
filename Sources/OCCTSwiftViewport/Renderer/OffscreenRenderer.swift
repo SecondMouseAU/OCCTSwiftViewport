@@ -378,6 +378,9 @@ public struct OffscreenRenderOptions: Sendable {
     /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
     /// selection and hover, and every `ViewportConfiguration` field the offscreen path honours.
     /// Measurements are not copied; pass resolved ones in `measurements` to draw them.
+    ///
+    /// With `debugDisableTessellation` on, which switches the live view's tessellation and mesh
+    /// shaders off, the options use `.standard`.
     @MainActor
     public init(matching controller: ViewportController, width: Int, height: Int) {
         let config = controller.configuration
@@ -418,6 +421,8 @@ public struct OffscreenRenderOptions: Sendable {
             adaptiveTessellation: config.adaptiveTessellation,
             uniformTessellationFactor: config.uniformTessellationFactor
         )
+        // `debugDisableTessellation` switches the live view's refinement off.
+        if controller.debugDisableTessellation { renderingQuality = .standard }
     }
 
     /// The background colour for `appearance`: `darkModeBackgroundColor` when it renders dark and
@@ -597,6 +602,8 @@ public final class OffscreenRenderer: Sendable {
     // Tessellation / mesh shaders (`OffscreenRenderOptions.renderingQuality`, #165), built on the
     // first render that asks for them so `.standard` renders pay nothing.
     private var tessellationManager: TessellationManager?
+    /// Set once building `tessellationManager` failed, so it is not retried every render.
+    private var tessellationManagerFailed = false
     private var refinedPipelinesByKey: [RefinedPipelines.Key: RefinedPipelines] = [:]
 
     // Body buffer cache
@@ -1723,8 +1730,9 @@ public final class OffscreenRenderer: Sendable {
     ) -> RefinedPipelines? {
         guard RendererSharedSetup.wantsTessellation(options.renderingQuality) else { return nil }
         // Mesh shaders don't need the manager, so a failed manager only loses tessellation.
-        if tessellationManager == nil {
+        if tessellationManager == nil, !tessellationManagerFailed {
             tessellationManager = TessellationManager(device: device, library: library)
+            tessellationManagerFailed = tessellationManager == nil
         }
         let key = RefinedPipelines.Key(
             sampleCount: sampleCount,

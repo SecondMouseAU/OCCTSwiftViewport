@@ -66,6 +66,11 @@ struct OffscreenTessellationTests {
         #expect(matched.tessellationMaxFactor == 48)
         #expect(matched.adaptiveTessellation == false)
         #expect(matched.uniformTessellationFactor == .fixed(6))
+
+        // The debug switch turns the live view's refinement off, so the snapshot follows it.
+        controller.debugDisableTessellation = true
+        let debug = OffscreenRenderOptions(matching: controller, width: 64, height: 64)
+        #expect(debug.renderingQuality == .standard)
     }
 
     @Test("The offscreen factor is never load-governed")

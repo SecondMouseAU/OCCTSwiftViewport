@@ -338,8 +338,9 @@ struct SurfaceRefinement: Hashable {
 
 /// The tessellated and mesh-shader pipelines `OffscreenRenderer` uses for one sample count.
 ///
-/// One set exists per sample count, maximum factor and mesh-shader choice (#165). Built through `RendererSharedSetup` exactly as the live renderer builds them. A path whose
-/// shaded pipeline fails is reported as unavailable, and its bodies draw their plain mesh.
+/// One set exists per sample count, maximum factor and mesh-shader choice (#165). Built through
+/// `RendererSharedSetup` exactly as the live renderer builds them. A path whose shaded pipeline
+/// fails is reported as unavailable, and its bodies draw their plain mesh.
 struct RefinedPipelines {
     struct Key: Hashable {
         let sampleCount: Int

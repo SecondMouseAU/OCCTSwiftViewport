@@ -578,7 +578,12 @@ struct OffscreenLiveParityTests {
         }
         var smoothing = ViewportConfiguration()
         smoothing.autoSmoothNormals = true
-        // Refined surface paths (#165), grid and axes off so only the bodies are compared.
+        // Refined surface paths (#165), grid and axes off so only the bodies are compared. The
+        // sphere is coarse enough that PN triangles visibly round it.
+        var faceted = ViewportRenderBattery.standardBodies()
+        faceted[1] = ViewportBody.sphere(
+            id: "sphere", radius: 0.6, segments: 14, rings: 10, color: faceted[1].color)
+        faceted[1].transform = ViewportRenderBattery.standardBodies()[1].transform
         func quality(
             _ quality: RenderingQuality, adaptive: Bool = true,
             uniform: UniformTessellationFactor = .loadAdaptive()
@@ -624,15 +629,16 @@ struct OffscreenLiveParityTests {
                 lighting: ViewportRenderBattery.shadowLighting(),
                 clipPlanes: [ClipPlane(normal: SIMD3(1, 0, 0), distance: 0)]),
             Scene(name: "xray", displayMode: .xray, selectedBodyIDs: ["sphere"]),
-            Scene(name: "enhanced", configuration: quality(.enhanced)),
+            Scene(name: "enhanced", configuration: quality(.enhanced), bodies: faceted),
             Scene(
                 name: "enhanced-uniform",
-                configuration: quality(.enhanced, adaptive: false, uniform: .fixed(6))),
+                configuration: quality(.enhanced, adaptive: false, uniform: .fixed(6)),
+                bodies: faceted),
             Scene(
                 name: "enhanced-shadows", configuration: quality(.enhanced),
-                bodies: ViewportRenderBattery.shadowBodies(),
+                bodies: faceted + [ViewportRenderBattery.shadowBodies()[2]],
                 lighting: ViewportRenderBattery.shadowLighting()),
-            Scene(name: "maximum", configuration: quality(.maximum)),
+            Scene(name: "maximum", configuration: quality(.maximum), bodies: faceted),
         ]
     }
 
@@ -690,7 +696,12 @@ struct OffscreenLiveParityTests {
         }
         let fraction = Double(differing) / Double(Self.width * Self.height)
         print("[offscreen-parity] \(sceneName): \(differing) px differ (\(fraction * 100)%)")
-        #expect(fraction < 0.01, "\(sceneName): \(differing) pixels differ from the live frame")
+        // Tessellation only moves a faceted silhouette by a pixel or two, ~0.7% of the frame for
+        // these scenes, so they get a tighter budget that a missing offscreen path would exceed.
+        let refinedScene = sceneName.hasPrefix("enhanced") || sceneName == "maximum"
+        let budget = refinedScene ? 0.002 : 0.01
+        #expect(
+            fraction < budget, "\(sceneName): \(differing) pixels differ from the live frame")
     }
 }
 
