@@ -498,7 +498,7 @@ struct GridAxisRenderingTests {
         var options = OffscreenRenderOptions(
             width: 16, height: 16, cameraState: topCamera,
             backgroundColor: SIMD4(0.95, 0.95, 0.95, 1),
-            appearance: .light)
+            appearance: .light, showGrid: false, showAxes: false)
         let light = try #require(offscreen(options))
         options.appearance = .dark
         let dark = try #require(offscreen(options))

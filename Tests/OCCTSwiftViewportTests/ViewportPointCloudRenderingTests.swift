@@ -46,9 +46,9 @@ struct ViewportPointCloudRenderingTests {
         )
 
         let opts = OffscreenRenderOptions(
-            width: 256, height: 192,
+            width: 256, height: 192, cameraState: CameraState(),
             backgroundColor: SIMD4<Float>(0, 0, 0, 1),  // black so any cloud pixel is non-zero
-            appearance: .light
+            appearance: .light, showGrid: false, showAxes: false
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
@@ -99,9 +99,8 @@ struct ViewportPointCloudRenderingTests {
         )
 
         let opts = OffscreenRenderOptions(
-            width: 256, height: 192,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-            appearance: .light
+            width: 256, height: 192, cameraState: CameraState(),
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false, showAxes: false
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
@@ -144,9 +143,8 @@ struct ViewportPointCloudRenderingTests {
         )
 
         let opts = OffscreenRenderOptions(
-            width: 256, height: 192,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-            appearance: .light
+            width: 256, height: 192, cameraState: CameraState(),
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false, showAxes: false
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")

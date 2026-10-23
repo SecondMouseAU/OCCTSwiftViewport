@@ -165,7 +165,7 @@ let body = ViewportBody.directMesh(
 - **Tessellation and mesh shaders are skipped** for direct bodies (`renderingQuality = .enhanced` has no effect on them).
 - **Pick caveat:** because `vertices` holds *mesh* vertices, a direct body does not carry separate B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast, and edge *display* all work.
 
-All render passes support direct bodies: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the overlay layer, and the GPU pick pass — in both `ViewportRenderer` and `OffscreenRenderer` — plus the selection/hover outline and per-triangle `triangleStyles` highlight in `ViewportRenderer` (`OffscreenRenderer` draws neither pass for any body).
+All render passes support direct bodies: shaded (opaque + transparent), shadow casting, the SSAO/silhouette depth prepass, the selection/hover outline, the per-triangle `triangleStyles` highlight, and the overlay layer in both `ViewportRenderer` and `OffscreenRenderer`, plus the GPU pick pass in `ViewportRenderer`.
 
 #### `usesDirectMesh: Bool`
 
@@ -265,7 +265,7 @@ When `false`, the body is drawn normally but excluded from the GPU pick buffer. 
 
 #### `renderLayer: RenderLayer`
 
-`.geometry` — normal depth test (default). `.overlay` — body is drawn after the selection outline pass with an always-pass depth state, visible even when occluded. Overlay bodies get no selection or hover outline. Used by manipulator widgets.
+`.geometry` — normal depth test (default). `.overlay` — body is drawn after the selection outline pass with an always-pass depth state, visible even when occluded, and casts no shadows. Overlay `.point` bodies (markers) are drawn the same way. Overlay bodies get no selection or hover outline. Used by manipulator widgets. Both `ViewportRenderer` and `OffscreenRenderer` honour it.
 
 #### `pickLayer: PickLayer`
 

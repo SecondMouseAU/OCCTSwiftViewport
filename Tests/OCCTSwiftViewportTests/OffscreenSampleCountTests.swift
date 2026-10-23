@@ -76,8 +76,8 @@ struct OffscreenSampleCountRenderTests {
         for count in [OffscreenRenderer.defaultSampleCount, sampleCount] {
             let options = OffscreenRenderOptions(
                 width: 64, height: 64, cameraState: camera, displayMode: .unlit,
-                backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-                appearance: .light, msaaSampleCount: count)
+                backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false, showAxes: false,
+                msaaSampleCount: count)
             let image = try #require(renderer.render(bodies: [panel()], options: options))
             let centre = centrePixelLuminance(image)
             #expect(

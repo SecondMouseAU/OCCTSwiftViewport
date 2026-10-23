@@ -97,7 +97,10 @@ public final class ViewportController: ObservableObject {
     @Published public private(set) var lastPickNDC: SIMD2<Float> = .zero
 
     /// Edge/wireframe intensity (0 = invisible, 1 = default and fully opaque; values above 1 act as 1).
-    @Published public var edgeIntensity: Float = 1.0
+    @Published public var edgeIntensity: Float = ViewportController.defaultEdgeIntensity
+
+    /// The `edgeIntensity` a new controller starts with; `OffscreenRenderOptions` defaults to it.
+    nonisolated public static let defaultEdgeIntensity: Float = 1.0
 
     /// Clipping planes for section views.
     ///
@@ -199,8 +202,14 @@ public final class ViewportController: ObservableObject {
 
     // MARK: - Initialization
 
+    /// The configuration `init()` uses when none is given: `.cad`.
+    ///
+    /// `OffscreenRenderOptions` takes its defaults from it, so a default offscreen render matches
+    /// a default live viewport.
+    nonisolated public static let defaultConfiguration = ViewportConfiguration.cad
+
     /// Creates a viewport controller with the specified configuration.
-    public init(configuration: ViewportConfiguration = .cad) {
+    public init(configuration: ViewportConfiguration = ViewportController.defaultConfiguration) {
         self.configuration = configuration
         self.cameraState = configuration.effectiveInitialCameraState
         self.displayMode = configuration.displayMode

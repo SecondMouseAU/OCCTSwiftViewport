@@ -126,9 +126,13 @@ struct DirectMeshRenderingTests {
         var lighting = LightingConfiguration.threePoint
         lighting.shadowsEnabled = true
         lighting.shadowIntensity = 0.6
-        var opts = OffscreenRenderOptions(
-            width: 160, height: 160, displayMode: .shaded, lightingConfiguration: lighting,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
+        // Isolate the shadow from the SSAO / silhouette composite, whose tone mapping compresses
+        // the light the shadow removes.
+        lighting.enableSSAO = false
+        var opts = OffscreenRenderOptions(width: 160, height: 160, displayMode: .shaded,
+                                          lightingConfiguration: lighting,
+                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light,
+                                          enableSilhouettes: false)
         if let cam = opts.cameraState.fit(to: [interleavedCaster, receiver], aspectRatio: 1, padding: 1.2) {
             opts.cameraState = cam
         }

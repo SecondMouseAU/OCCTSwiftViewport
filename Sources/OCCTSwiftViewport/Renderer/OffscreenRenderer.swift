@@ -73,6 +73,18 @@ public enum RenderAppearance: Sendable, Hashable {
 }
 
 /// Configuration for an offscreen render.
+///
+/// The fields mirror the live viewport's settings (`ViewportConfiguration` and the
+/// `ViewportController` state), so the same bodies and settings render the same way in both. Use
+/// `init(matching:width:height:)` to copy them from a live controller.
+///
+/// Image-based lighting and the HDR skybox (`drawBackground`) come from the environment map named
+/// by `LightingConfiguration.environmentMapURL` / `environmentMapData`. A map loaded imperatively
+/// with `ViewportRenderer.loadEnvironmentMap(...)` lives on that renderer and is not seen here.
+///
+/// What the offscreen path does **not** reproduce: PN-triangle tessellation and mesh shaders
+/// (`RenderingQuality`, `tessellationMaxFactor`, `adaptiveTessellation`), TAA, depth of field,
+/// frustum culling, and the GPU pick pass.
 public struct OffscreenRenderOptions: Sendable {
     public var width: Int
     public var height: Int
@@ -139,9 +151,55 @@ public struct OffscreenRenderOptions: Sendable {
 
     /// Edge intensity, mirroring `ViewportController.edgeIntensity`.
     ///
-    /// `0` hides edges, `1` (the default) is normal, and values toward `0` dim and depth-fade them.
-    /// Applies to both the quad-expanded and the native edge paths.
+    /// `0` hides the edges of meshed bodies, `1` (the default) is normal, and values toward `0`
+    /// dim and depth-fade them. Applies to both the quad-expanded and the native edge paths.
+    /// Edge-only bodies always draw in their body colour.
     public var edgeIntensity: Float
+
+    /// Section planes, matching `ViewportController.clipPlanes`.
+    ///
+    /// The first four enabled planes are applied to surfaces, edges, arcs and highlights; any
+    /// further ones are ignored, as in the live viewport.
+    public var clipPlanes: [ClipPlane]
+
+    /// Bodies drawn selected (tinted and ringed by the selection outline), matching
+    /// `ViewportController.selectedBodyIDs`.
+    public var selectedBodyIDs: Set<String>
+
+    /// Body drawn hovered (lighter tint and outline), matching `ViewportController.hoveredBodyID`.
+    ///
+    /// Ignored when the body is also in `selectedBodyIDs`.
+    public var hoveredBodyID: String?
+
+    /// Outline colour and width for selected bodies, matching
+    /// `ViewportConfiguration.selectionOutline`.
+    public var selectionOutline: SelectionOutlineStyle
+
+    /// Outline colour and width for the hovered body, matching `ViewportConfiguration.hoverOutline`.
+    public var hoverOutline: SelectionOutlineStyle
+
+    /// Whether interleaved bodies get crease-aware normal smoothing, matching
+    /// `ViewportConfiguration.autoSmoothNormals`.
+    public var autoSmoothNormals: Bool
+
+    /// Crease angle in radians for `autoSmoothNormals`, matching
+    /// `ViewportConfiguration.normalSmoothingCreaseAngle`.
+    public var normalSmoothingCreaseAngle: Float
+
+    /// Whether the screen-space depth silhouette pass runs, matching
+    /// `ViewportConfiguration.enableSilhouettes`.
+    ///
+    /// Silhouettes share a full-screen composite pass with SSAO
+    /// (`LightingConfiguration.enableSSAO`). That pass also applies ACES tone mapping with
+    /// `LightingConfiguration.exposure` and `whitePoint`, exactly as the live viewport does, and
+    /// is skipped in the `.wireframe` and `.unlit` display modes.
+    public var enableSilhouettes: Bool
+
+    /// Silhouette thickness, matching `ViewportConfiguration.silhouetteThickness`.
+    public var silhouetteThickness: Float
+
+    /// Silhouette darkness, matching `ViewportConfiguration.silhouetteIntensity`.
+    public var silhouetteIntensity: Float
 
     /// Optional explicit orthographic projection bounds (world units).
     ///
@@ -167,32 +225,52 @@ public struct OffscreenRenderOptions: Sendable {
     /// lookups.
     public var measurements: [ViewportMeasurement]
 
+    /// Creates render options.
+    ///
+    /// Every scene default is read from `ViewportController.defaultConfiguration` (and
+    /// `ViewportController.defaultEdgeIntensity`), so a default offscreen render shows what a
+    /// default `ViewportController` shows and the two cannot drift apart.
     public init(
         width: Int = 1024,
         height: Int = 768,
-        cameraState: CameraState = CameraState(),
-        displayMode: DisplayMode = .shadedWithEdges,
-        xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
-        lightingConfiguration: LightingConfiguration = .threePoint,
-        backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
-        darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration
-            .defaultDarkModeBackgroundColor,
+        cameraState: CameraState =
+            ViewportController.defaultConfiguration.effectiveInitialCameraState,
+        displayMode: DisplayMode = ViewportController.defaultConfiguration.displayMode,
+        xrayOpacity: Float = ViewportController.defaultConfiguration.xrayOpacity,
+        lightingConfiguration: LightingConfiguration =
+            ViewportController.defaultConfiguration.lightingConfiguration,
+        backgroundColor: SIMD4<Float> = ViewportController.defaultConfiguration.backgroundColor,
+        darkModeBackgroundColor: SIMD4<Float>? =
+            ViewportController.defaultConfiguration.darkModeBackgroundColor,
         appearance: RenderAppearance = .system,
-        showGrid: Bool = false,
-        showAxes: Bool = false,
-        msaaSampleCount: Int = 4,
-        gridBaseSpacing: Float = 1.0,
-        gridSubdivisions: Int = 10,
-        gridStyle: GridStyle = .plane,
-        gridSize: Float = 100.0,
-        axisLength: Float? = nil,
-        axisRadius: Float? = nil,
-        axisStyle: AxisStyle = .cylinder,
-        edgeLineConfiguration: EdgeLineConfiguration = .default,
+        showGrid: Bool = ViewportController.defaultConfiguration.showGrid,
+        showAxes: Bool = ViewportController.defaultConfiguration.showAxes,
+        msaaSampleCount: Int = ViewportController.defaultConfiguration.msaaSampleCount,
+        gridBaseSpacing: Float = ViewportController.defaultConfiguration.gridBaseSpacing,
+        gridSubdivisions: Int = ViewportController.defaultConfiguration.gridSubdivisions,
+        gridStyle: GridStyle = ViewportController.defaultConfiguration.gridStyle,
+        gridSize: Float = ViewportController.defaultConfiguration.gridSize,
+        axisLength: Float? = ViewportController.defaultConfiguration.axisLength,
+        axisRadius: Float? = ViewportController.defaultConfiguration.axisRadius,
+        axisStyle: AxisStyle = ViewportController.defaultConfiguration.axisStyle,
+        edgeLineConfiguration: EdgeLineConfiguration =
+            ViewportController.defaultConfiguration.edgeLineConfiguration,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
         measurements: [ViewportMeasurement] = [],
-        edgeIntensity: Float = 1.0
+        edgeIntensity: Float = ViewportController.defaultEdgeIntensity,
+        clipPlanes: [ClipPlane] = [],
+        selectedBodyIDs: Set<String> = [],
+        hoveredBodyID: String? = nil,
+        selectionOutline: SelectionOutlineStyle =
+            ViewportController.defaultConfiguration.selectionOutline,
+        hoverOutline: SelectionOutlineStyle = ViewportController.defaultConfiguration.hoverOutline,
+        autoSmoothNormals: Bool = ViewportController.defaultConfiguration.autoSmoothNormals,
+        normalSmoothingCreaseAngle: Float =
+            ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
+        enableSilhouettes: Bool = ViewportController.defaultConfiguration.enableSilhouettes,
+        silhouetteThickness: Float = ViewportController.defaultConfiguration.silhouetteThickness,
+        silhouetteIntensity: Float = ViewportController.defaultConfiguration.silhouetteIntensity
     ) {
         self.width = width
         self.height = height
@@ -218,6 +296,59 @@ public struct OffscreenRenderOptions: Sendable {
         self.pixelPan = pixelPan
         self.measurements = measurements
         self.edgeIntensity = edgeIntensity
+        self.clipPlanes = clipPlanes
+        self.selectedBodyIDs = selectedBodyIDs
+        self.hoveredBodyID = hoveredBodyID
+        self.selectionOutline = selectionOutline
+        self.hoverOutline = hoverOutline
+        self.autoSmoothNormals = autoSmoothNormals
+        self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle
+        self.enableSilhouettes = enableSilhouettes
+        self.silhouetteThickness = silhouetteThickness
+        self.silhouetteIntensity = silhouetteIntensity
+    }
+
+    /// Options that reproduce what a controller's live viewport currently shows.
+    ///
+    /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
+    /// selection and hover, and every `ViewportConfiguration` field the offscreen path honours.
+    /// Measurements are not copied; pass resolved ones in `measurements` to draw them.
+    @MainActor
+    public init(matching controller: ViewportController, width: Int, height: Int) {
+        let config = controller.configuration
+        self.init(
+            width: width,
+            height: height,
+            cameraState: controller.cameraState,
+            displayMode: controller.displayMode,
+            xrayOpacity: controller.xrayOpacity,
+            lightingConfiguration: controller.lightingConfiguration,
+            backgroundColor: config.backgroundColor,
+            darkModeBackgroundColor: config.darkModeBackgroundColor,
+            appearance: .system,
+            showGrid: controller.showGrid,
+            showAxes: controller.showAxes,
+            msaaSampleCount: config.msaaSampleCount,
+            gridBaseSpacing: config.gridBaseSpacing,
+            gridSubdivisions: config.gridSubdivisions,
+            gridStyle: config.gridStyle,
+            gridSize: config.gridSize,
+            axisLength: config.axisLength,
+            axisRadius: config.axisRadius,
+            axisStyle: config.axisStyle,
+            edgeLineConfiguration: config.edgeLineConfiguration,
+            edgeIntensity: controller.edgeIntensity,
+            clipPlanes: controller.clipPlanes,
+            selectedBodyIDs: controller.selectedBodyIDs,
+            hoveredBodyID: controller.hoveredBodyID,
+            selectionOutline: config.selectionOutline,
+            hoverOutline: config.hoverOutline,
+            autoSmoothNormals: config.autoSmoothNormals,
+            normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
+            enableSilhouettes: config.enableSilhouettes,
+            silhouetteThickness: config.silhouetteThickness,
+            silhouetteIntensity: config.silhouetteIntensity
+        )
     }
 
     /// The background colour for `appearance`: `darkModeBackgroundColor` when it renders dark and
@@ -258,6 +389,22 @@ private struct SampledPipelines {
     /// Optional only because pipeline construction could fail on a degenerate device.
     let visiblePointPipeline: MTLRenderPipelineState?
 
+    /// Selection-outline pipelines for interleaved and direct-mesh bodies.
+    let outlinePipeline: MTLRenderPipelineState?
+    let outlineDirectPipeline: MTLRenderPipelineState?
+
+    /// Per-triangle highlight pipelines (`ViewportBody.triangleStyles`) for interleaved and
+    /// direct-mesh bodies.
+    let highlightPipeline: MTLRenderPipelineState?
+    let highlightDirectPipeline: MTLRenderPipelineState?
+
+    /// HDR skybox background (`LightingConfiguration.drawBackground`).
+    let skyboxPipeline: MTLRenderPipelineState?
+
+    /// Stencil-only selection masks for interleaved and direct-mesh bodies.
+    let stencilMaskPipeline: MTLRenderPipelineState?
+    let stencilMaskDirectPipeline: MTLRenderPipelineState?
+
     init?(device: MTLDevice, library: MTLLibrary, sampleCount: Int) {
         let depthFormat: MTLPixelFormat = .depth32Float_stencil8
         let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
@@ -293,6 +440,27 @@ private struct SampledPipelines {
         visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat, label: "offscreen_visible_point")
+        outlinePipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
+        outlineDirectPipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
+        highlightPipeline = RendererSharedSetup.makeHighlightPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
+        highlightDirectPipeline = RendererSharedSetup.makeHighlightPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
+        skyboxPipeline = RendererSharedSetup.makeSkyboxPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat)
+        stencilMaskPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
+        stencilMaskDirectPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
     }
 }
 
@@ -322,6 +490,16 @@ public final class OffscreenRenderer: Sendable {
     private let shadowMapManager: ShadowMapManager
     private let depthState: MTLDepthStencilState
     private let transparentDepthState: MTLDepthStencilState
+    /// Marks selected bodies in the stencil buffer for the outline pass.
+    private let stencilWriteState: MTLDepthStencilState
+    /// Draws the outline only where the stencil is unmarked.
+    private let stencilTestState: MTLDepthStencilState
+    /// Marks the stencil without writing depth, for selected bodies the opaque pass did not mark.
+    private let stencilMarkState: MTLDepthStencilState
+    /// `.lessEqual`, no depth write: highlight triangles win ties with the shaded surface.
+    private let highlightDepthState: MTLDepthStencilState
+    /// Always-pass, no depth write: overlay-layer bodies draw on top of all geometry.
+    private let overlayDepthState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
     /// Axis cylinders and the cached `.plane` grid-line buffer.
     private let gridAxisBuffers: GridAxisBuffers
@@ -329,6 +507,15 @@ public final class OffscreenRenderer: Sendable {
     /// Image-based lighting from `LightingConfiguration.environmentMapURL`/`environmentMapData`,
     /// loaded on demand so headless renders light like the interactive viewport.
     private let environmentMapManager: EnvironmentMapManager
+
+    // SSAO / silhouette post-process (single sample, so independent of the MSAA count).
+    private let depthOnlyPipeline: MTLRenderPipelineState?
+    private let depthOnlyDirectPipeline: MTLRenderPipelineState?
+    private let ssaoCompositePipeline: MTLRenderPipelineState?
+    /// Single-sample colour the main pass resolves into when the composite runs.
+    private var postColorTexture: MTLTexture?
+    /// Single-sample depth written by the SSAO / silhouette depth prepass.
+    private var postDepthTexture: MTLTexture?
 
     // Cached textures (recreated if size changes)
     private var cachedWidth: Int = 0
@@ -406,6 +593,29 @@ public final class OffscreenRenderer: Sendable {
         else { return nil }
         self.transparentDepthState = transparentDepthState
 
+        guard let stencilWriteState = RendererSharedSetup.makeStencilWriteState(device: device),
+            let stencilTestState = RendererSharedSetup.makeStencilTestState(device: device),
+            let stencilMarkState = RendererSharedSetup.makeStencilMarkState(device: device),
+            let highlightDepthState = RendererSharedSetup.makeDepthStencilState(
+                device: device, compareFunction: .lessEqual, isDepthWriteEnabled: false),
+            let overlayDepthState = RendererSharedSetup.makeDepthStencilState(
+                device: device, compareFunction: .always, isDepthWriteEnabled: false)
+        else { return nil }
+        self.stencilWriteState = stencilWriteState
+        self.stencilTestState = stencilTestState
+        self.stencilMarkState = stencilMarkState
+        self.highlightDepthState = highlightDepthState
+        self.overlayDepthState = overlayDepthState
+
+        self.depthOnlyPipeline = RendererSharedSetup.makeDepthOnlyPipelineState(
+            device: device, library: library, vertexDescriptor: vertexDesc,
+            label: "offscreen_depth_only")
+        self.depthOnlyDirectPipeline = RendererSharedSetup.makeDepthOnlyPipelineState(
+            device: device, library: library, vertexDescriptor: directVertexDesc,
+            label: "offscreen_depth_only_direct")
+        self.ssaoCompositePipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
+            device: device, library: library, label: "offscreen_ssao_composite")
+
         guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
         }
@@ -435,7 +645,7 @@ public final class OffscreenRenderer: Sendable {
 
         // Ensure buffers for all bodies
         for body in bodies where body.isVisible {
-            ensureBuffers(for: body)
+            ensureBuffers(for: body, options: options)
         }
         pruneBufferCache(keeping: bodies)
 
@@ -511,6 +721,8 @@ public final class OffscreenRenderer: Sendable {
             options.edgeIntensity)
         let shadowParams2 = SIMD4<Float>(
             lighting.shadowLightSize, lighting.shadowSearchRadius, 0, 0)
+        let (clipPlaneVecs, clipPlaneCount) = RendererSharedSetup.packClipPlanes(
+            options.clipPlanes)
 
         // Auto-load (or clear) the environment named by lighting.environmentMapURL/Data.
         environmentMapManager.sync(with: lighting, commandQueue: commandQueue)
@@ -533,10 +745,22 @@ public final class OffscreenRenderer: Sendable {
                 shadowParams: shadowParams,
                 shadowParams2: shadowParams2,
                 iblParams: iblParams,
+                clipPlanes: clipPlaneVecs,
+                clipPlaneCount: clipPlaneCount,
                 unlit: options.displayMode == .unlit,
                 flatShading: !options.displayMode.usesSmoothShading
             )
         }
+
+        // SSAO / silhouette composite, gated as the live renderer gates it. It reads the main
+        // pass's colour from a single-sample intermediate and writes the final image to `resolve`.
+        let displayMode = options.displayMode
+        let compositeTargets: (color: MTLTexture, depth: MTLTexture)? =
+            (lighting.enableSSAO || options.enableSilhouettes)
+                && displayMode.showsSurfaces && displayMode != .unlit
+                && ssaoCompositePipeline != nil && depthOnlyPipeline != nil
+                && depthOnlyDirectPipeline != nil
+            ? postProcessTargets(width: w, height: h) : nil
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
@@ -560,7 +784,8 @@ public final class OffscreenRenderer: Sendable {
                     enc.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
-                    for body in bodies where body.isVisible {
+                    // Overlay bodies are UI affordances and cast no shadows, as in the live pass.
+                    for body in bodies where body.isVisible && body.renderLayer == .geometry {
                         guard let buffers = bodyBufferCache[body.id],
                             let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
                             buffers.indexCount > 0
@@ -590,14 +815,15 @@ public final class OffscreenRenderer: Sendable {
 
         // Main pass
         let bg = options.resolvedBackgroundColor
+        let mainColorTarget = compositeTargets?.color ?? resolve
         let passDesc = MTLRenderPassDescriptor()
         if sampleCount > 1, let msaaColor = msaaColorTexture {
             passDesc.colorAttachments[0].texture = msaaColor
-            passDesc.colorAttachments[0].resolveTexture = resolve
+            passDesc.colorAttachments[0].resolveTexture = mainColorTarget
             passDesc.colorAttachments[0].storeAction = .multisampleResolve
         } else {
-            // No MSAA: draw straight into the texture that is read back.
-            passDesc.colorAttachments[0].texture = resolve
+            // No MSAA: draw straight into the single-sample target.
+            passDesc.colorAttachments[0].texture = mainColorTarget
             passDesc.colorAttachments[0].storeAction = .store
         }
         passDesc.colorAttachments[0].loadAction = .clear
@@ -629,6 +855,16 @@ public final class OffscreenRenderer: Sendable {
             }
         }
 
+        // HDR skybox background, as the live viewport draws it when `drawBackground` is on.
+        if lighting.drawBackground, let cubeMap = environmentMapManager.cubeMap,
+            let skyboxPipeline = pipelines.skyboxPipeline
+        {
+            RendererSharedSetup.encodeSkybox(
+                encoder: mainEncoder, pipeline: skyboxPipeline, depthState: overlayDepthState,
+                viewProjection: viewProjection, lighting: lighting, cubeMap: cubeMap)
+            mainEncoder.setDepthStencilState(depthState)
+        }
+
         // Grid
         if options.showGrid {
             RendererSharedSetup.encodeGrid(
@@ -656,12 +892,133 @@ public final class OffscreenRenderer: Sendable {
             )
         }
 
-        // Bodies
-        let displayMode = options.displayMode
         let xrayOpacity = options.xrayOpacity
+
+        /// 1 = selected, 2 = hovered, 0 = neither (the shader's `isSelected` encoding).
+        func selectionState(of body: ViewportBody) -> UInt32 {
+            if options.selectedBodyIDs.contains(body.id) { return 1 }
+            return options.hoveredBodyID == body.id ? 2 : 0
+        }
+
+        /// Draws a body's shaded surface; the caller sets the depth-stencil state.
+        func encodeSurface(
+            _ buffers: BodyBuffersOffscreen,
+            uniforms: inout Uniforms,
+            bodyUniforms: inout BodyUniforms
+        ) {
+            guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0
+            else { return }
+            if let nb = buffers.normalBuffer {
+                // Direct-mesh path (Option A): position@0 + normal@2, no interleave.
+                mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+            } else {
+                mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+            }
+            mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(
+                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                mainEncoder.setFragmentTexture(shadowTex, index: 1)
+            }
+            mainEncoder.drawIndexedPrimitives(
+                type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                indexBuffer: ib, indexBufferOffset: 0)
+        }
+
+        /// Draws a body's edge polylines when the display mode shows edges, or the body has no
+        /// mesh, through the quad-expanded or native line pipeline.
+        func encodeEdges(
+            _ buffers: BodyBuffersOffscreen,
+            hasMesh: Bool,
+            uniforms: inout Uniforms,
+            bodyUniforms: BodyUniforms
+        ) {
+            let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
+            guard hasEdges, displayMode.showsEdges || !hasMesh,
+                let edgeVB = buffers.edgeVertexBuffer
+            else { return }
+            var edgeBodyUniforms = bodyUniforms
+            if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
+
+            let edgeConfig = options.edgeLineConfiguration
+            var edgeUniforms = EdgeUniforms(
+                uniforms: uniforms, configuration: edgeConfig,
+                viewportSize: SIMD2<Float>(Float(w), Float(h)))
+
+            if edgeConfig.useQuadExpansion,
+                let quadPipeline = pipelines.quadEdgePipeline,
+                let quadEdgeVB = buffers.quadEdgeVertexBuffer,
+                buffers.quadEdgeVertexCount > 0
+            {
+                mainEncoder.setRenderPipelineState(quadPipeline)
+                mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                mainEncoder.setVertexBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.drawPrimitives(
+                    type: .triangleStrip, vertexStart: 0,
+                    vertexCount: buffers.quadEdgeVertexCount)
+            } else {
+                // Native Metal line pipeline (backward compatible)
+                mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
+                mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                mainEncoder.setVertexBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBytes(
+                    &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.drawPrimitives(
+                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+            }
+        }
+
+        /// Draws a `.point` body as disc-masked point sprites (issue #28). See Shaders.metal
+        /// `visible_point_vertex` for the `pxPerWorldFactor` derivation.
+        func encodePoints(_ body: ViewportBody, _ buffers: BodyBuffersOffscreen) {
+            guard let pointPipeline = pipelines.visiblePointPipeline,
+                let positionBuf = buffers.pointPositionBuffer,
+                buffers.pointVertexCount > 0
+            else { return }
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = body.transform
+            var params = PointParamsSwift(
+                baseColor: body.color,
+                worldRadius: body.pointRadius,
+                pxPerWorldFactor: Float(h) * projMatrix.columns.1.y * 0.5,
+                useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+            )
+            mainEncoder.setRenderPipelineState(pointPipeline)
+            mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
+            // Without per-point colours, bind the positions as a placeholder so the shader's
+            // `vertexColors` argument is non-null (some validation layers care).
+            mainEncoder.setVertexBuffer(
+                buffers.pointColorBuffer ?? positionBuf, offset: 0, index: 1)
+            mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+            mainEncoder.setVertexBytes(
+                &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
+            mainEncoder.drawPrimitives(
+                type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
+        }
+
+        // Bodies. Overlay-layer bodies are drawn last, on top (see the overlay pass below).
         // Translucent bodies (issue #53) are deferred to a sorted back-to-front pass.
         var transparentBodies: [(body: ViewportBody, buffers: BodyBuffersOffscreen)] = []
-        for body in bodies where body.isVisible {
+        // Bodies whose opaque surface marked the stencil buffer, so the outline can ring them.
+        // Translucent, edge-only and wireframe-mode bodies never mark it, and an outline drawn
+        // for them would cover the whole expanded body instead of a ring.
+        var outlinedBodyIDs: Set<String> = []
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
             guard let buffers = bodyBufferCache[body.id] else { continue }
             // Point-cloud bodies are drawn in the dedicated pass below — skip
             // the mesh + wireframe paths entirely.
@@ -684,86 +1041,20 @@ public final class OffscreenRenderer: Sendable {
 
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
-            var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
+            let selState = selectionState(of: body)
+            var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: selState)
 
-            let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
-
-            // Shaded
-            if displayMode.showsSurfaces, hasMesh, !defersSurface, let vb = buffers.vertexBuffer,
-                let ib = buffers.indexBuffer
-            {
-                if let nb = buffers.normalBuffer {
-                    // Direct-mesh path (Option A): position@0 + normal@2, no interleave.
-                    mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+            if displayMode.showsSurfaces, hasMesh, !defersSurface {
+                if selState > 0 {
+                    mainEncoder.setDepthStencilState(stencilWriteState)
+                    mainEncoder.setStencilReferenceValue(1)
+                    outlinedBodyIDs.insert(body.id)
                 } else {
-                    mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    mainEncoder.setDepthStencilState(depthState)
                 }
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                mainEncoder.setFragmentTexture(matcapTexture, index: 0)
-                if shadowEnabled, let shadowTex = shadowMapManager.texture {
-                    mainEncoder.setFragmentTexture(shadowTex, index: 1)
-                }
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
-                    indexBuffer: ib, indexBufferOffset: 0)
+                encodeSurface(buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
             }
-
-            // Wireframe
-            let shouldDrawEdges = hasEdges && (displayMode.showsEdges || !hasMesh)
-            if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
-                var edgeBodyUniforms = bodyUniforms
-                if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
-
-                let edgeConfig = options.edgeLineConfiguration
-                let useQuadExpansion = edgeConfig.useQuadExpansion
-                var edgeUniforms = EdgeUniforms(
-                    uniforms: uniforms, configuration: edgeConfig,
-                    viewportSize: SIMD2<Float>(Float(w), Float(h)))
-
-                if useQuadExpansion,
-                    let quadPipeline = pipelines.quadEdgePipeline,
-                    let quadEdgeVB = buffers.quadEdgeVertexBuffer,
-                    buffers.quadEdgeVertexCount > 0
-                {
-                    mainEncoder.setRenderPipelineState(quadPipeline)
-                    mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(
-                        &edgeUniforms,
-                        length: MemoryLayout<EdgeUniforms>.size,
-                        index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &edgeUniforms,
-                        length: MemoryLayout<EdgeUniforms>.size,
-                        index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(
-                        type: .triangleStrip,
-                        vertexStart: 0,
-                        vertexCount: buffers.quadEdgeVertexCount)
-                } else {
-                    // Native Metal line pipeline (backward compatible)
-                    mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
-                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(
-                        &uniforms,
-                        length: MemoryLayout<Uniforms>.size,
-                        index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
-                }
-            }
+            encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
         // Transparent surface pass (issue #53): deferred translucent bodies,
@@ -778,89 +1069,263 @@ public final class OffscreenRenderer: Sendable {
             }
             let sorted = transparentBodies.sorted { centerDistanceSq($0) > centerDistanceSq($1) }
 
-            mainEncoder.setDepthStencilState(transparentDepthState)
-            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
-            if shadowEnabled, let shadowTex = shadowMapManager.texture {
-                mainEncoder.setFragmentTexture(shadowTex, index: 1)
-            }
             for t in sorted {
-                guard let vb = t.buffers.vertexBuffer, let ib = t.buffers.indexBuffer,
-                    t.buffers.indexCount > 0
-                else { continue }
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = t.body.transform
-                var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: 0)
+                let selState = selectionState(of: t.body)
+                var bodyUniforms = BodyUniforms(body: t.body, objectIndex: 0, isSelected: selState)
                 bodyUniforms.color.w = displayMode.surfaceOpacity(
                     forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
-                // Direct-mesh bodies (Option A) bind position@0 + normal@2 via directMeshPipeline;
-                // both pipelines share the same alpha-blend config so compositing is identical.
-                if let nb = t.buffers.normalBuffer {
-                    mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                // Selected/hovered bodies mark the stencil, as in the opaque pass, so the
+                // selection outline draws a ring around them, as live.
+                if selState > 0 {
+                    mainEncoder.setDepthStencilState(stencilMarkState)
+                    mainEncoder.setStencilReferenceValue(1)
+                    outlinedBodyIDs.insert(t.body.id)
                 } else {
-                    mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
-                    mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    mainEncoder.setDepthStencilState(transparentDepthState)
+                }
+                encodeSurface(t.buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+            mainEncoder.setDepthStencilState(transparentDepthState)
+        }
+
+        // Analytic arc edge pass (issue #48): each arc is sampled adaptively to its projected
+        // size with the live renderer's `ArcSampling`. With quad expansion on, the samples are
+        // expanded into quad strips so arcs take the configured width and dash pattern, as live;
+        // otherwise they are native lines. Same visibility rule as the edge pass: shown when the
+        // display mode draws edges, or when the body has no mesh. Buffers are built per render
+        // and the render waits for the GPU, so no pooling is needed here.
+        let edgeConfig = options.edgeLineConfiguration
+        let useQuadArcs = edgeConfig.useQuadExpansion && pipelines.quadEdgePipeline != nil
+        var arcVertices: [Float] = []
+        var arcQuadVertices: [Float] = []
+        var arcDraws:
+            [(
+                body: ViewportBody, hasMesh: Bool, start: Int, count: Int, quadStart: Int,
+                quadCount: Int
+            )] = []
+        let arcViewport = SIMD2<Float>(Float(w), Float(h))
+        for body in bodies where body.isVisible && !body.arcs.isEmpty {
+            let hasMesh = (bodyBufferCache[body.id]?.indexCount ?? 0) > 0
+            guard displayMode.showsEdges || !hasMesh else { continue }
+            let mvp = viewProjection * body.transform
+            let start = arcVertices.count / 6
+            let quadStart = arcQuadVertices.count / 9
+            for arc in body.arcs {
+                let segments = ArcSampling.segmentCount(
+                    arc: arc, mvp: mvp, viewportSize: arcViewport)
+                let points = RendererSharedBuffers.sampledArcPolyline(arc, segmentCount: segments)
+                for (previous, current) in zip(points, points.dropFirst()) {
+                    arcVertices.append(contentsOf: [
+                        previous.x, previous.y, previous.z, 0, 0, 0,
+                        current.x, current.y, current.z, 0, 0, 0,
+                    ])
+                }
+                if useQuadArcs {
+                    arcQuadVertices += RendererSharedBuffers.quadEdgeLineVertices(from: [points])
+                }
+            }
+            let count = arcVertices.count / 6 - start
+            let quadCount = arcQuadVertices.count / 9 - quadStart
+            if count > 0 { arcDraws.append((body, hasMesh, start, count, quadStart, quadCount)) }
+        }
+        let arcQuadBuffer =
+            useQuadArcs
+            ? RendererSharedBuffers.makeEdgeBuffer(device: device, edgeVertices: arcQuadVertices)
+            : nil
+        if let arcBuffer = RendererSharedBuffers.makeEdgeBuffer(
+            device: device, edgeVertices: arcVertices)
+        {
+            mainEncoder.setDepthStencilState(depthState)
+            if let arcQuadBuffer, let quadPipeline = pipelines.quadEdgePipeline {
+                mainEncoder.setRenderPipelineState(quadPipeline)
+                mainEncoder.setVertexBuffer(arcQuadBuffer, offset: 0, index: 0)
+            } else {
+                mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
+                mainEncoder.setVertexBuffer(arcBuffer, offset: 0, index: 0)
+            }
+            for draw in arcDraws {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = draw.body.transform
+                var arcBodyUniforms = BodyUniforms(body: draw.body, objectIndex: 0, isSelected: 0)
+                if !draw.hasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
+                mainEncoder.setFragmentBytes(
+                    &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                if arcQuadBuffer != nil {
+                    var edgeUniforms = EdgeUniforms(
+                        uniforms: uniforms, configuration: edgeConfig, viewportSize: arcViewport)
+                    mainEncoder.setVertexBytes(
+                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                    mainEncoder.drawPrimitives(
+                        type: .triangleStrip, vertexStart: draw.quadStart,
+                        vertexCount: draw.quadCount)
+                } else {
+                    mainEncoder.setVertexBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    mainEncoder.drawPrimitives(
+                        type: .line, vertexStart: draw.start, vertexCount: draw.count)
+                }
+            }
+        }
+
+        // Point-cloud pass (issue #28): geometry-layer `.point` bodies.
+        mainEncoder.setDepthStencilState(depthState)
+        for body in bodies
+        where body.isVisible && body.renderLayer == .geometry && body.primitiveKind == .point {
+            guard let buffers = bodyBufferCache[body.id] else { continue }
+            encodePoints(body, buffers)
+        }
+
+        // Per-triangle highlight pass (issue #25): composites `triangleStyles` over the shaded
+        // surface. `.lessEqual` without depth writes wins the tie with the surface underneath.
+        // The style buffer is built per render rather than cached, so mutating `triangleStyles`
+        // on an existing body (which keeps its `generation`) is always picked up.
+        if displayMode.showsSurfaces {
+            for body in bodies
+            where body.isVisible && body.renderLayer == .geometry && !body.triangleStyles.isEmpty {
+                guard let buffers = bodyBufferCache[body.id],
+                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                    buffers.indexCount > 0,
+                    let styleBuffer = RendererSharedBuffers.makeTriangleStyleBuffer(
+                        device: device, body: body, triangleCount: buffers.indexCount / 3),
+                    let pipeline = buffers.normalBuffer != nil
+                        ? pipelines.highlightDirectPipeline : pipelines.highlightPipeline
+                else { continue }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                mainEncoder.setRenderPipelineState(pipeline)
+                mainEncoder.setDepthStencilState(highlightDepthState)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                if let nb = buffers.normalBuffer {
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                 }
                 mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                mainEncoder.setFragmentBytes(
-                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
                 mainEncoder.drawIndexedPrimitives(
-                    type: .triangle, indexCount: t.buffers.indexCount,
-                    indexType: .uint32, indexBuffer: ib, indexBufferOffset: 0)
+                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                    indexBuffer: ib, indexBufferOffset: 0)
             }
         }
 
-        // Point-cloud pass (issue #28). Walks `.point` bodies and draws them
-        // as MTL point primitives via `visiblePointPipeline`. See
-        // Shaders.metal `visible_point_vertex` for `pxPerWorldFactor` derivation.
-        if let pointPipeline = pipelines.visiblePointPipeline {
-            let pxPerWorldFactor = Float(h) * projMatrix.columns.1.y * 0.5
-            var didBindPipeline = false
-            for body in bodies where body.isVisible && body.primitiveKind == .point {
+        // Stencil-mark selected meshed bodies no surface pass marked (every body when the display
+        // mode draws no surfaces) without drawing colour, so the outline below rings them too
+        // instead of skipping them.
+        let unmarkedSelected = bodies.filter { body in
+            body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
+                && selectionState(of: body) > 0 && !outlinedBodyIDs.contains(body.id)
+        }
+        if !unmarkedSelected.isEmpty {
+            mainEncoder.setDepthStencilState(stencilMarkState)
+            mainEncoder.setStencilReferenceValue(1)
+            for body in unmarkedSelected {
                 guard let buffers = bodyBufferCache[body.id],
-                    let positionBuf = buffers.pointPositionBuffer,
-                    buffers.pointVertexCount > 0
+                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                    buffers.indexCount > 0,
+                    let pipeline = buffers.normalBuffer != nil
+                        ? pipelines.stencilMaskDirectPipeline : pipelines.stencilMaskPipeline
                 else { continue }
-
-                if !didBindPipeline {
-                    mainEncoder.setRenderPipelineState(pointPipeline)
-                    mainEncoder.setDepthStencilState(depthState)
-                    didBindPipeline = true
-                }
-
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
-                let useColors = (buffers.pointColorBuffer != nil) ? UInt32(1) : UInt32(0)
-                var params = PointParamsSwift(
-                    baseColor: body.color,
-                    worldRadius: body.pointRadius,
-                    pxPerWorldFactor: pxPerWorldFactor,
-                    useVertexColors: useColors
-                )
-
-                mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
-                if let colorBuf = buffers.pointColorBuffer {
-                    mainEncoder.setVertexBuffer(colorBuf, offset: 0, index: 1)
-                } else {
-                    // Placeholder binding so the shader's `vertexColors`
-                    // argument is non-null (some validation layers care).
-                    mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 1)
+                mainEncoder.setRenderPipelineState(pipeline)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                if let nb = buffers.normalBuffer {
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
                 }
-                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
-                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
-                mainEncoder.setVertexBytes(
-                    &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
-
-                mainEncoder.drawPrimitives(
-                    type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.drawIndexedPrimitives(
+                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                    indexBuffer: ib, indexBufferOffset: 0)
+                outlinedBodyIDs.insert(body.id)
             }
+        }
+
+        // Selection outline pass: the body expanded in screen space, drawn only where the
+        // stencil is unmarked, which leaves a ring around each selected or hovered body.
+        if !outlinedBodyIDs.isEmpty {
+            mainEncoder.setDepthStencilState(stencilTestState)
+            mainEncoder.setStencilReferenceValue(1)
+            for body in bodies where body.isVisible && outlinedBodyIDs.contains(body.id) {
+                let style =
+                    selectionState(of: body) == 2 ? options.hoverOutline : options.selectionOutline
+                guard style.width > 0,
+                    let buffers = bodyBufferCache[body.id],
+                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                    buffers.indexCount > 0,
+                    let pipeline = buffers.normalBuffer != nil
+                        ? pipelines.outlineDirectPipeline : pipelines.outlinePipeline
+                else { continue }
+                var outlineParams = SelectionOutlineParamsSwift(
+                    viewProjectionMatrix: viewProjection,
+                    modelMatrix: body.transform,
+                    outlineColor: style.color,
+                    outlineWidth: style.width,
+                    viewportSize: SIMD2<Float>(Float(max(w, 1)), Float(max(h, 1)))
+                )
+                mainEncoder.setRenderPipelineState(pipeline)
+                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+                if let nb = buffers.normalBuffer {
+                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+                }
+                mainEncoder.setVertexBytes(
+                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
+                    index: 1)
+                mainEncoder.setFragmentBytes(
+                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
+                    index: 1)
+                // Section clip planes: the outline fragment discards clipped fragments.
+                var outlineUniforms = makeUniforms()
+                mainEncoder.setFragmentBytes(
+                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                mainEncoder.drawIndexedPrimitives(
+                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                    indexBuffer: ib, indexBufferOffset: 0)
+            }
+        }
+
+        // Overlay pass: `RenderLayer.overlay` bodies (manipulator widgets, markers), drawn last
+        // with always-pass depth and no depth writes so they stay visible through any geometry.
+        for body in bodies where body.isVisible && body.renderLayer == .overlay {
+            guard let buffers = bodyBufferCache[body.id] else { continue }
+            mainEncoder.setDepthStencilState(overlayDepthState)
+            if body.primitiveKind == .point {
+                encodePoints(body, buffers)
+                continue
+            }
+            let hasMesh =
+                buffers.vertexBuffer != nil && buffers.indexBuffer != nil && buffers.indexCount > 0
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = body.transform
+            var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
+            if displayMode.showsSurfaces, hasMesh {
+                encodeSurface(buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+            encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
         mainEncoder.endEncoding()
+
+        if let compositeTargets {
+            encodeSSAOComposite(
+                commandBuffer: commandBuffer,
+                bodies: bodies,
+                targets: compositeTargets,
+                output: resolve,
+                options: options,
+                nearPlane: nearClip,
+                farPlane: farClip,
+                makeUniforms: makeUniforms
+            )
+        }
+
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
@@ -936,6 +1401,118 @@ public final class OffscreenRenderer: Sendable {
     }
 
     // MARK: - Private
+
+    /// Single-sample colour + depth targets for the SSAO / silhouette composite, or `nil` if they
+    /// can't be allocated (the render then goes ahead without the composite).
+    private func postProcessTargets(width: Int, height: Int) -> (
+        color: MTLTexture, depth: MTLTexture
+    )? {
+        if let color = postColorTexture, let depth = postDepthTexture,
+            color.width == width, color.height == height
+        {
+            return (color, depth)
+        }
+        let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        colorDesc.usage = [.renderTarget, .shaderRead]
+        colorDesc.storageMode = .private
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .depth32Float, width: width, height: height, mipmapped: false)
+        depthDesc.usage = [.renderTarget, .shaderRead]
+        depthDesc.storageMode = .private
+        postColorTexture = device.makeTexture(descriptor: colorDesc)
+        postDepthTexture = device.makeTexture(descriptor: depthDesc)
+        guard let color = postColorTexture, let depth = postDepthTexture else {
+            postColorTexture = nil
+            postDepthTexture = nil
+            return nil
+        }
+        return (color, depth)
+    }
+
+    /// Encodes the live renderer's SSAO / silhouette post-process: a single-sample depth prepass,
+    /// then the `ssao_fragment` composite from `targets.color` into `output`.
+    ///
+    /// The composite shader also applies ACES tone mapping (`exposure`, `whitePoint`), as on the
+    /// live path. Depth of field is never applied offscreen.
+    private func encodeSSAOComposite(
+        commandBuffer: MTLCommandBuffer,
+        bodies: [ViewportBody],
+        targets: (color: MTLTexture, depth: MTLTexture),
+        output: MTLTexture,
+        options: OffscreenRenderOptions,
+        nearPlane: Float,
+        farPlane: Float,
+        makeUniforms: () -> Uniforms
+    ) {
+        guard let compositePipeline = ssaoCompositePipeline,
+            let depthPipeline = depthOnlyPipeline,
+            let depthDirectPipeline = depthOnlyDirectPipeline
+        else { return }
+
+        // Depth prepass. Like the live renderer it writes only opaque geometry-layer meshes
+        // (`ViewportRenderer.writesSSAODepth`), discarding fragments behind the section planes.
+        let depthPass = MTLRenderPassDescriptor()
+        depthPass.depthAttachment.texture = targets.depth
+        depthPass.depthAttachment.loadAction = .clear
+        depthPass.depthAttachment.storeAction = .store
+        depthPass.depthAttachment.clearDepth = 1.0
+        if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthPass) {
+            encoder.setDepthStencilState(depthState)
+            for body in bodies where body.isVisible && ViewportRenderer.writesSSAODepth(body) {
+                guard let buffers = bodyBufferCache[body.id],
+                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                    buffers.indexCount > 0
+                else { continue }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                if let nb = buffers.normalBuffer {
+                    encoder.setRenderPipelineState(depthDirectPipeline)
+                    encoder.setVertexBuffer(vb, offset: 0, index: 0)
+                    encoder.setVertexBuffer(nb, offset: 0, index: 2)
+                } else {
+                    encoder.setRenderPipelineState(depthPipeline)
+                    encoder.setVertexBuffer(vb, offset: 0, index: 0)
+                }
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                encoder.drawIndexedPrimitives(
+                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                    indexBuffer: ib, indexBufferOffset: 0)
+            }
+            encoder.endEncoding()
+        }
+
+        let compositePass = MTLRenderPassDescriptor()
+        compositePass.colorAttachments[0].texture = output
+        compositePass.colorAttachments[0].loadAction = .dontCare
+        compositePass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
+        else { return }
+        let lighting = options.lightingConfiguration
+        var params = SSAOParamsSwift(
+            texelSize: SIMD2<Float>(
+                1.0 / Float(max(options.width, 1)), 1.0 / Float(max(options.height, 1))),
+            radius: lighting.ssaoRadius,
+            intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
+            nearPlane: nearPlane,
+            farPlane: farPlane,
+            silhouetteThickness: options.enableSilhouettes ? options.silhouetteThickness : 0.0,
+            silhouetteIntensity: options.enableSilhouettes ? options.silhouetteIntensity : 0.0,
+            exposure: lighting.exposure,
+            whitePoint: lighting.whitePoint,
+            dofAperture: 0,
+            dofFocalDistance: 0,
+            dofMaxBlurRadius: 0,
+            dofEnabled: 0
+        )
+        encoder.setRenderPipelineState(compositePipeline)
+        encoder.setFragmentTexture(targets.depth, index: 0)
+        encoder.setFragmentTexture(targets.color, index: 1)
+        encoder.setFragmentBytes(&params, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
 
     private func ensureTextures(width: Int, height: Int, sampleCount: Int) {
         guard width != cachedWidth || height != cachedHeight || sampleCount != cachedSampleCount
@@ -1020,11 +1597,25 @@ public final class OffscreenRenderer: Sendable {
     /// Number of bodies with cached GPU buffers; exposed for tests.
     var cachedBodyCount: Int { bodyBufferCache.count }
 
-    private func ensureBuffers(for body: ViewportBody) {
+    private func ensureBuffers(for body: ViewportBody, options: OffscreenRenderOptions) {
         let currentGen = body.generation
-        if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen { return }
+        // Crease-smoothed normals (issue #48) depend on the options as well as the body, so the
+        // cached mesh is reused only when it was built with the same smoothing.
+        let smoothingApplies =
+            options.autoSmoothNormals && !body.usesDirectMesh && !body.vertexData.isEmpty
+            && !body.indices.isEmpty
+        let smoothingKey: Float? = smoothingApplies ? options.normalSmoothingCreaseAngle : nil
+        if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen,
+            bodyBufferCache[body.id]?.smoothingKey == smoothingKey
+        {
+            return
+        }
 
-        let mesh = RendererSharedBuffers.makeMeshBuffers(device: device, body: body)
+        let smoothed = RendererSharedBuffers.smoothedVertexData(
+            for: body, autoSmoothNormals: options.autoSmoothNormals,
+            creaseAngle: options.normalSmoothingCreaseAngle)
+        let mesh = RendererSharedBuffers.makeMeshBuffers(
+            device: device, body: body, interleavedVertexData: smoothed)
 
         let nativeEdgeVertices = RendererSharedBuffers.nativeEdgeLineVertices(from: body.edges)
         let nativeEdgeVB = RendererSharedBuffers.makeEdgeBuffer(
@@ -1062,7 +1653,8 @@ public final class OffscreenRenderer: Sendable {
             vertexCount: mesh.vertexCount,
             pointPositionBuffer: pointPositionVB,
             pointVertexCount: pointPositionVB != nil ? body.vertices.count : 0,
-            pointColorBuffer: pointColorVB
+            pointColorBuffer: pointColorVB,
+            smoothingKey: smoothingKey
         )
         bodyGeneration[body.id] = currentGen
     }
@@ -1097,4 +1689,7 @@ private struct BodyBuffersOffscreen {
     /// Nil when `body.vertexColors` is empty or its length doesn't match `body.vertices` — the pass
     /// falls back to `body.color` in that case.
     let pointColorBuffer: MTLBuffer?
+
+    /// Crease angle the mesh normals were smoothed with, or `nil` when they are the body's own.
+    let smoothingKey: Float?
 }

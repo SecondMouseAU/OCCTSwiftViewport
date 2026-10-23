@@ -154,7 +154,7 @@ struct LightingConfigShadingTests {
         let options = OffscreenRenderOptions(
             width: 32, height: 32, cameraState: camera ?? topCamera, displayMode: .shaded,
             lightingConfiguration: lighting, backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-            appearance: .light)
+            appearance: .light, showGrid: false, showAxes: false)
         guard let image = renderer.render(bodies: [body], options: options) else { return nil }
         return Self.centrePixel(image)
     }

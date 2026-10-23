@@ -28,7 +28,9 @@ func render(_ bodies: [ViewportBody], to name: String, width: Int = 1280, height
     opts.height = height
     opts.showGrid = false
     opts.showAxes = false
-    if let view { opts.cameraState = view }   // pick a viewpoint (default looks down +Z)
+    // Pinned: the option defaults now follow a live viewport (`.shaded`, isometric camera).
+    opts.displayMode = .shadedWithEdges
+    opts.cameraState = view ?? CameraState()   // pick a viewpoint (default looks down +Z)
     if let cam = opts.cameraState.fit(to: visible, aspectRatio: Float(width) / Float(height), padding: 1.25) {
         opts.cameraState = cam
     }

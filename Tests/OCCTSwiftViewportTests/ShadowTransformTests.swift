@@ -69,6 +69,8 @@ struct ShadowTransformTests {
         var lighting = LightingConfiguration.threePoint
         lighting.shadowsEnabled = true
         lighting.shadowIntensity = 0.7
+        // Keep the SSAO / silhouette composite (and its tone mapping) out of the shadow check.
+        lighting.enableSSAO = false
         // Near top-down, so the key light's shadow (cast toward -X/-Z) is not hidden behind the
         // caster as it would be from a camera on the light's side.
         var camera = CameraState()
@@ -78,7 +80,7 @@ struct ShadowTransformTests {
         return OffscreenRenderOptions(
             width: 160, height: 160, cameraState: camera, displayMode: .shaded,
             lightingConfiguration: lighting, backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-            appearance: .light)
+            appearance: .light, enableSilhouettes: false)
     }
 
     @Test("A transformed scene shadows exactly like the same scene baked into its vertices")

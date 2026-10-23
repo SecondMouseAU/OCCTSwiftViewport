@@ -9,11 +9,20 @@ nav_order: 10
 `OffscreenRenderer` renders `[ViewportBody]` to a `CGImage` or PNG file without
 an `MTKView` or a window. It uses the same Metal pipelines as the interactive
 viewport — the same Cook-Torrance GGX shading, the same shadow map, the same
-transparent-surface sort — so headless output is visually identical to what a
-user sees on screen. An environment map named by the lighting configuration's
-`environmentMapURL` or `environmentMapData` is loaded automatically and lights
-headless renders too; the skybox background (`drawBackground`) is not drawn
-headlessly, so the image keeps `backgroundColor` behind the geometry.
+transparent-surface sort, the same clip planes, highlights, selection outline,
+overlay layer and SSAO / silhouette / tone-map composite — so for the same settings
+headless output matches what a user sees on screen. An environment map named by the
+lighting configuration's `environmentMapURL` or `environmentMapData` is loaded
+automatically, lights headless renders, and is drawn as the skybox background when
+`drawBackground` is on. To snapshot the current viewport, build the options from its
+controller:
+
+```swift
+let options = OffscreenRenderOptions(matching: controller, width: 1024, height: 768)
+```
+
+The headless path does not do tessellation, mesh shaders, TAA or depth of field; see
+[Parity with the live viewport](../../reference/Rendering.md#parity-with-the-live-viewport).
 
 Typical uses: documentation figures, thumbnail generation, CI regression images,
 export workflows, and integration tests that check rendering without a display.
@@ -62,14 +71,14 @@ if let image = renderer.render(bodies: [body], options: options) {
 |---|---|---|---|
 | `width` | `Int` | `1024` | Output pixel width |
 | `height` | `Int` | `768` | Output pixel height |
-| `cameraState` | `CameraState` | `CameraState()` | Camera position and projection |
-| `displayMode` | `DisplayMode` | `.shadedWithEdges` | See [Display modes](#display-modes) |
+| `cameraState` | `CameraState` | `.isometric` | Camera position and projection |
+| `displayMode` | `DisplayMode` | `.shaded` | See [Display modes](#display-modes) |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear (light appearance) |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `(0.12, 0.12, 0.12, 1)` | Dark-appearance background; `nil` = same as light |
 | `appearance` | `RenderAppearance` | `.system` | `.system` (follows the OS, like onscreen), `.light` or `.dark` |
-| `showGrid` | `Bool` | `false` | Ground grid on the XY plane |
-| `showAxes` | `Bool` | `false` | RGB world-space axes |
+| `showGrid` | `Bool` | `true` | Ground grid on the XY plane |
+| `showAxes` | `Bool` | `true` | RGB world-space axes |
 | `gridStyle` | `GridStyle` | `.plane` | Line grid with a faint fill, or `.dots` |
 | `gridSize` | `Float` | `100` | Side of the square grid around the origin |
 | `axisLength` | `Float?` | `nil` | Axis length from the origin; `nil` sizes it to the bodies |
@@ -82,12 +91,17 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge (+x right, +y down) |
 | `measurements` | `[ViewportMeasurement]` | `[]` | See [Measurement overlays](#measurement-overlays) |
 
-All fields have defaults so you can construct with only the overrides you need:
+All fields have defaults so you can construct with only the overrides you need. The scene
+defaults are those of a default `ViewportController` (`ViewportController.defaultConfiguration`,
+the `.cad` preset), so a default render looks like a default viewport: shaded, grid and axes on,
+isometric camera, SSAO and silhouettes on. The table lists the most-used fields; see the
+[reference](../../reference/Rendering.md#offscreenrenderoptions) for all of them.
 
 ```swift
-var options = OffscreenRenderOptions()   // 1024×768, shadedWithEdges, threePoint
+var options = OffscreenRenderOptions()   // 1024×768, .shaded, .threePoint, grid + axes
 options.backgroundColor = SIMD4<Float>(1, 1, 1, 1)   // white background
-options.showGrid = true
+options.showGrid = false                             // just the model
+options.showAxes = false
 ```
 
 ---

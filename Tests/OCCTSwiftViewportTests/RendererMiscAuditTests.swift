@@ -111,8 +111,7 @@ struct EmptiedBodyTests {
         }
         var opts = OffscreenRenderOptions(
             width: 64, height: 64, cameraState: frontCamera,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
-            appearance: .light)
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false, showAxes: false)
         opts.displayMode = .unlit
 
         let full = try #require(renderer.render(bodies: [quadBody(id: "a")], options: opts))
@@ -420,11 +419,11 @@ struct TriangleStylesCountTests {
 
     @Test("Only a non-empty, exactly matching triangleStyles array is used")
     func matching() {
-        #expect(ViewportRenderer.triangleStylesMatch(styleCount: 4, triangleCount: 4))
-        #expect(!ViewportRenderer.triangleStylesMatch(styleCount: 3, triangleCount: 4))
-        #expect(!ViewportRenderer.triangleStylesMatch(styleCount: 5, triangleCount: 4))
-        #expect(!ViewportRenderer.triangleStylesMatch(styleCount: 0, triangleCount: 4))
-        #expect(!ViewportRenderer.triangleStylesMatch(styleCount: 0, triangleCount: 0))
+        #expect(RendererSharedBuffers.triangleStylesMatch(styleCount: 4, triangleCount: 4))
+        #expect(!RendererSharedBuffers.triangleStylesMatch(styleCount: 3, triangleCount: 4))
+        #expect(!RendererSharedBuffers.triangleStylesMatch(styleCount: 5, triangleCount: 4))
+        #expect(!RendererSharedBuffers.triangleStylesMatch(styleCount: 0, triangleCount: 4))
+        #expect(!RendererSharedBuffers.triangleStylesMatch(styleCount: 0, triangleCount: 0))
     }
 }
 

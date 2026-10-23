@@ -76,10 +76,13 @@ Central hub for all viewport state. Create one with `@StateObject` and pass it t
 #### `init(configuration:)`
 
 ```swift
-public init(configuration: ViewportConfiguration = .cad)
+public init(configuration: ViewportConfiguration = ViewportController.defaultConfiguration)
+
+nonisolated public static let defaultConfiguration: ViewportConfiguration  // .cad
+nonisolated public static let defaultEdgeIntensity: Float                 // 1.0
 ```
 
-Creates a controller initialised from `configuration`. All `@Published` properties seed from the configuration's values.
+Creates a controller initialised from `configuration`. All `@Published` properties seed from the configuration's values. `defaultConfiguration` and `defaultEdgeIntensity` are also where `OffscreenRenderOptions` takes its defaults, so a default offscreen render matches a default controller.
 
 ```swift
 let controller = ViewportController(configuration: .cadHighQuality)
