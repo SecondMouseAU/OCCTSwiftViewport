@@ -46,8 +46,9 @@ struct SurfaceTransparencyTests {
             Issue.record("Metal device unavailable; skipping headless render test")
             return
         }
-        let opts = OffscreenRenderOptions(width: 200, height: 200, cameraState: camera,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        let opts = OffscreenRenderOptions(
+            width: 200, height: 200, cameraState: camera,
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
 
         guard let opaqueImg = renderer.render(bodies: scene(blueAlpha: 1.0), options: opts),
               let transImg = renderer.render(bodies: scene(blueAlpha: 0.3), options: opts) else {

@@ -144,6 +144,29 @@ struct GridAxisGeometryTests {
         #expect(dark.dot.w == 1)
     }
 
+    @Test("Automatic cylinder radius scales with the axis length; an explicit radius wins")
+    func axisRadiusFollowsLength() {
+        #expect(
+            GridAxisGeometry.resolvedAxisRadius(explicit: nil, style: .cylinder, axisLength: 2)
+                == 0.02)
+        #expect(
+            GridAxisGeometry.resolvedAxisRadius(explicit: nil, style: .cylinder, axisLength: 150)
+                == 1.5)
+        #expect(
+            GridAxisGeometry.resolvedAxisRadius(explicit: 0.05, style: .cylinder, axisLength: 150)
+                == 0.05)
+        #expect(
+            GridAxisGeometry.resolvedAxisRadius(
+                explicit: nil, style: .constantScreenWidth, axisLength: 150) == 0.02)
+
+        // Scene-sized axes on a large model get a proportionate radius in both renderers.
+        let model = BoundingBox(min: SIMD3(-100, -10, -10), max: SIMD3(100, 10, 10))
+        let live = GridAxisSettings(configuration: ViewportConfiguration(), sceneBounds: model)
+        let headless = GridAxisSettings(options: OffscreenRenderOptions(), sceneBounds: model)
+        #expect(abs(live.axisRadius - 1.5) < 1e-4)
+        #expect(live.axisRadius == headless.axisRadius)
+    }
+
     @Test("Automatic axis length follows the scene; an explicit length wins")
     func axisLengthFollowsScene() {
         let model = BoundingBox(min: SIMD3(-10, -4, 0), max: SIMD3(6, 4, 3))
@@ -166,7 +189,8 @@ struct GridAxisGeometryTests {
                 == GridAxisGeometry.emptySceneAxisLength)
 
         // Offscreen and onscreen settings resolve the same way.
-        let fromOptions = GridAxisSettings(options: OffscreenRenderOptions(), sceneBounds: model)
+        let fromOptions = GridAxisSettings(
+            options: OffscreenRenderOptions(appearance: .light), sceneBounds: model)
         let fromConfig = GridAxisSettings(
             configuration: ViewportConfiguration(), sceneBounds: model)
         #expect(fromOptions.axisLength == fromConfig.axisLength)
@@ -282,8 +306,10 @@ struct GridAxisConfigurationWiringTests {
     @Test("Offscreen renders pick light or dark backgrounds from their appearance")
     func offscreenAppearance() {
         let custom = SIMD4<Float>(0.2, 0.4, 0.6, 1)
-        var options = OffscreenRenderOptions(backgroundColor: custom)
-        #expect(options.appearance == .light)
+        // Offscreen follows onscreen: the default is the system appearance.
+        #expect(OffscreenRenderOptions().appearance == .system)
+
+        var options = OffscreenRenderOptions(backgroundColor: custom, appearance: .light)
         #expect(options.resolvedBackgroundColor == custom)
         options.appearance = .dark
         #expect(
@@ -291,7 +317,7 @@ struct GridAxisConfigurationWiringTests {
         options.darkModeBackgroundColor = nil
         #expect(options.resolvedBackgroundColor == custom)
         #expect(
-            OffscreenRenderOptions().darkModeBackgroundColor
+            OffscreenRenderOptions(appearance: .light).darkModeBackgroundColor
                 == ViewportConfiguration().darkModeBackgroundColor)
     }
 
@@ -304,7 +330,7 @@ struct GridAxisConfigurationWiringTests {
 
     @Test("OffscreenRenderOptions defaults match ViewportConfiguration's grid and axis defaults")
     func offscreenDefaultsMatch() {
-        let options = OffscreenRenderOptions()
+        let options = OffscreenRenderOptions(appearance: .light)
         let configuration = ViewportConfiguration()
         var fromConfig = GridAxisSettings(configuration: configuration)
         fromConfig.gridBaseSpacing = options.gridBaseSpacing
@@ -340,7 +366,8 @@ struct GridAxisRenderingTests {
     private func baseOptions() -> OffscreenRenderOptions {
         OffscreenRenderOptions(
             width: Self.size, height: Self.size, cameraState: topCamera,
-            backgroundColor: Self.black)
+            backgroundColor: Self.black,
+            appearance: .light)
     }
 
     private func live(
@@ -439,11 +466,39 @@ struct GridAxisRenderingTests {
         }
     }
 
+    @Test("Scene-sized axes get a proportionate radius, not a hairline")
+    func sceneSizedAxesAreThick() throws {
+        // A small marker far from the origin sizes the axes to ~150 units; from a front view at
+        // distance 100 the automatic 1 % radius is ~5 px wide, a fixed 0.02 only the
+        // 1 px centre line.
+        var marker = ViewportBody.box(
+            id: "marker", width: 2, height: 2, depth: 2, color: SIMD4(0.2, 0.2, 0.8, 1))
+        for i in stride(from: 0, to: marker.vertexData.count, by: 6) {
+            marker.vertexData[i] += 100
+            marker.vertexData[i + 1] += 60
+        }
+        let camera = StandardView.front.cameraState(distance: 100)
+        func redThickness(radius: Float?) throws -> Int {
+            var options = baseOptions()
+            options.cameraState = camera
+            options.displayMode = .unlit
+            options.showAxes = true
+            options.axisRadius = radius
+            let red = Self.redPixels(try #require(offscreen(options, bodies: [marker])))
+            return red.filter { $0.0 == Self.size / 2 + 20 }.count
+        }
+        let automatic = try redThickness(radius: nil)
+        let fixed = try redThickness(radius: 0.02)
+        #expect(automatic >= 4, "automatic axis only \(automatic) px wide")
+        #expect(automatic > fixed, "automatic \(automatic) px vs fixed \(fixed) px")
+    }
+
     @Test("Offscreen .dark renders the dark background, .light the light one")
     func offscreenDarkBackground() throws {
         var options = OffscreenRenderOptions(
             width: 16, height: 16, cameraState: topCamera,
-            backgroundColor: SIMD4(0.95, 0.95, 0.95, 1))
+            backgroundColor: SIMD4(0.95, 0.95, 0.95, 1),
+            appearance: .light)
         let light = try #require(offscreen(options))
         options.appearance = .dark
         let dark = try #require(offscreen(options))

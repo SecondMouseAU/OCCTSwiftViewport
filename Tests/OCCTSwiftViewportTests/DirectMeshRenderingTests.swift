@@ -49,8 +49,9 @@ struct DirectMeshRenderingTests {
 
         // Identical options + camera for both renders (fit to the shared bounds once).
         // A baseline (interleaved vs itself) absorbs MSAA edge-resolve nondeterminism.
-        var opts = OffscreenRenderOptions(width: 128, height: 128, displayMode: .shaded,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        var opts = OffscreenRenderOptions(
+            width: 128, height: 128, displayMode: .shaded,
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
         if let cam = opts.cameraState.fit(to: [interleaved], aspectRatio: 1, padding: 1.3) {
             opts.cameraState = cam
         }
@@ -125,9 +126,9 @@ struct DirectMeshRenderingTests {
         var lighting = LightingConfiguration.threePoint
         lighting.shadowsEnabled = true
         lighting.shadowIntensity = 0.6
-        var opts = OffscreenRenderOptions(width: 160, height: 160, displayMode: .shaded,
-                                          lightingConfiguration: lighting,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        var opts = OffscreenRenderOptions(
+            width: 160, height: 160, displayMode: .shaded, lightingConfiguration: lighting,
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
         if let cam = opts.cameraState.fit(to: [interleavedCaster, receiver], aspectRatio: 1, padding: 1.2) {
             opts.cameraState = cam
         }
@@ -278,8 +279,9 @@ struct DirectMeshRenderingTests {
         let red = ViewportBody.box(id: "red", width: 2, height: 2, depth: 2,
                                    color: SIMD4<Float>(1, 0, 0, 1))
 
-        let opts = OffscreenRenderOptions(width: 160, height: 160, cameraState: camera,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        let opts = OffscreenRenderOptions(
+            width: 160, height: 160, cameraState: camera,
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
         guard let imgInterleaved = renderer.render(bodies: [red, panel(direct: false)], options: opts),
               let imgDirect = renderer.render(bodies: [red, panel(direct: true)], options: opts) else {
             Issue.record("renderer returned nil image")

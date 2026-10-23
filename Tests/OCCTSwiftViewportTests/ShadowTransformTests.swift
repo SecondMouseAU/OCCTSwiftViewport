@@ -77,7 +77,8 @@ struct ShadowTransformTests {
         camera.pivot = SIMD3<Float>(0, -0.9, 0)
         return OffscreenRenderOptions(
             width: 160, height: 160, cameraState: camera, displayMode: .shaded,
-            lightingConfiguration: lighting, backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+            lightingConfiguration: lighting, backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light)
     }
 
     @Test("A transformed scene shadows exactly like the same scene baked into its vertices")

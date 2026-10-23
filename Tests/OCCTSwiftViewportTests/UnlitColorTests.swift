@@ -41,8 +41,9 @@ struct UnlitColorTests {
             Issue.record("Metal device unavailable; skipping headless render test")
             return
         }
-        let base = OffscreenRenderOptions(width: 64, height: 64, cameraState: camera,
-                                          backgroundColor: SIMD4<Float>(0, 0, 0, 1))
+        let base = OffscreenRenderOptions(
+            width: 64, height: 64, cameraState: camera, backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light)
         var unlitOpts = base; unlitOpts.displayMode = .unlit
         var shadedOpts = base; shadedOpts.displayMode = .shaded
 

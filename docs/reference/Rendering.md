@@ -98,13 +98,13 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, IBL. |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1.0)` | RGBA background colour in the light appearance, linear space. |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `ViewportConfiguration.defaultDarkModeBackgroundColor` | Background in the dark appearance; `nil` uses `backgroundColor` for both. Matches `ViewportConfiguration.darkModeBackgroundColor`. |
-| `appearance` | `RenderAppearance` | `.light` | Which background the render uses: `.light`, `.dark`, or `.system` (the process's current appearance). See below. |
+| `appearance` | `RenderAppearance` | `.system` | Which background the render uses: `.system` (the system appearance at render time, like the onscreen view), `.light` or `.dark`. Pin one for reproducible output. See below. |
 | `showGrid` | `Bool` | `false` | Draw the ground grid (XY plane). |
 | `showAxes` | `Bool` | `false` | Draw the RGB world-space axes. |
 | `gridStyle` | `GridStyle` | `.plane` | Grid style; matches `ViewportConfiguration.gridStyle`. |
 | `gridSize` | `Float` | `100` | Side of the square grid around the origin; matches `ViewportConfiguration.gridSize`. |
 | `axisLength` | `Float?` | `nil` | Axis length; `nil` sizes the axes to the rendered bodies, as `ViewportConfiguration.axisLength` does. |
-| `axisRadius` | `Float` | `0.02` | Axis radius; matches `ViewportConfiguration.axisRadius`. |
+| `axisRadius` | `Float?` | `nil` | Axis radius; `nil` is automatic (1 % of the axis length for `.cylinder`), as `ViewportConfiguration.axisRadius`. |
 | `axisStyle` | `AxisStyle` | `.cylinder` | Axis style; matches `ViewportConfiguration.axisStyle`. |
 | `msaaSampleCount` | `Int` | `4` | MSAA sample count. `1` or less disables MSAA; otherwise the largest of 8, 4 and 2 that does not exceed it and that the device supports is used. Can change between renders on one `OffscreenRenderer`. |
 | `gridBaseSpacing` | `Float` | `1.0` | Fundamental grid unit in world units, mirroring `ViewportConfiguration.gridBaseSpacing`. |
@@ -126,7 +126,7 @@ public init(
     lightingConfiguration: LightingConfiguration = .threePoint,
     backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
     darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration.defaultDarkModeBackgroundColor,
-    appearance: RenderAppearance = .light,
+    appearance: RenderAppearance = .system,
     showGrid: Bool = false,
     showAxes: Bool = false,
     msaaSampleCount: Int = 4,
@@ -135,7 +135,7 @@ public init(
     gridStyle: GridStyle = .plane,
     gridSize: Float = 100.0,
     axisLength: Float? = nil,
-    axisRadius: Float = 0.02,
+    axisRadius: Float? = nil,
     axisStyle: AxisStyle = .cylinder,
     edgeLineConfiguration: EdgeLineConfiguration = .default,
     explicitOrthoBounds: OrthoBounds? = nil,
@@ -147,15 +147,19 @@ public init(
 
 ### How a headless render picks its appearance
 
-`MetalViewportView` follows the SwiftUI colour scheme of its environment. A headless render has no view and no environment, so `appearance` chooses explicitly:
+Offscreen defaults follow onscreen. `MetalViewportView` follows the SwiftUI colour scheme of its environment; a headless render has no view, so `appearance` decides:
 
 | `RenderAppearance` | Background |
 |---|---|
-| `.light` (default) | `backgroundColor` |
+| `.system` (default) | As `.dark` when the system is in dark mode at render time (macOS: the user's Light/Dark setting; iOS/visionOS: `UITraitCollection.current`), otherwise as `.light` |
+| `.light` | `backgroundColor` |
 | `.dark` | `darkModeBackgroundColor`, or `backgroundColor` when that is `nil` |
-| `.system` | As `.dark` when the system is in dark mode at render time (macOS: the user's Light/Dark setting; iOS/visionOS: `UITraitCollection.current`), otherwise as `.light` |
 
-The default is `.light`, not `.system`, so the same options give the same image on every machine and in CI. Use `.system` when a headless render should match what the user currently sees on screen, for example an in-app thumbnail. `resolvedBackgroundColor` returns the colour a render will use.
+Because `.system` makes the image depend on the host's appearance, **pin `.light` or `.dark` wherever output must be reproducible**: tests, CI, golden/reference images and documentation figures. This package's own pixel tests and its `DocFigures` / `CookbookRender` harnesses pin `.light`. `resolvedBackgroundColor` returns the colour a render will use.
+
+```swift
+var options = OffscreenRenderOptions(width: 800, height: 600, appearance: .light)  // CI-stable
+```
 
 **Example — render a diagnostic unlit pass at 2 K:**
 

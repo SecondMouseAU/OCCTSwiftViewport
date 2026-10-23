@@ -187,10 +187,10 @@ Length of each coordinate axis in world units, measured from the origin along +X
 #### `axisRadius`
 
 ```swift
-public var axisRadius: Float  // default: 0.02
+public var axisRadius: Float?  // default: nil (automatic)
 ```
 
-World-space radius of the axis cylinders for `.cylinder`; for `.constantScreenWidth`, the radius they have at the default camera's zoom (distance 10, 45° FOV), scaled with the zoom from there. A 1 px centre line is always drawn as well, so an axis never disappears when its radius falls below a pixel.
+World-space radius of the axis cylinders for `.cylinder`; for `.constantScreenWidth`, the radius they have at the default camera's zoom (distance 10, 45° FOV), scaled with the zoom from there. `nil` picks it automatically: for `.cylinder`, 1 % of the axis length (0.02 at 2 units), so axes sized to a large scene stay proportionate instead of shrinking to a hairline; for `.constantScreenWidth`, 0.02. A value you set always wins. A 1 px centre line is always drawn as well, so an axis never disappears when its radius falls below a pixel.
 
 ---
 
@@ -276,7 +276,7 @@ Background colour used in the dark appearance. Following dark mode is on by defa
 - **Opt out:** set it to `nil`, and `backgroundColor` applies in both appearances.
 - **Force an appearance:** `MetalViewportView` follows the SwiftUI colour scheme of its environment, so `.preferredColorScheme(.light)` or `.environment(\.colorScheme, .dark)` on the view (or an ancestor) pins it.
 
-`resolvedBackgroundColor(isDark:)` returns the colour in effect for an appearance. Headless renders pick their appearance through `OffscreenRenderOptions.appearance` instead; see [Rendering](Rendering.md#offscreenrenderoptions).
+`resolvedBackgroundColor(isDark:)` returns the colour in effect for an appearance. Headless renders follow the system appearance by default too, through `OffscreenRenderOptions.appearance` (pin `.light`/`.dark` for reproducible output); see [Rendering](Rendering.md#offscreenrenderoptions).
 
 Up to v1.2.3 the dark colour was hard-coded and replaced even a custom `backgroundColor`; it is now this configurable field.
 
@@ -579,7 +579,7 @@ public init(
     viewCubePosition: ViewCubePosition = .bottomTrailing,
     showAxes: Bool = false,
     axisLength: Float? = nil,  // nil → sized to the scene
-    axisRadius: Float = 0.02,
+    axisRadius: Float? = nil,  // nil → automatic
     axisStyle: AxisStyle = .cylinder,
     showGrid: Bool = true,
     gridStyle: GridStyle = .plane,
@@ -897,7 +897,7 @@ Rendering style for the world-space coordinate axes. Each axis is an unlit cylin
 
 | Case | Behaviour |
 |---|---|
-| `.cylinder` | Axis cylinders have a fixed world-space radius (`axisRadius`). They appear thinner on screen as the camera zooms out, down to the 1 px centre line. Default. |
+| `.cylinder` | Axis cylinders have a fixed world-space radius (`axisRadius`; automatically 1 % of the axis length). They appear thinner on screen as the camera zooms out, down to the 1 px centre line. Default. |
 | `.constantScreenWidth` | The radius scales with the view's visible height at the pivot (camera distance and FOV in perspective, `orthographicScale` in orthographic), so the axes keep the on-screen width `axisRadius` gives at the default camera (distance 10, 45° FOV). The width is exact at the pivot's depth; nearer and farther parts of an axis still follow perspective. |
 
 ---

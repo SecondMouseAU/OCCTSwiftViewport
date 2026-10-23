@@ -47,7 +47,8 @@ struct ViewportPointCloudRenderingTests {
 
         let opts = OffscreenRenderOptions(
             width: 256, height: 192,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1)  // black so any cloud pixel is non-zero
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1),  // black so any cloud pixel is non-zero
+            appearance: .light
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
@@ -99,7 +100,8 @@ struct ViewportPointCloudRenderingTests {
 
         let opts = OffscreenRenderOptions(
             width: 256, height: 192,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1)
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
@@ -143,7 +145,8 @@ struct ViewportPointCloudRenderingTests {
 
         let opts = OffscreenRenderOptions(
             width: 256, height: 192,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1)
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1),
+            appearance: .light
         )
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
@@ -168,7 +171,7 @@ struct ViewportPointCloudRenderingTests {
         // A box body with its default `.mesh` primitiveKind must still
         // render. The point pass should be a no-op for it.
         let body = ViewportBody.box(id: "mesh-default")
-        let opts = OffscreenRenderOptions(width: 256, height: 192)
+        let opts = OffscreenRenderOptions(width: 256, height: 192, appearance: .light)
         guard let image = renderer.render(bodies: [body], options: opts) else {
             Issue.record("renderer returned nil image")
             return

@@ -148,7 +148,7 @@ public enum GridStyle: Sendable {
 /// Either way each axis is an unlit cylinder `axisLength` long from the origin (X red, Y green,
 /// Z blue) over a 1 px centre line, so it never vanishes when the radius falls below a pixel.
 public enum AxisStyle: Sendable {
-    /// Fixed world-space radius, `axisRadius` (default).
+    /// Fixed world-space radius, `axisRadius` (default; automatic is 1 % of the axis length).
     case cylinder
     /// Radius scales with the view's visible height at the pivot, so the axes keep the screen
     /// width `axisRadius` gives from the default camera (distance 10, 45° FOV) at any zoom.
@@ -259,8 +259,12 @@ public struct ViewportConfiguration: Sendable {
     public var axisLength: Float?
 
     /// Axis cylinder radius in world units (`.cylinder`), or the radius at the default camera's
-    /// zoom (`.constantScreenWidth`).
-    public var axisRadius: Float
+    /// zoom (`.constantScreenWidth`); `nil` (the default) for automatic.
+    ///
+    /// Automatic `.cylinder` axes are 1 % of the axis length thick (0.02 at 2 units), so axes
+    /// sized to a large scene stay proportionate. Automatic `.constantScreenWidth` axes use 0.02.
+    /// A value set here always wins.
+    public var axisRadius: Float?
 
     /// Rendering style for coordinate axes.
     public var axisStyle: AxisStyle
@@ -459,7 +463,7 @@ public struct ViewportConfiguration: Sendable {
         viewCubePosition: ViewCubePosition = .bottomTrailing,
         showAxes: Bool = false,
         axisLength: Float? = nil,
-        axisRadius: Float = 0.02,
+        axisRadius: Float? = nil,
         axisStyle: AxisStyle = .cylinder,
         showGrid: Bool = true,
         gridStyle: GridStyle = .plane,

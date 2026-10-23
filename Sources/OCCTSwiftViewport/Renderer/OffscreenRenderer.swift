@@ -37,10 +37,10 @@ public struct OrthoBounds: Sendable, Hashable, Codable {
 
 /// Which appearance (light or dark) a headless render uses to pick its background.
 ///
-/// A headless render has no SwiftUI view, so no colour-scheme environment to follow. It therefore
-/// defaults to `.light`, which keeps output deterministic across machines and CI. Pass `.dark` to
-/// render the dark appearance, or `.system` to follow the process's current appearance the way
-/// `MetalViewportView` follows its environment.
+/// Offscreen defaults follow onscreen: `.system` (the default) uses the system appearance at
+/// render time, as `MetalViewportView` follows its colour scheme. That makes the image depend on
+/// the host's Light/Dark setting, so pin `.light` or `.dark` wherever output must be
+/// reproducible: tests, CI, reference images and documentation figures.
 public enum RenderAppearance: Sendable, Hashable {
     /// Light appearance: `backgroundColor`.
     case light
@@ -88,7 +88,8 @@ public struct OffscreenRenderOptions: Sendable {
 
     /// Appearance the render uses to pick its background.
     ///
-    /// Defaults to `.light`; see `RenderAppearance`.
+    /// Defaults to `.system`, like the onscreen view. Pin `.light` or `.dark` for reproducible
+    /// output; see `RenderAppearance`.
     public var appearance: RenderAppearance
 
     public var showGrid: Bool
@@ -113,8 +114,9 @@ public struct OffscreenRenderOptions: Sendable {
     /// bodies, matching `ViewportConfiguration.axisLength`.
     public var axisLength: Float?
 
-    /// Axis cylinder radius, matching `ViewportConfiguration.axisRadius`.
-    public var axisRadius: Float
+    /// Axis cylinder radius, or `nil` (the default) for automatic, matching
+    /// `ViewportConfiguration.axisRadius`.
+    public var axisRadius: Float?
 
     /// Axis rendering style, matching `ViewportConfiguration.axisStyle`.
     public var axisStyle: AxisStyle
@@ -161,7 +163,7 @@ public struct OffscreenRenderOptions: Sendable {
         backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
         darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration
             .defaultDarkModeBackgroundColor,
-        appearance: RenderAppearance = .light,
+        appearance: RenderAppearance = .system,
         showGrid: Bool = false,
         showAxes: Bool = false,
         msaaSampleCount: Int = 4,
@@ -170,7 +172,7 @@ public struct OffscreenRenderOptions: Sendable {
         gridStyle: GridStyle = .plane,
         gridSize: Float = 100.0,
         axisLength: Float? = nil,
-        axisRadius: Float = 0.02,
+        axisRadius: Float? = nil,
         axisStyle: AxisStyle = .cylinder,
         edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,

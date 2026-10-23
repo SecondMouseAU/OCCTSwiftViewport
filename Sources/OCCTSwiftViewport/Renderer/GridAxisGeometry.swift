@@ -12,7 +12,7 @@ import simd
 /// Both renderers build one of these per frame and hand it to `RendererSharedSetup.encodeGrid` /
 /// `encodeAxes`, so the live and headless paths read exactly the same fields. `axisLength` is
 /// already resolved: an explicit length, or one derived from `sceneBounds` (see
-/// `GridAxisGeometry.resolvedAxisLength`).
+/// `GridAxisGeometry.resolvedAxisLength`). So is `axisRadius` (see `resolvedAxisRadius`).
 struct GridAxisSettings: Sendable, Equatable {
     var gridStyle: GridStyle
     var gridSize: Float
@@ -40,7 +40,9 @@ struct GridAxisSettings: Sendable, Equatable {
         gridSubdivisions = configuration.gridSubdivisions
         axisLength = GridAxisGeometry.resolvedAxisLength(
             explicit: configuration.axisLength, sceneBounds: sceneBounds)
-        axisRadius = configuration.axisRadius
+        axisRadius = GridAxisGeometry.resolvedAxisRadius(
+            explicit: configuration.axisRadius, style: configuration.axisStyle,
+            axisLength: axisLength)
         axisStyle = configuration.axisStyle
     }
 
@@ -60,7 +62,8 @@ struct GridAxisSettings: Sendable, Equatable {
         gridSubdivisions = options.gridSubdivisions
         axisLength = GridAxisGeometry.resolvedAxisLength(
             explicit: options.axisLength, sceneBounds: sceneBounds)
-        axisRadius = options.axisRadius
+        axisRadius = GridAxisGeometry.resolvedAxisRadius(
+            explicit: options.axisRadius, style: options.axisStyle, axisLength: axisLength)
         axisStyle = options.axisStyle
     }
 }
@@ -301,6 +304,29 @@ enum GridAxisGeometry {
 
     /// Automatic axis length when there is no scene to size it from.
     static let emptySceneAxisLength: Float = 2.0
+
+    /// Automatic `.cylinder` radius as a fraction of the axis length (0.02 at the 2-unit length).
+    static let automaticRadiusFraction: Float = 0.01
+
+    /// Automatic `.constantScreenWidth` radius at the reference view height.
+    static let automaticScreenWidthRadius: Float = 0.02
+
+    /// The axis radius to draw: `explicit` when the app set one, otherwise automatic.
+    ///
+    /// Automatic `.cylinder` axes are `automaticRadiusFraction` of `axisLength` thick, so axes
+    /// sized to a large scene stay proportionate instead of shrinking to the 1 px centre line.
+    /// Automatic `.constantScreenWidth` axes use `automaticScreenWidthRadius`, since their width
+    /// already follows the zoom.
+    static func resolvedAxisRadius(explicit: Float?, style: AxisStyle, axisLength: Float) -> Float {
+        if let explicit { return explicit }
+        switch style {
+        case .cylinder:
+            let radius = automaticRadiusFraction * axisLength
+            return radius.isFinite && radius > 0 ? radius : 0
+        case .constantScreenWidth:
+            return automaticScreenWidthRadius
+        }
+    }
 
     /// The axis length to draw: `explicit` when the app set one, otherwise sized to the scene.
     ///

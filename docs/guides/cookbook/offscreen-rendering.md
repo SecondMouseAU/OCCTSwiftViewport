@@ -67,13 +67,13 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear (light appearance) |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `(0.12, 0.12, 0.12, 1)` | Dark-appearance background; `nil` = same as light |
-| `appearance` | `RenderAppearance` | `.light` | `.light`, `.dark` or `.system` |
+| `appearance` | `RenderAppearance` | `.system` | `.system` (follows the OS, like onscreen), `.light` or `.dark` |
 | `showGrid` | `Bool` | `false` | Ground grid on the XY plane |
 | `showAxes` | `Bool` | `false` | RGB world-space axes |
 | `gridStyle` | `GridStyle` | `.plane` | Line grid with a faint fill, or `.dots` |
 | `gridSize` | `Float` | `100` | Side of the square grid around the origin |
 | `axisLength` | `Float?` | `nil` | Axis length from the origin; `nil` sizes it to the bodies |
-| `axisRadius` | `Float` | `0.02` | Axis cylinder radius |
+| `axisRadius` | `Float?` | `nil` | Axis cylinder radius; `nil` = 1 % of the axis length |
 | `axisStyle` | `AxisStyle` | `.cylinder` | Or `.constantScreenWidth` |
 | `msaaSampleCount` | `Int` | `4` | MSAA samples (1, 2, or 4) |
 | `gridBaseSpacing` | `Float` | `1.0` | Grid unit in world units (matches `ViewportConfiguration`) |
@@ -222,12 +222,13 @@ options.backgroundColor = SIMD4<Float>(0, 0, 0, 1)       // black
 options.backgroundColor = SIMD4<Float>(0.18, 0.18, 0.18, 1)  // mid-grey
 ```
 
-Headless renders have no SwiftUI colour scheme to follow, so they use the light background
-unless you choose otherwise:
+Like the onscreen view, a headless render follows the system appearance by default
+(`appearance = .system`), so on a Mac in dark mode it uses `darkModeBackgroundColor`. Pin an
+appearance for anything that must be reproducible, such as tests, CI or reference images:
 
 ```swift
-options.appearance = .dark     // darkModeBackgroundColor (default (0.12, 0.12, 0.12, 1))
-options.appearance = .system   // whatever the system appearance is at render time
+options.appearance = .light    // always backgroundColor
+options.appearance = .dark     // always darkModeBackgroundColor (default (0.12, 0.12, 0.12, 1))
 ```
 
 ---
