@@ -1810,8 +1810,8 @@ struct SpikeView: View {
                 Slider(value: $controller.lightingConfiguration.specularIntensity, in: 0...1)
             }
             VStack(alignment: .leading) {
-                Text("Shininess: \(controller.lightingConfiguration.specularPower, specifier: "%.0f")")
-                Slider(value: $controller.lightingConfiguration.specularPower, in: 1...256)
+                Text("Ambient: \(controller.lightingConfiguration.ambientIntensity, specifier: "%.2f")")
+                Slider(value: $controller.lightingConfiguration.ambientIntensity, in: 0...1)
             }
             VStack(alignment: .leading) {
                 Text("Rim Light: \(controller.lightingConfiguration.fresnelIntensity, specifier: "%.2f")")

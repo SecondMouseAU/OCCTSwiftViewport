@@ -8,9 +8,12 @@ nav_order: 10
 
 `OffscreenRenderer` renders `[ViewportBody]` to a `CGImage` or PNG file without
 an `MTKView` or a window. It uses the same Metal pipelines as the interactive
-viewport — the same Blinn-Phong shading, the same shadow map, the same
+viewport — the same Cook-Torrance GGX shading, the same shadow map, the same
 transparent-surface sort — so headless output is visually identical to what a
-user sees on screen.
+user sees on screen. An environment map named by the lighting configuration's
+`environmentMapURL` or `environmentMapData` is loaded automatically and lights
+headless renders too; the skybox background (`drawBackground`) is not drawn
+headlessly, so the image keeps `backgroundColor` behind the geometry.
 
 Typical uses: documentation figures, thumbnail generation, CI regression images,
 export workflows, and integration tests that check rendering without a display.

@@ -21,8 +21,10 @@ struct Uniforms {
     float4x4 viewMatrix;              // needed for matcap UV calculation
     float4   cameraPosition;           // xyz = position, w = nearPlane
     LightData lights[3];               // key, fill, back
-    float4   ambientSkyColor;          // rgb = sky color, w = specularPower
-    float4   ambientGroundColor;       // rgb = ground color, w = specularIntensity
+    float4   ambientSkyColor;          // rgb = sky color, w = unused
+    float4   ambientGroundColor;       // rgb = ground color, w = unused
+    float4   lightingScales;           // rgb = ambient scale (ambientColor × ambientIntensity,
+                                       // 1 = the .threePoint look), w = direct specular scale
     float4   materialParams;           // x = fresnelPower, y = fresnelIntensity,
                                        // z = matcapBlend, w = farPlane
     float4x4 lightViewProjectionMatrix; // for shadow mapping
@@ -155,9 +157,17 @@ inline float3 rotateY(float3 v, float angle) {
     return float3(v.x * c - v.z * s, v.y, v.x * s + v.z * c);
 }
 
-// Procedural environment reflection: sky-ground gradient
+// Maps a Z-up world direction into the Y-up space the environment cubemap is baked in
+// (equirect_to_cubemap puts the image's top row at env +Y), then applies the environment
+// rotation. World +Z → env +Y, world −Y → env +Z: a proper rotation, so nothing is mirrored,
+// and rotating about env Y turns the environment about world up (Z).
+inline float3 worldToEnvironment(float3 v, float angle) {
+    return rotateY(float3(v.x, v.z, -v.y), angle);
+}
+
+// Procedural environment reflection: sky-ground gradient. World is Z-up.
 inline float3 sampleEnvironment(float3 direction) {
-    float t = direction.y * 0.5 + 0.5; // 0 = ground, 1 = sky
+    float t = direction.z * 0.5 + 0.5; // 0 = ground, 1 = sky
     float3 groundColor = float3(0.3, 0.28, 0.25);
     float3 horizonColor = float3(0.7, 0.72, 0.75);
     float3 skyColor = float3(0.85, 0.9, 1.0);
@@ -357,7 +367,8 @@ fragment ShadedFragmentOut shaded_fragment(
         float G = geometrySmith(NdotV, NdotL, roughness);
         float3 F = fresnelSchlick(HdotV, F0);
 
-        float3 specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+        // lightingScales.w = LightingConfiguration.specularIntensity / 0.5 (1 = physically based).
+        float3 specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001) * uniforms.lightingScales.w;
 
         // Energy conservation: diffuse only for non-reflected light
         float3 kD = (1.0 - F) * (1.0 - metallic);
@@ -368,7 +379,8 @@ fragment ShadedFragmentOut shaded_fragment(
         float3 contribution;
         if (clearcoat > 0.0) {
             float Fc;
-            float3 coatSpec = evaluateClearcoat(NdotH, NdotV, NdotL, HdotV, coatRoughness, Fc);
+            float3 coatSpec = evaluateClearcoat(NdotH, NdotV, NdotL, HdotV, coatRoughness, Fc)
+                * uniforms.lightingScales.w;
             float attenuation = 1.0 - Fc * clearcoat;
             contribution = baseLobe * attenuation + coatSpec * clearcoat;
         } else {
@@ -390,16 +402,19 @@ fragment ShadedFragmentOut shaded_fragment(
         Lo *= mix(1.0 - shadowDarkness, 1.0, shadowFactor);
     }
 
-    // Tri-axis ambient: vary ambient by normal in all 3 directions (not just Y)
-    // This breaks up uniform color on faces at the same elevation but different azimuths
+    // Tri-axis ambient: vary ambient by normal in all 3 directions (not just up/down).
+    // This breaks up uniform color on faces at the same elevation but different azimuths.
+    // The world is Z-up (turntable, StandardView), so the sky/ground hemisphere follows N.z.
     float3 skyColor = uniforms.ambientSkyColor.rgb;
     float3 groundColor = uniforms.ambientGroundColor.rgb;
-    float3 ambientY = mix(groundColor, skyColor, N.y * 0.5 + 0.5);
+    float3 ambientUp = mix(groundColor, skyColor, N.z * 0.5 + 0.5);
     // Side axis: warm on +X, cool on -X (simulates fill/key side difference)
     float3 ambientX = mix(float3(0.35, 0.30, 0.28), float3(0.28, 0.30, 0.35), N.x * 0.5 + 0.5);
-    // Depth axis: slightly brighter facing camera, darker facing away
-    float3 ambientZ = mix(float3(0.25, 0.25, 0.27), float3(0.32, 0.32, 0.30), N.z * 0.5 + 0.5);
-    float3 ambient = ((ambientY * 0.6) + (ambientX * 0.2) + (ambientZ * 0.2)) * bodyColor * (1.0 - metallic * 0.5);
+    // Depth axis: slightly brighter facing the front-view camera (−Y), darker facing away
+    float3 ambientDepth = mix(float3(0.32, 0.32, 0.30), float3(0.25, 0.25, 0.27), N.y * 0.5 + 0.5);
+    float3 ambient = ((ambientUp * 0.6) + (ambientX * 0.2) + (ambientDepth * 0.2)) * bodyColor * (1.0 - metallic * 0.5);
+    // ambientColor × ambientIntensity, normalised so the .threePoint preset's 0.25 is 1×.
+    ambient *= uniforms.lightingScales.rgb;
 
     // Environment reflection: IBL when available, procedural fallback otherwise
     float3 R = reflect(-V, N);
@@ -410,9 +425,10 @@ fragment ShadedFragmentOut shaded_fragment(
         constexpr sampler brdfSampler(filter::linear, address::clamp_to_edge);
         float iblIntensity = uniforms.iblParams.x;
         float envRotation = uniforms.iblParams.y;
-        // Apply environment rotation to sample directions only — geometry stays put.
-        float3 R_env = rotateY(R, envRotation);
-        float3 N_env = rotateY(N, envRotation);
+        // Z-up world → Y-up cubemap, plus the environment rotation (about world up) applied to
+        // sample directions only — geometry stays put.
+        float3 R_env = worldToEnvironment(R, envRotation);
+        float3 N_env = worldToEnvironment(N, envRotation);
         // Base lobe IBL — sample at body roughness mip
         float baseMip = roughness * 7.0;            // 8 mip levels
         float3 prefilteredBase = iblSpecular.sample(iblSampler, R_env, level(baseMip)).rgb;
@@ -1421,7 +1437,9 @@ kernel void equirect_to_cubemap(
     // Convert direction to equirectangular UV
     float phi = atan2(dir.z, dir.x);
     float theta = asin(clamp(dir.y, -1.0, 1.0));
-    float2 eqUV = float2(phi / (2.0 * M_PI_F) + 0.5, theta / M_PI_F + 0.5);
+    // Image row 0 is the top of the panorama (HDRLoader keeps the Y-down layout), so +Y (up)
+    // must sample v = 0, not v = 1 — otherwise the sky lands underneath the scene.
+    float2 eqUV = float2(phi / (2.0 * M_PI_F) + 0.5, 0.5 - theta / M_PI_F);
 
     constexpr sampler s(filter::linear, address::repeat);
     float4 color = equirect.sample(s, eqUV);
@@ -2210,7 +2228,7 @@ fragment PickFragmentOut meshlet_pick_fragment(
 
 struct SkyboxUniforms {
     float4x4 inverseViewProjection;  // for reconstructing world-space view rays
-    float4   params;                 // x = rotationY, y = backgroundExposure,
+    float4   params;                 // x = rotation about world up (Z), y = backgroundExposure,
                                      // z = mipLevel (0 = sharp, 7 = blurred), w = unused
 };
 
@@ -2241,11 +2259,8 @@ fragment float4 skybox_fragment(
     texturecube<float> sky [[texture(0)]],
     constant SkyboxUniforms &u [[buffer(0)]]
 ) {
-    // Apply environment rotation
-    float c = cos(u.params.x);
-    float s = sin(u.params.x);
-    float3 dir = normalize(in.viewDirection);
-    float3 rotDir = float3(dir.x * c - dir.z * s, dir.y, dir.x * s + dir.z * c);
+    // Z-up world direction → Y-up cubemap space, with the environment rotation applied
+    float3 rotDir = worldToEnvironment(normalize(in.viewDirection), u.params.x);
 
     constexpr sampler skySampler(filter::linear, mip_filter::linear);
     float3 color = sky.sample(skySampler, rotDir, level(u.params.z)).rgb;

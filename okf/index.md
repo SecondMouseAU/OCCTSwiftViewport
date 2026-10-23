@@ -12,7 +12,7 @@ timestamp: 2026-06-22
 > A reusable Metal-based 3D viewport for CAD applications on iOS and macOS. It renders plain
 > `ViewportBody` arrays (interleaved vertices + edges + color) and is **geometry-agnostic** — it
 > knows nothing about OCCT, BREP, or any CAD kernel, so the app bridges geometry to display. Ships
-> a Blinn-Phong renderer, arcball/turntable cameras, a ViewCube, GPU picking, clip planes,
+> a PBR (GGX) renderer, arcball/turntable cameras, a ViewCube, GPU picking, clip planes,
 > measurements, and adaptive PN-triangle tessellation, all Swift 6 / `Sendable` ready.
 
 ## Role in the ecosystem
