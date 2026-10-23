@@ -1,0 +1,22 @@
+# DirectMeshVerify rig on its own: `xcodegen --spec project-verify.yml`, which writes
+# DirectMeshVerify.xcodeproj (schemes DirectMeshVerify_iOS / DirectMeshVerify_macOS).
+#
+# Unlike project.yml this needs nothing outside this repo: the target depends only on
+# OCCTSwiftViewport, so there is no ../OCCTSwift sibling to validate and no OCCT
+# binary to fetch. Works from worktrees and fresh clones. The target itself is defined
+# once, in Examples/DirectMeshVerify/target.yml, and project.yml includes the same file.
+name: DirectMeshVerify
+include:
+  - path: Examples/DirectMeshVerify/target.yml
+    relativePaths: false
+options:
+  bundleIdPrefix: com.occtswift
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: false
+
+packages:
+  OCCTSwiftViewport:
+    path: .

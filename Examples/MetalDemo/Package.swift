@@ -13,6 +13,15 @@ import PackageDescription
 // the demo against this working copy of Viewport and uses it to satisfy Tools'
 // own versioned dependency on OCCTSwiftViewport (local path overrides win by
 // package identity). No cycle, no stale tagged copy of Viewport pulled in.
+//
+// Checkout directory name: SwiftPM derives a path dependency's identity from its
+// directory name, and `name:` below does NOT change that identity (it only lets
+// `.product(..., package: "OCCTSwiftViewport")` resolve). So the override above
+// only works when this checkout's directory is named `OCCTSwiftViewport`. In a
+// worktree or renamed clone, Tools' remote OCCTSwiftViewport is pulled in as a
+// second package and resolution fails with "multiple similar targets
+// 'OCCTSwiftViewport'". Build the demo from a checkout named OCCTSwiftViewport
+// (or a symlink of that name pointing at the worktree).
 let package = Package(
     name: "OCCTSwiftMetalDemo",
     platforms: [
@@ -20,9 +29,9 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(path: "../.."),
-        .package(url: "https://github.com/gsdali/OCCTSwift.git", from: "1.7.1"),
-        .package(url: "https://github.com/gsdali/OCCTSwiftTools.git", from: "1.1.0"),
+        .package(name: "OCCTSwiftViewport", path: "../.."),
+        .package(url: "https://github.com/SecondMouseAU/OCCTSwift.git", from: "1.7.1"),
+        .package(url: "https://github.com/SecondMouseAU/OCCTSwiftTools.git", from: "1.1.0"),
     ],
     targets: [
         .executableTarget(

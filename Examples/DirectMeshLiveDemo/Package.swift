@@ -11,7 +11,10 @@ let package = Package(
     name: "DirectMeshLiveDemo",
     platforms: [.macOS(.v15)],
     dependencies: [
-        .package(path: "../.."),
+        // `name:` makes the product reference below independent of the checkout's
+        // directory name (SwiftPM otherwise names a path dependency after its
+        // directory), so this builds from worktrees and renamed clones too.
+        .package(name: "OCCTSwiftViewport", path: "../.."),
     ],
     targets: [
         .executableTarget(

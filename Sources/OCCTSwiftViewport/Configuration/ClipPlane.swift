@@ -10,16 +10,16 @@ import simd
 /// The plane equation is `dot(normal, point) + distance = 0`.
 /// Fragments where `dot(normal, point) + distance < 0` are discarded.
 ///
-/// Every pass that draws scene geometry applies the test, the GPU pick pass included, so
-/// clipped geometry is neither visible nor pickable. CPU `SceneRaycast` skips clipped hits when
-/// passed the planes, which the dynamic pivot does. The shadow map and `OffscreenRenderer` do
-/// not apply clip planes.
+/// Every pass that draws scene geometry applies the test, the GPU pick pass and the shadow map
+/// included, so clipped geometry is neither visible nor pickable and casts no shadow. CPU
+/// `SceneRaycast` skips clipped hits when passed the planes, which the dynamic pivot does.
+/// `OffscreenRenderer` does not apply clip planes.
 ///
 /// ## Example
 ///
 /// ```swift
-/// // Clip everything below Y = 0
-/// let plane = ClipPlane(normal: SIMD3(0, 1, 0), distance: 0)
+/// // Clip everything below Z = 0 (the viewport is Z-up)
+/// let plane = ClipPlane(normal: SIMD3(0, 0, 1), distance: 0)
 ///
 /// // Clip everything to the left of X = 2
 /// let plane = ClipPlane(normal: SIMD3(1, 0, 0), distance: -2)
@@ -47,10 +47,11 @@ public struct ClipPlane: Sendable, Equatable {
     /// Creates a clip plane.
     ///
     /// - Parameters:
-    ///   - normal: Outward-facing normal (will be normalized).
+    ///   - normal: Outward-facing normal (will be normalized). Defaults to +Z, the viewport's
+    ///     up axis, so the default plane equals ``groundPlane``. Up to v1.2.3 it defaulted to +Y.
     ///   - distance: Signed distance from origin.
     ///   - isEnabled: Whether the plane is active.
-    public init(normal: SIMD3<Float> = SIMD3(0, 1, 0), distance: Float = 0, isEnabled: Bool = true)
+    public init(normal: SIMD3<Float> = SIMD3(0, 0, 1), distance: Float = 0, isEnabled: Bool = true)
     {
         self.normal = simd_normalize(normal)
         self.distance = distance
