@@ -264,7 +264,7 @@ DoF aperture value. Smaller = shallower depth of field. Default `2.8`.
 @Published public var dofFocalDistance: Float
 ```
 
-DoF focal distance in world units, measured along the line of sight from the eye. `0` enables auto-focus on the view depth of the world-space centre of the visible geometry bodies: the pivot's depth (`distance`) plus the centre's depth past the pivot plane, so an off-axis centre is focused on its own plane (issue #215). In orthographic the composite pass still decodes depth as perspective depth, so the blur there does not yet follow these distances. Default `0`.
+DoF focal distance in world units, measured along the line of sight from the eye (in orthographic, from a reference eye in front of the pivot; see below). `0` enables auto-focus on the view depth of the world-space centre of the visible geometry bodies: the pivot's depth (`distance`) plus the centre's depth past the pivot plane, so an off-axis centre is focused on its own plane (issue #215). In orthographic the composite pass still decodes depth as perspective depth, so the blur there does not yet follow these distances. In orthographic it is measured from a reference eye in front of the pivot, at the distance a perspective camera showing the same height would sit (`orthographicScale / (2 · tan(fieldOfView / 2))`), not from the eye, which is only placed in front of the scene and moves back whenever the scene grows; so the focal plane stays put as the eye moves, follows the pivot, and matches the same framing in perspective (issue #217). Following the pivot, it moves when the dynamic pivot slides along the line of sight, by the depth slid; a focal distance equal to that reference distance focuses on the pivot. Default `0`.
 
 #### `dofMaxBlurRadius`
 

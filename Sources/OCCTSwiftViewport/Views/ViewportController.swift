@@ -153,7 +153,8 @@ public final class ViewportController: ObservableObject {
     /// DoF aperture (smaller = shallower).
     @Published public var dofAperture: Float = 2.8
 
-    /// DoF focal distance along the line of sight from the eye.
+    /// DoF focal distance along the line of sight: from the eye in perspective, from a
+    /// reference eye in front of the pivot in orthographic.
     ///
     /// 0 autofocuses on the view depth of the visible geometry's centre; see
     /// `ViewportConfiguration.dofFocalDistance`.
@@ -812,15 +813,16 @@ extension ViewportController {
 
     /// Gives the camera the scene to keep an orthographic eye in front of (issue #211).
     ///
-    /// Sets `CameraController.sceneBoundsProvider` to `orthographicEyeBounds(of: bodies())`:
-    /// the bodies, and the axes and overlay bodies drawn with them (#215).
+    /// Gives `CameraController` `orthographicEyeBounds(of: bodies(), cameraState:)` to keep the
+    /// eye in front of: the bodies, and the axes and overlay bodies drawn with them (#215), the
+    /// axes as thick as they are drawn for the camera being placed (#217).
     /// `MetalViewportView` calls it with its bodies.
     ///
     /// - Parameter bodies: Returns the scene bodies; it is called on each camera change in
     ///   orthographic.
     internal func attachSceneBodies(_ bodies: @escaping @MainActor () -> [ViewportBody]) {
-        cameraController.sceneBoundsProvider = { [weak self] in
-            self?.orthographicEyeBounds(of: bodies())
+        cameraController.setSceneBoundsProvider { [weak self] state in
+            self?.orthographicEyeBounds(of: bodies(), cameraState: state)
         }
     }
 
@@ -830,7 +832,7 @@ extension ViewportController {
     /// camera does not. Read from per-generation bounding-box caches, so it is cheap.
     internal func orthographicSceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
         guard cameraState.isOrthographic else { return nil }
-        return orthographicEyeBounds(of: bodies)
+        return orthographicEyeBounds(of: bodies, cameraState: cameraState)
     }
 
     /// Everything a frame draws with `bodies`, for the orthographic eye to stay in front of.
@@ -839,13 +841,20 @@ extension ViewportController {
     /// camera past the model in front of the eye, where the near plane cut them (#215). See
     /// `RendererSharedSetup.orthographicEyeBounds`, which both renderers place their eye with
     /// too. None of it depends on the pivot, so a pivot update still never moves the eye.
-    internal func orthographicEyeBounds(of bodies: [ViewportBody]) -> BoundingBox? {
+    ///
+    /// - Parameters:
+    ///   - bodies: The scene bodies.
+    ///   - cameraState: The camera the axes are sized for; `nil` takes their base radius.
+    /// - Returns: The bounds to keep the eye in front of.
+    internal func orthographicEyeBounds(
+        of bodies: [ViewportBody], cameraState: CameraState? = nil
+    ) -> BoundingBox? {
         pruneOverlayBoundsCache(keeping: bodies)
         let model = pivotStrategy.sceneBounds(of: bodies)
         return RendererSharedSetup.orthographicEyeBounds(
             modelBounds: model, bodies: bodies,
             settings: GridAxisSettings(configuration: configuration, sceneBounds: model),
-            showAxes: showAxes, localBounds: cachedOverlayBounds(of:))
+            showAxes: showAxes, cameraState: cameraState, localBounds: cachedOverlayBounds(of:))
     }
 
     /// An overlay body's local bounds, rescanned only when its generation changes.
