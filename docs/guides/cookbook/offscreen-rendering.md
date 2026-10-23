@@ -292,6 +292,9 @@ convention):
 options.pixelPan = SIMD2<Float>(0.5, -1.2)  // nudge half a pixel right, 1.2 up
 ```
 
+Overlay-layer bodies that either option brings into view are drawn like any other: the
+near and far planes are fitted to the overlays inside the view the image actually shows.
+
 `pixelPan` is a lightweight alternative to recomputing `explicitOrthoBounds`
 when the calibration offset is already known in pixel space.
 

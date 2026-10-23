@@ -127,21 +127,6 @@ extension RendererSharedSetup {
             sampleCount: sampleCount, blending: .sourceOver, maxFactor: maxFactor)
     }
 
-    /// The selection outline on the tessellated surface (#202).
-    ///
-    /// `tessellated_outline_vertex` + `selection_outline_fragment`.
-    static func makeTessellatedOutlinePipelineState(
-        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
-        maxFactor: Int, label: String = "tessellated_outline"
-    ) throws -> MTLRenderPipelineState {
-        try makeTessellatedPipelineState(
-            device: device, library: library, label: label,
-            vertexFunction: "tessellated_outline_vertex",
-            fragmentFunction: "selection_outline_fragment", colorPixelFormat: .bgra8Unorm,
-            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
-            sampleCount: sampleCount, blending: .sourceOver, maxFactor: maxFactor)
-    }
-
     /// The colourless selection stencil mask on the tessellated surface (#202).
     ///
     /// `tessellated_depth_vertex` + `depth_only_clip_fragment`, writing no colour.
@@ -409,10 +394,10 @@ struct RefinedPipelines {
     let tessellatedShaded: MTLRenderPipelineState?
     let tessellatedShadow: MTLRenderPipelineState?
     let tessellatedDepthOnly: MTLRenderPipelineState?
-    /// Highlight, outline and stencil mask on the tessellated surface (#202).
+    /// Highlight, stencil mask and selection mask on the tessellated surface (#202, #209).
     let tessellatedHighlight: MTLRenderPipelineState?
-    let tessellatedOutline: MTLRenderPipelineState?
     let tessellatedStencilMask: MTLRenderPipelineState?
+    let tessellatedSelectionMask: MTLRenderPipelineState?
     let meshShaded: MTLRenderPipelineState?
     let meshShadow: MTLRenderPipelineState?
     let meshDepthOnly: MTLRenderPipelineState?
@@ -433,14 +418,15 @@ struct RefinedPipelines {
             device: device, library: library, sampleCount: key.sampleCount,
             depthFormat: depthFormat, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_highlight")
-        tessellatedOutline = try? RendererSharedSetup.makeTessellatedOutlinePipelineState(
-            device: device, library: library, sampleCount: key.sampleCount,
-            depthFormat: depthFormat, maxFactor: key.maxFactor,
-            label: "offscreen_tessellated_outline")
         tessellatedStencilMask = try? RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
             device: device, library: library, sampleCount: key.sampleCount,
             depthFormat: depthFormat, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_stencil_mask")
+        tessellatedSelectionMask =
+            RendererSharedSetup.makeSelectionMaskPipelines(
+                device: device, library: library, maxTessellationFactor: key.maxFactor,
+                label: "offscreen_selection_mask")?
+            .tessellated
         if key.meshShaders {
             meshShaded = try? RendererSharedSetup.makeMeshShaderShadedPipelineState(
                 device: device, library: library, sampleCount: key.sampleCount,

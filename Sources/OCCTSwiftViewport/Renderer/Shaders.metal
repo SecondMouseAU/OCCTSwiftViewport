@@ -548,7 +548,7 @@ struct PickFragmentOut {
 
 // True when `worldPosition` lies on the clipped (negative) side of any active section plane.
 // Same test the shaded/wireframe/highlight fragments run inline; the pick, depth-prepass,
-// selection-outline and point-cloud fragments call this so sections hide geometry everywhere.
+// selection-mask and point-cloud fragments call this so sections hide geometry everywhere.
 inline bool isClippedBySectionPlanes(float3 worldPosition, constant Uniforms &uniforms) {
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
         float4 plane = uniforms.clipPlanes[cp];
@@ -767,68 +767,89 @@ fragment float4 visible_point_fragment(
     return in.color;
 }
 
-// MARK: - Selection Outline Pipeline
+// MARK: - Selection Outline Pipeline (#209)
+//
+// The outline is a screen-space dilation of each selected or hovered body's silhouette. A
+// single-sample pass before the main pass rasterises those bodies into an R8Uint selection mask
+// (1 = selected, 2 = hovered; 0 = neither) without testing depth, so a body hidden behind another
+// is in the mask too (#177). The main pass then draws one full-screen triangle that, for each
+// pixel, finds the nearest marked mask texel within the outline width and paints the outline
+// there; the stencil (marked per sample by the same bodies) keeps it off the bodies themselves.
+// Dilating the rasterised silhouette rings any mesh: the old vertex expansion along normals left
+// no ring around a flat-normal mesh seen face-on (a box from the front), whose silhouette is made
+// of side faces seen edge-on.
 
-// IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift
-// `struct SelectionOutlineParamsSwift`). Field order, types, and alignment must stay identical.
-// Total stride = 160 bytes.
-struct SelectionOutlineParams {
-    float4x4 viewProjectionMatrix; // offset   0
-    float4x4 modelMatrix;          // offset  64
-    float3 outlineColor;           // offset 128 (16 bytes)
-    float outlineWidth;            // offset 144 — drawable pixels
-    float2 viewportSize;           // offset 152 — drawable pixels
+// Selection-mask fragment: writes the body's mask code (`selection_mask_vertex` is
+// `depth_only_vertex` / `tessellated_depth_vertex`). Section-clipped fragments are left unmarked,
+// so the ring follows the cut silhouette.
+struct SelectionMaskFragmentOut {
+    uint code [[color(0)]];
 };
 
-struct SelectionOutlineVertexOut {
-    float4 clipPosition [[position]];
-    float3 worldPosition;    // un-expanded surface point, for clip plane testing
-};
-
-// Renders the body pushed outward along its screen-space normal by a fixed pixel width, so the
-// ring left outside the body's stencil footprint is the same thickness at any zoom or model scale.
-vertex SelectionOutlineVertexOut selection_outline_vertex(
-    VertexIn in [[stage_in]],
-    constant SelectionOutlineParams &params [[buffer(1)]]
+fragment SelectionMaskFragmentOut selection_mask_fragment(
+    PickVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant uint &code [[buffer(2)]]
 ) {
-    float4 worldPos = params.modelMatrix * float4(in.position, 1.0);
-    float3 worldNormal = (params.modelMatrix * float4(in.normal, 0.0)).xyz;
-    float4 clipPos = params.viewProjectionMatrix * worldPos;
-    float4 clipNormal = params.viewProjectionMatrix * float4(worldNormal, 0.0);
-
-    // Direction the normal moves the projected vertex: d(xy/w) is proportional to
-    // (dxy * w - xy * dw), up to the positive factor 1/w^2. Scale to pixels before normalising
-    // so non-square viewports get a round ring.
-    float2 dirNdc = clipNormal.xy * clipPos.w - clipPos.xy * clipNormal.w;
-    float2 dirPx = dirNdc * params.viewportSize;
-    float lenPx = length(dirPx);
-    if (lenPx > 1e-6 && params.outlineWidth > 0.0) {
-        // One pixel spans 2 / viewportSize in NDC; multiply by w to offset in clip space.
-        float2 offsetNdc = (dirPx / lenPx) * (2.0 * params.outlineWidth / params.viewportSize);
-        clipPos.xy += offsetNdc * clipPos.w;
-    }
-
-    SelectionOutlineVertexOut out;
-    out.clipPosition = clipPos;
-    // Clip against the surface point, not the expanded one, so the outline is cut exactly
-    // where the section cuts the body.
-    out.worldPosition = worldPos.xyz;
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
+    SelectionMaskFragmentOut out;
+    out.code = code;
     return out;
 }
 
-struct SelectionOutlineFragmentOut {
-    float4 color [[color(0)]];
+// IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift
+// `struct SelectionOutlineParamsSwift`). Field order, types, and alignment must stay identical.
+// Total stride = 32 bytes.
+struct SelectionOutlineParams {
+    float4 selected;    // rgb = outline colour of selected bodies, w = width in drawable pixels
+    float4 hovered;     // rgb = outline colour of the hovered body, w = width in drawable pixels
 };
 
-fragment SelectionOutlineFragmentOut selection_outline_fragment(
-    SelectionOutlineVertexOut in [[stage_in]],
-    constant SelectionOutlineParams &params [[buffer(1)]],
-    constant Uniforms &uniforms [[buffer(2)]]
+// The fragment's pixel position from `fullscreen_vertex` (its other outputs are unused).
+struct SelectionOutlinePixel {
+    float4 position [[position]];
+};
+
+// Coverage of a ring `width` pixels wide at `distance` pixels (centre to centre) from the nearest
+// marked texel: 1 out to `width`, fading to 0 over the next pixel so the outer edge is smooth.
+inline float selectionOutlineCoverage(float width, float squaredDistance) {
+    if (width <= 0.0 || squaredDistance > 1e8) return 0.0;
+    return saturate(width + 1.0 - sqrt(squaredDistance));
+}
+
+fragment float4 selection_outline_fragment(
+    SelectionOutlinePixel in [[stage_in]],
+    texture2d<uint, access::read> mask [[texture(0)]],
+    constant SelectionOutlineParams &params [[buffer(0)]]
 ) {
-    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
-    SelectionOutlineFragmentOut out;
-    out.color = float4(params.outlineColor, 1.0);
-    return out;
+    int2 pixel = int2(in.position.xy);
+    int2 size = int2(mask.get_width(), mask.get_height());
+    float maxWidth = max(params.selected.w, params.hovered.w);
+    int radius = int(ceil(maxWidth)) + 1;
+    float radiusSq = float(radius * radius);
+    float nearestSelected = 1e9;
+    float nearestHovered = 1e9;
+    for (int dy = -radius; dy <= radius; dy++) {
+        int y = pixel.y + dy;
+        if (y < 0 || y >= size.y) continue;
+        for (int dx = -radius; dx <= radius; dx++) {
+            int x = pixel.x + dx;
+            float d2 = float(dx * dx + dy * dy);
+            if (x < 0 || x >= size.x || d2 > radiusSq) continue;
+            uint code = mask.read(uint2(x, y)).r;
+            if (code == 1u) {
+                nearestSelected = min(nearestSelected, d2);
+            } else if (code == 2u) {
+                nearestHovered = min(nearestHovered, d2);
+            }
+        }
+    }
+    float selectedCoverage = selectionOutlineCoverage(params.selected.w, nearestSelected);
+    float hoveredCoverage = selectionOutlineCoverage(params.hovered.w, nearestHovered);
+    float coverage = max(selectedCoverage, hoveredCoverage);
+    if (coverage <= 0.0) discard_fragment();
+    float3 color = selectedCoverage >= hoveredCoverage ? params.selected.rgb : params.hovered.rgb;
+    return float4(color, coverage);
 }
 
 // MARK: - Shadow Map Pipeline
@@ -1783,8 +1804,15 @@ struct PNPatchData {
 
 // The cubic Bezier triangle at barycentric `bary`. Every post-tessellation vertex function
 // evaluates the surface through this one function, so the shaded, shadow, depth, pick,
-// highlight, stencil-mask and outline passes produce bit-identical positions and the
+// highlight, stencil-mask and selection-mask passes produce bit-identical positions and the
 // `.lessEqual` highlight wins its depth tie with the shaded surface (#202).
+//
+// That relies on the compiler emitting the same arithmetic for the same expression in every
+// pipeline. Apple GPUs do, but Metal only guarantees it for [[invariant]] positions in a library
+// compiled with preserveInvariance, which the build-time default.metallib cannot be (SwiftPM and
+// Xcode pass no such flag to it). Compiling the source at run time was considered and deferred
+// (#209 item 3): revisit if the build-time metallib gains a preserve-invariance option, or if a
+// highlight z-fights its tessellated surface.
 inline float3 pnPatchPosition(PNPatchData p, float3 bary) {
     float u = bary.x, v = bary.y, w = bary.z;
     float uu = u*u, vv = v*v, ww = w*w;
@@ -2094,11 +2122,12 @@ fragment PickFragmentOut tessellated_pick_fragment(
 
 // --- Overlay passes on the PN-tessellated surface (#202) ---
 //
-// The per-triangle highlight, the selection stencil mask and the selection outline used to draw
-// the flat input mesh over a PN-bulged surface: a `.lessEqual` highlight then lost the depth test
+// The per-triangle highlight, the selection stencil mask and the selection mask used to draw the
+// flat input mesh over a PN-bulged surface: a `.lessEqual` highlight then lost the depth test
 // where the surface bulged in front of it, and the outline ring sat inside the tessellated
-// silhouette. These post-tessellation vertex functions evaluate the same Bezier patch as
-// `tessellated_vertex`, so the passes cover exactly the surface that was drawn.
+// silhouette. These post-tessellation vertex functions (and `tessellated_depth_vertex`, which the
+// two masks use) evaluate the same Bezier patch as `tessellated_vertex`, so the passes cover
+// exactly the surface that was drawn.
 
 struct TessHighlightVertexOut {
     float4 clipPosition [[position]];
@@ -2133,36 +2162,6 @@ fragment HighlightFragmentOut tessellated_highlight_fragment(
     if (style.a <= 0.0) discard_fragment();
     HighlightFragmentOut out;
     out.color = style;
-    return out;
-}
-
-// The selection outline on the tessellated surface: `selection_outline_vertex`'s screen-space
-// expansion, applied to the evaluated patch position and normal.
-[[patch(triangle, 3)]]
-vertex SelectionOutlineVertexOut tessellated_outline_vertex(
-    uint patchID [[patch_id]],
-    float3 bary [[position_in_patch]],
-    const device PNPatchData* patches [[buffer(0)]],
-    constant SelectionOutlineParams &params [[buffer(1)]]
-) {
-    PNPatchData p = patches[patchID];
-    float3 normal = normalize(p.n200 * bary.x + p.n020 * bary.y + p.n002 * bary.z);
-    float4 worldPos = params.modelMatrix * float4(pnPatchPosition(p, bary), 1.0);
-    float3 worldNormal = (params.modelMatrix * float4(normal, 0.0)).xyz;
-    float4 clipPos = params.viewProjectionMatrix * worldPos;
-    float4 clipNormal = params.viewProjectionMatrix * float4(worldNormal, 0.0);
-
-    float2 dirNdc = clipNormal.xy * clipPos.w - clipPos.xy * clipNormal.w;
-    float2 dirPx = dirNdc * params.viewportSize;
-    float lenPx = length(dirPx);
-    if (lenPx > 1e-6 && params.outlineWidth > 0.0) {
-        float2 offsetNdc = (dirPx / lenPx) * (2.0 * params.outlineWidth / params.viewportSize);
-        clipPos.xy += offsetNdc * clipPos.w;
-    }
-
-    SelectionOutlineVertexOut out;
-    out.clipPosition = clipPos;
-    out.worldPosition = worldPos.xyz;
     return out;
 }
 

@@ -466,9 +466,8 @@ private struct SampledPipelines {
     /// Optional only because pipeline construction could fail on a degenerate device.
     let visiblePointPipeline: MTLRenderPipelineState?
 
-    /// Selection-outline pipelines for interleaved and direct-mesh bodies.
+    /// Selection outline: the full-screen dilation of the selection mask (#209).
     let outlinePipeline: MTLRenderPipelineState?
-    let outlineDirectPipeline: MTLRenderPipelineState?
 
     /// Per-triangle highlight pipelines (`ViewportBody.triangleStyles`) for interleaved and
     /// direct-mesh bodies.
@@ -519,10 +518,7 @@ private struct SampledPipelines {
             depthFormat: depthFormat, label: "offscreen_visible_point")
         outlinePipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
             device: device, library: library, sampleCount: sampleCount,
-            depthFormat: depthFormat, vertexDescriptor: vertexDesc)
-        outlineDirectPipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
-            device: device, library: library, sampleCount: sampleCount,
-            depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
+            depthFormat: depthFormat, label: "offscreen_selection_outline")
         highlightPipeline = RendererSharedSetup.makeHighlightPipelineState(
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat, vertexDescriptor: vertexDesc)
@@ -600,6 +596,11 @@ public final class OffscreenRenderer: Sendable {
     private var msaaDepthTexture: MTLTexture?
     private var resolveTexture: MTLTexture?
 
+    /// Selection-mask pipelines (single sample, so independent of the MSAA count; #209).
+    private let selectionMaskPipelines: SelectionMaskPipelines?
+    /// The render-sized selection mask the outline dilates (#209).
+    private var selectionMaskTexture: MTLTexture?
+
     // Tessellation / mesh shaders (`OffscreenRenderOptions.renderingQuality`, #165), built on the
     // first render that asks for them so `.standard` renders pay nothing.
     private var tessellationManager: TessellationManager?
@@ -623,20 +624,10 @@ public final class OffscreenRenderer: Sendable {
         self.device = device
         self.commandQueue = commandQueue
 
-        // Load shader library
-        let library: MTLLibrary
-        if let compiled = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            library = compiled
-        } else if let metalURL = Bundle.module.url(forResource: "Shaders", withExtension: "metal"),
-            let src = try? String(contentsOf: metalURL, encoding: .utf8),
-            let fromSource = try? device.makeLibrary(source: src, options: nil)
-        {
-            library = fromSource
-        } else {
-            return nil
-        }
-
+        guard let library = RendererSharedSetup.loadLibrary(device: device) else { return nil }
         self.library = library
+        self.selectionMaskPipelines = RendererSharedSetup.makeSelectionMaskPipelines(
+            device: device, library: library, label: "offscreen_selection_mask")
 
         let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
         let directVertexDesc = RendererSharedSetup.directMeshVertexDescriptor()
@@ -735,7 +726,6 @@ public final class OffscreenRenderer: Sendable {
         pruneBufferCache(keeping: bodies)
 
         let cameraState = options.cameraState
-        let aspectRatio = Float(w) / Float(h)
         let viewMatrix = cameraState.viewMatrix
 
         // Scene-adaptive clip planes (issue #57): fit near/far to the visible
@@ -756,38 +746,11 @@ public final class OffscreenRenderer: Sendable {
         let clip = cameraState.clipPlanes(
             sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodies,
-                in: RendererSharedSetup.wideViewFrustum(
-                    cameraState: cameraState, aspectRatio: aspectRatio)))
+                in: Self.wideViewFrustum(options: options)))
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
 
-        let baseProjMatrix: simd_float4x4
-        if let bounds = options.explicitOrthoBounds {
-            baseProjMatrix = simd_float4x4.orthographic(
-                left: bounds.left,
-                right: bounds.right,
-                bottom: bounds.bottom,
-                top: bounds.top,
-                near: nearClip,
-                far: farClip
-            )
-        } else {
-            baseProjMatrix = cameraState.projectionMatrix(
-                aspectRatio: aspectRatio, near: nearClip, far: farClip)
-        }
-
-        let projMatrix: simd_float4x4
-        if let pan = options.pixelPan, pan != .zero, w > 0, h > 0 {
-            // Screen-space pixels → NDC translation. Screen y is down, NDC y is up.
-            let ndcX = (2.0 * pan.x) / Float(w)
-            let ndcY = (-2.0 * pan.y) / Float(h)
-            var panMatrix = matrix_identity_float4x4
-            panMatrix.columns.3 = SIMD4<Float>(ndcX, ndcY, 0, 1)
-            projMatrix = panMatrix * baseProjMatrix
-        } else {
-            projMatrix = baseProjMatrix
-        }
-
+        let projMatrix = Self.projectionMatrix(options: options, near: nearClip, far: farClip)
         let viewProjection = projMatrix * viewMatrix
 
         let lighting = options.lightingConfiguration
@@ -889,7 +852,13 @@ public final class OffscreenRenderer: Sendable {
 
                 if let enc = commandBuffer.makeRenderCommandEncoder(descriptor: shadowPass) {
                     enc.setDepthStencilState(depthState)
-                    enc.setCullMode(.front)
+                    // No culling (#209): a closed body's light-facing side is nearer the light
+                    // and wins the depth test anyway, while an open sheet casts a shadow
+                    // whichever way it faces. The old `.front` cull (with Metal's default
+                    // clockwise front faces and counter-clockwise meshes) dropped the faces
+                    // turned away from the light, so a sheet facing away cast none, and a
+                    // mirroring transform, which reverses the winding, flipped which side drew.
+                    enc.setCullMode(.none)
                     enc.setDepthBias(0.01, slopeScale: 1.5, clamp: 0.02)
                     // shadow_clip_fragment reads the section clip planes from the scene uniforms,
                     // so clipped-away geometry casts no shadow (#162).
@@ -931,6 +900,60 @@ public final class OffscreenRenderer: Sendable {
                     enc.endEncoding()
                 }
             }
+        }
+
+        /// 1 = selected, 2 = hovered, 0 = neither (the shader's `isSelected` encoding).
+        func selectionState(of body: ViewportBody) -> UInt32 {
+            if options.selectedBodyIDs.contains(body.id) { return 1 }
+            return options.hoveredBodyID == body.id ? 2 : 0
+        }
+
+        /// The PN patches `encodeSurface` draws a body's surface from, or `nil` when it draws the
+        /// plain mesh; the highlight, selection mask and outline follow it (#202).
+        func drawnPatches(_ buffers: BodyBuffersOffscreen) -> TessellationBuffers? {
+            guard buffers.normalBuffer == nil, refined?.tessellatedShaded != nil else { return nil }
+            if buffers.meshlets != nil, refined?.meshShaded != nil { return nil }
+            return buffers.tessellation
+        }
+
+        // Selection mask (#209): the selected and hovered geometry bodies rasterised, without a
+        // depth test, into a single-sample mask the outline pass dilates in screen space.
+        var selectionMaskDraws: [SelectionMaskDraw] = []
+        for body in bodies
+        where body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
+            && selectionState(of: body) > 0
+        {
+            guard let buffers = bodyBufferCache[body.id],
+                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0
+            else { continue }
+            let patches = drawnPatches(buffers)
+            selectionMaskDraws.append(
+                SelectionMaskDraw(
+                    code: selectionState(of: body), modelMatrix: body.transform,
+                    vertexBuffer: vb, normalBuffer: buffers.normalBuffer, indexBuffer: ib,
+                    indexCount: buffers.indexCount, patches: patches,
+                    worldBounds: SelectionMaskDraw.worldBounds(
+                        local: body.boundingBox, transform: body.transform,
+                        tessellated: patches != nil)))
+        }
+        let outlineParams = RendererSharedSetup.selectionOutlineParams(
+            selected: options.selectionOutline, hovered: options.hoverOutline)
+        let outlineScissor = RendererSharedSetup.selectionOutlineScissor(
+            bounds: selectionMaskDraws.map(\.worldBounds), viewProjection: viewProjection,
+            size: SIMD2(w, h), margin: max(outlineParams.selected.w, outlineParams.hovered.w))
+        var outlineMask: MTLTexture?
+        if !selectionMaskDraws.isEmpty, outlineScissor != nil,
+            var maskPipelines = selectionMaskPipelines,
+            let mask = RendererSharedSetup.selectionMaskTexture(
+                device: device, width: w, height: h, reusing: selectionMaskTexture)
+        {
+            selectionMaskTexture = mask
+            maskPipelines.tessellated = refined?.tessellatedSelectionMask
+            RendererSharedSetup.encodeSelectionMaskPass(
+                commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
+                pipelines: maskPipelines, uniforms: makeUniforms())
+            outlineMask = mask
         }
 
         // Main pass
@@ -1013,12 +1036,6 @@ public final class OffscreenRenderer: Sendable {
         }
 
         let xrayOpacity = options.xrayOpacity
-
-        /// 1 = selected, 2 = hovered, 0 = neither (the shader's `isSelected` encoding).
-        func selectionState(of body: ViewportBody) -> UInt32 {
-            if options.selectedBodyIDs.contains(body.id) { return 1 }
-            return options.hoveredBodyID == body.id ? 2 : 0
-        }
 
         /// Draws a body's shaded surface; the caller sets the depth-stencil state.
         ///
@@ -1141,14 +1158,6 @@ public final class OffscreenRenderer: Sendable {
                 &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
             mainEncoder.drawPrimitives(
                 type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
-        }
-
-        /// The PN patches `encodeSurface` draws a body's surface from, or `nil` when it draws the
-        /// plain mesh; the highlight, selection mask and outline follow it (#202).
-        func drawnPatches(_ buffers: BodyBuffersOffscreen) -> TessellationBuffers? {
-            guard buffers.normalBuffer == nil, refined?.tessellatedShaded != nil else { return nil }
-            if buffers.meshlets != nil, refined?.meshShaded != nil { return nil }
-            return buffers.tessellation
         }
 
         /// Composites a body's `triangleStyles` over its shaded surface (issue #25), with
@@ -1399,56 +1408,17 @@ public final class OffscreenRenderer: Sendable {
                 indexBuffer: ib, indexBufferOffset: 0)
         }
 
-        // Selection outline pass: the body expanded in screen space, drawn only where the
-        // stencil is unmarked, which leaves a ring around each selected or hovered body.
-        if !outlinedBodyIDs.isEmpty {
+        // Selection outline pass: the selection mask dilated in screen space by each style's
+        // width, drawn only where the stencil is unmarked, which leaves a ring around each
+        // selected or hovered body (#209).
+        if !outlinedBodyIDs.isEmpty, let mask = outlineMask, let scissor = outlineScissor,
+            let outlinePipeline = pipelines.outlinePipeline
+        {
             mainEncoder.setDepthStencilState(stencilTestState)
             mainEncoder.setStencilReferenceValue(1)
-            for body in bodies where body.isVisible && outlinedBodyIDs.contains(body.id) {
-                let style =
-                    selectionState(of: body) == 2 ? options.hoverOutline : options.selectionOutline
-                guard style.width > 0,
-                    let buffers = bodyBufferCache[body.id],
-                    let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
-                    buffers.indexCount > 0,
-                    let pipeline = buffers.normalBuffer != nil
-                        ? pipelines.outlineDirectPipeline : pipelines.outlinePipeline
-                else { continue }
-                var outlineParams = SelectionOutlineParamsSwift(
-                    viewProjectionMatrix: viewProjection,
-                    modelMatrix: body.transform,
-                    outlineColor: style.color,
-                    outlineWidth: style.width,
-                    viewportSize: SIMD2<Float>(Float(max(w, 1)), Float(max(h, 1)))
-                )
-                mainEncoder.setFragmentBytes(
-                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
-                    index: 1)
-                // Section clip planes: the outline fragment discards clipped fragments.
-                var outlineUniforms = makeUniforms()
-                mainEncoder.setFragmentBytes(
-                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
-                if let patches = drawnPatches(buffers),
-                    let tessellated = refined?.tessellatedOutline
-                {
-                    // Expanded from the tessellated silhouette, as live (#202).
-                    RendererSharedSetup.encodeTessellatedDraw(
-                        encoder: mainEncoder, pipeline: tessellated, tessellation: patches,
-                        uniforms: &outlineParams)
-                    continue
-                }
-                mainEncoder.setRenderPipelineState(pipeline)
-                mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                if let nb = buffers.normalBuffer {
-                    mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                }
-                mainEncoder.setVertexBytes(
-                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
-                    index: 1)
-                mainEncoder.drawIndexedPrimitives(
-                    type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
-                    indexBuffer: ib, indexBufferOffset: 0)
-            }
+            RendererSharedSetup.encodeSelectionOutline(
+                encoder: mainEncoder, pipeline: outlinePipeline, mask: mask,
+                params: outlineParams, scissor: scissor, targetSize: SIMD2(w, h))
         }
 
         // Overlay pass: `RenderLayer.overlay` bodies (manipulator widgets, markers), drawn last
@@ -1752,6 +1722,41 @@ public final class OffscreenRenderer: Sendable {
 
     private static func supportedSampleCount(_ requested: Int, device: MTLDevice) -> Int {
         supportedSampleCount(requested) { device.supportsTextureSampleCount($0) }
+    }
+
+    /// The projection `render(bodies:options:)` draws with: `explicitOrthoBounds` when set, else
+    /// the camera's, then shifted by `pixelPan`.
+    nonisolated static func projectionMatrix(
+        options: OffscreenRenderOptions, near: Float, far: Float
+    ) -> simd_float4x4 {
+        let w = options.width
+        let h = options.height
+        let base: simd_float4x4
+        if let bounds = options.explicitOrthoBounds {
+            base = simd_float4x4.orthographic(
+                left: bounds.left, right: bounds.right, bottom: bounds.bottom, top: bounds.top,
+                near: near, far: far)
+        } else {
+            base = options.cameraState.projectionMatrix(
+                aspectRatio: Float(w) / Float(max(h, 1)), near: near, far: far)
+        }
+        guard let pan = options.pixelPan, pan != .zero, w > 0, h > 0 else { return base }
+        // Screen-space pixels → NDC translation. Screen y is down, NDC y is up.
+        var panMatrix = matrix_identity_float4x4
+        panMatrix.columns.3 = SIMD4<Float>(2 * pan.x / Float(w), -2 * pan.y / Float(h), 0, 1)
+        return panMatrix * base
+    }
+
+    /// The rendered view's frustum with near and far planes far enough apart to hold any scene,
+    /// for deciding which overlays lie in view before the clip planes are fitted.
+    ///
+    /// Built from `projectionMatrix(options:near:far:)`, so it follows `explicitOrthoBounds` and
+    /// `pixelPan` like the image does (#209); the camera's own frustum missed an overlay they
+    /// brought into view, and its depth then went unfitted and the near plane clipped it.
+    nonisolated static func wideViewFrustum(options: OffscreenRenderOptions) -> Frustum {
+        Frustum(
+            viewProjection: projectionMatrix(options: options, near: 1e-3, far: 1e7)
+                * options.cameraState.viewMatrix)
     }
 
     /// Returns the pipelines for `sampleCount`, building and caching them on first use.
