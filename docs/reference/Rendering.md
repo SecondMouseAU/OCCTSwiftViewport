@@ -198,7 +198,7 @@ Offscreen defaults follow onscreen. `MetalViewportView` follows the SwiftUI colo
 
 | `RenderAppearance` | Background |
 |---|---|
-| `.system` (default) | As `.dark` when the appearance in effect at render time is dark, otherwise as `.light`. macOS: `NSApp.effectiveAppearance` when the process has an `NSApplication`, so an app that forces its own appearance with `NSApp.appearance` renders in it; a plain headless process with no application uses the user's Light/Dark setting. iOS/visionOS: `UITraitCollection.current`, or the foreground window scene's style when that is unspecified (it usually is outside a view's trait update); light when neither says (#202) |
+| `.system` (default) | As `.dark` when the appearance in effect at render time is dark, otherwise as `.light`. macOS: `NSApp.effectiveAppearance` when the process has an `NSApplication`, so an app that forces its own appearance with `NSApp.appearance` renders in it; a plain headless process with no application uses the user's Light/Dark setting. iOS/visionOS: `UITraitCollection.current`. That is usually unspecified outside a view's trait update, which makes a headless render light; call `render` inside your view's `traitCollection.performAsCurrent { … }` to follow its style, or pin `.light` / `.dark` (#202) |
 | `.light` | `backgroundColor` |
 | `.dark` | `darkModeBackgroundColor`, or `backgroundColor` when that is `nil` |
 

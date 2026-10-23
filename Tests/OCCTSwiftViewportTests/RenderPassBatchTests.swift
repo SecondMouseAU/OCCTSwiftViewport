@@ -637,7 +637,10 @@ struct TessellatedSurfacePassTests {
         gizmo.renderLayer = .overlay
         guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([gizmo])),
             renderer.tessellationEnabled
-        else { return }
+        else {
+            Issue.record("Metal device or tessellation unavailable")
+            return
+        }
         _ = renderer.renderHeadlessBGRA(width: 64, height: 64, backgroundColor: SIMD4(0, 0, 0, 1))
         let (batch, untessellated) = renderer.tessellationFactorBatch(for: [gizmo])
         #expect(batch.isEmpty, "factors were computed for an overlay that draws untessellated")

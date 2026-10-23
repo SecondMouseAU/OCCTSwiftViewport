@@ -53,9 +53,10 @@ public enum RenderAppearance: Sendable, Hashable {
     /// On macOS, when the process has an `NSApplication`, this is `NSApp.effectiveAppearance`, so
     /// an app that forces its own appearance with `NSApp.appearance` renders in it. A plain
     /// headless process with no application falls back to the user's Light/Dark setting. On iOS
-    /// and visionOS it is `UITraitCollection.current`, or, when that is unspecified (typical
-    /// outside a view's trait update, which is where headless renders run), the style of the
-    /// app's foreground window scene (#202). With neither, it renders light.
+    /// and visionOS it is `UITraitCollection.current`, which is usually unspecified outside a
+    /// view's trait update, so a headless render there comes out light. Render inside the view's
+    /// `traitCollection.performAsCurrent { ... }` to follow its style, or pin `.light` / `.dark`
+    /// (#202). The library does not ask `UIApplication` itself, which app extensions can't use.
     case system
 
     /// Whether this appearance renders dark right now.
@@ -77,14 +78,7 @@ public enum RenderAppearance: Sendable, Hashable {
                 appAppearance: app?.effectiveAppearance,
                 interfaceStyle: UserDefaults.standard.string(forKey: "AppleInterfaceStyle"))
         #elseif canImport(UIKit)
-            let current = UITraitCollection.current.userInterfaceStyle
-            if current != .unspecified { return current == .dark }
-            // Outside a trait update `current` is usually unspecified, so ask the foreground
-            // window scene, which carries the app's effective style (#202).
-            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            let scene =
-                scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-            return scene?.traitCollection.userInterfaceStyle == .dark
+            return UITraitCollection.current.userInterfaceStyle == .dark
         #else
             return false
         #endif
@@ -1149,11 +1143,6 @@ public final class OffscreenRenderer: Sendable {
                 type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
         }
 
-        /// Composites a body's `triangleStyles` over its shaded surface (issue #25), with
-        /// `.lessEqual` and no depth writes so it wins the tie with the surface underneath. The
-        /// style buffer is built per render rather than cached, so mutating `triangleStyles` on an
-        /// existing body (which keeps its `generation`) is always picked up. Leaves
-        /// `highlightDepthState` set.
         /// The PN patches `encodeSurface` draws a body's surface from, or `nil` when it draws the
         /// plain mesh; the highlight, selection mask and outline follow it (#202).
         func drawnPatches(_ buffers: BodyBuffersOffscreen) -> TessellationBuffers? {
@@ -1162,6 +1151,11 @@ public final class OffscreenRenderer: Sendable {
             return buffers.tessellation
         }
 
+        /// Composites a body's `triangleStyles` over its shaded surface (issue #25), with
+        /// `.lessEqual` and no depth writes so it wins the tie with the surface underneath. The
+        /// style buffer is built per render rather than cached, so mutating `triangleStyles` on an
+        /// existing body (which keeps its `generation`) is always picked up. Leaves
+        /// `highlightDepthState` set.
         func encodeHighlight(
             _ body: ViewportBody, _ buffers: BodyBuffersOffscreen, uniforms: inout Uniforms
         ) {

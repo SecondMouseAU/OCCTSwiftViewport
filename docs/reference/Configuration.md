@@ -457,7 +457,7 @@ When `true`, crease-aware normal smoothing is applied to each body's mesh when i
 public var normalSmoothingCreaseAngle: Float  // default: 0.524  (~30°, in radians)
 ```
 
-Crease angle threshold for `autoSmoothNormals`, and for the PN-triangle tessellation of `.enhanced` / `.maximum`. Adjacent face normals that differ by more than this angle are treated as a hard edge and kept sharp; a tessellated patch edge whose end normals differ by more stays flat instead of bulging. It used to be a fixed 30° for tessellation, so a coarse mesh (an 8-segment sphere, say) never rounded; raise the angle to round one (#202).
+Crease angle threshold for `autoSmoothNormals`, and for the PN-triangle tessellation of `.enhanced` (and `.maximum` on a GPU without mesh shaders; the mesh-shader path draws no PN patches). Adjacent face normals that differ by more than this angle are treated as a hard edge and kept sharp; a tessellated patch edge whose end normals differ by more stays flat instead of bulging. It used to be a fixed 30° for tessellation, so a coarse mesh (an 8-segment sphere, say) never rounded; raising the angle rounds one (#202). Raise it with care: with `autoSmoothNormals` on it also smooths shading across edges up to that angle (a box's 90° edges at 1.6 rad), and on meshes with per-face vertices a rounded edge can pull away from a neighbouring flat one, opening a crack along it. Fixed for the controller's lifetime, like the rest of the configuration.
 
 ---
 

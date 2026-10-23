@@ -1781,6 +1781,20 @@ struct PNPatchData {
     packed_float3 n200, n020, n002;           // Corner normals
 };
 
+// The cubic Bezier triangle at barycentric `bary`. Every post-tessellation vertex function
+// evaluates the surface through this one function, so the shaded, shadow, depth, pick,
+// highlight, stencil-mask and outline passes produce bit-identical positions and the
+// `.lessEqual` highlight wins its depth tie with the shaded surface (#202).
+inline float3 pnPatchPosition(PNPatchData p, float3 bary) {
+    float u = bary.x, v = bary.y, w = bary.z;
+    float uu = u*u, vv = v*v, ww = w*w;
+    return p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
+         + p.b210*3.0*uu*v + p.b120*3.0*u*vv
+         + p.b201*3.0*uu*w + p.b102*3.0*u*ww
+         + p.b021*3.0*vv*w + p.b012*3.0*v*ww
+         + p.b111*6.0*u*v*w;
+}
+
 // Tessellation factor parameters
 struct TessFactorParams {
     float4x4 viewProjectionMatrix;
@@ -1979,21 +1993,8 @@ vertex ShadedVertexOut tessellated_vertex(
     float v = bary.y;  // weight for b030 (vertex 1)
     float w = bary.z;  // weight for b003 (vertex 2)
 
-    float uu = u * u;
-    float vv = v * v;
-    float ww = w * w;
-
     // Evaluate cubic Bezier triangle
-    float3 pos = p.b300 * uu * u
-               + p.b030 * vv * v
-               + p.b003 * ww * w
-               + p.b210 * 3.0 * uu * v
-               + p.b120 * 3.0 * u * vv
-               + p.b201 * 3.0 * uu * w
-               + p.b102 * 3.0 * u * ww
-               + p.b021 * 3.0 * vv * w
-               + p.b012 * 3.0 * v * ww
-               + p.b111 * 6.0 * u * v * w;
+    float3 pos = pnPatchPosition(p, bary);
 
     // Quadratically interpolate normals
     float3 normal = normalize(p.n200 * u + p.n020 * v + p.n002 * w);
@@ -2020,14 +2021,7 @@ vertex ShadowVertexOut tessellated_shadow_vertex(
     constant ShadowUniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     ShadowVertexOut out;
@@ -2046,14 +2040,7 @@ vertex PickVertexOut tessellated_depth_vertex(
     constant Uniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     PickVertexOut out;
@@ -2081,14 +2068,7 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
     constant Uniforms& uniforms [[buffer(1)]]
 ) {
     PNPatchData p = patches[patchID];
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-
-    float3 pos = p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-               + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-               + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-               + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-               + p.b111*6.0*u*v*w;
+    float3 pos = pnPatchPosition(p, bary);
 
     float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
     TessPatchPickVertexOut out;
@@ -2119,16 +2099,6 @@ fragment PickFragmentOut tessellated_pick_fragment(
 // where the surface bulged in front of it, and the outline ring sat inside the tessellated
 // silhouette. These post-tessellation vertex functions evaluate the same Bezier patch as
 // `tessellated_vertex`, so the passes cover exactly the surface that was drawn.
-
-inline float3 pnPatchPosition(PNPatchData p, float3 bary) {
-    float u = bary.x, v = bary.y, w = bary.z;
-    float uu = u*u, vv = v*v, ww = w*w;
-    return p.b300*uu*u + p.b030*vv*v + p.b003*ww*w
-         + p.b210*3.0*uu*v + p.b120*3.0*u*vv
-         + p.b201*3.0*uu*w + p.b102*3.0*u*ww
-         + p.b021*3.0*vv*w + p.b012*3.0*v*ww
-         + p.b111*6.0*u*v*w;
-}
 
 struct TessHighlightVertexOut {
     float4 clipPosition [[position]];
