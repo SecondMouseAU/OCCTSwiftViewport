@@ -234,13 +234,21 @@ struct GridAxisConfigurationWiringTests {
         #expect(controller.cameraController.cameraState.fieldOfView == 30)
     }
 
-    @Test("An initial camera's own field of view survives when defaultFieldOfView is omitted")
+    @Test("An initial camera's own field of view survives when defaultFieldOfView is unset")
     func initialCameraFieldOfViewKept() {
         var camera = CameraState.isometric
         camera.fieldOfView = 60
         let configuration = ViewportConfiguration(initialCameraState: camera)
-        #expect(configuration.defaultFieldOfView == 60)
-        #expect(ViewportController(configuration: configuration).cameraState.fieldOfView == 60)
+        #expect(configuration.defaultFieldOfView == nil)
+        let controller = ViewportController(configuration: configuration)
+        #expect(controller.cameraState.fieldOfView == 60)
+        controller.reset(animated: false)
+        #expect(controller.cameraController.cameraState.fieldOfView == 60)
+
+        // Assigning the camera after init (a common pattern) keeps its FOV too.
+        var later = ViewportConfiguration()
+        later.initialCameraState = camera
+        #expect(later.effectiveInitialCameraState.fieldOfView == 60)
 
         var mutated = ViewportConfiguration()
         mutated.defaultFieldOfView = 25

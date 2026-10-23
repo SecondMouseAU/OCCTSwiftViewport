@@ -75,12 +75,10 @@ Maximum camera-to-pivot distance in world units. Caps the zoom-out range.
 #### `defaultFieldOfView`
 
 ```swift
-public var defaultFieldOfView: Float  // default: initialCameraState.fieldOfView (45)
+public var defaultFieldOfView: Float?  // default: nil (keep initialCameraState.fieldOfView)
 ```
 
-Vertical field of view in degrees for the initial perspective camera. `ViewportController` applies it to `initialCameraState` when it is created (`effectiveInitialCameraState` returns the result), and `reset(animated:)` returns to it.
-
-The initializer parameter is optional: when you omit it, `defaultFieldOfView` adopts `initialCameraState.fieldOfView`, so an initial camera built with its own FOV keeps it. When both are given, `defaultFieldOfView` wins.
+Vertical field of view in degrees for the initial perspective camera. When set, `ViewportController` applies it over `initialCameraState.fieldOfView` when it is created (`effectiveInitialCameraState` returns the result). `nil` keeps the initial camera's own FOV, including a camera you assign to `initialCameraState` after creating the configuration. Either way, `reset(animated:)` returns to that FOV.
 
 ---
 
@@ -573,7 +571,7 @@ public init(
     rotationStyle: RotationStyle = .turntable,
     minDistance: Float = 0.1,
     maxDistance: Float = 10000,
-    defaultFieldOfView: Float? = nil,  // nil → initialCameraState.fieldOfView
+    defaultFieldOfView: Float? = nil,  // nil → keep initialCameraState.fieldOfView
     gestureConfiguration: GestureConfiguration = .default,
     displayMode: DisplayMode = .shaded,
     lightingConfiguration: LightingConfiguration = .threePoint,

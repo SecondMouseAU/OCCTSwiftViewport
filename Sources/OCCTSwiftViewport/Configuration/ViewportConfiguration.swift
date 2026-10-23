@@ -199,20 +199,20 @@ public struct ViewportConfiguration: Sendable {
     /// Maximum distance from pivot.
     public var maxDistance: Float
 
-    /// Vertical field of view of the initial perspective camera, in degrees.
+    /// Vertical field of view of the initial perspective camera in degrees, or `nil` (the
+    /// default) to keep `initialCameraState.fieldOfView`.
     ///
-    /// Applied to `initialCameraState` when a `ViewportController` is created (see
-    /// `effectiveInitialCameraState`), and the field of view `ViewportController.reset(animated:)`
-    /// returns to. Overrides `initialCameraState.fieldOfView`; when the initializer is given no
-    /// value it adopts `initialCameraState.fieldOfView`, so a camera built with its own FOV keeps
-    /// it.
-    public var defaultFieldOfView: Float
+    /// When set, it overrides `initialCameraState.fieldOfView` when a `ViewportController` is
+    /// created (see `effectiveInitialCameraState`). Either way the resulting FOV is the one
+    /// `ViewportController.reset(animated:)` returns to. `nil` by default so that assigning
+    /// `initialCameraState` after creating the configuration keeps that camera's own FOV.
+    public var defaultFieldOfView: Float?
 
-    /// `initialCameraState` with `defaultFieldOfView` applied: the camera a new
+    /// `initialCameraState` with `defaultFieldOfView` applied when it is set: the camera a new
     /// `ViewportController` starts from.
     public var effectiveInitialCameraState: CameraState {
         var state = initialCameraState
-        state.fieldOfView = defaultFieldOfView
+        if let defaultFieldOfView { state.fieldOfView = defaultFieldOfView }
         return state
     }
 
@@ -497,7 +497,7 @@ public struct ViewportConfiguration: Sendable {
         self.rotationStyle = rotationStyle
         self.minDistance = minDistance
         self.maxDistance = maxDistance
-        self.defaultFieldOfView = defaultFieldOfView ?? initialCameraState.fieldOfView
+        self.defaultFieldOfView = defaultFieldOfView
         self.gestureConfiguration = gestureConfiguration
         self.displayMode = displayMode
         self.lightingConfiguration = lightingConfiguration
