@@ -328,10 +328,21 @@ public struct ViewportConfiguration: Sendable {
     /// Rendering quality level (tessellation, normal smoothing, mesh shaders).
     public var renderingQuality: RenderingQuality
 
-    /// Maximum tessellation factor for hardware tessellation (1-64, default 16).
+    /// Maximum tessellation factor for hardware tessellation (default 32).
+    ///
+    /// The renderer clamps this to `2...64` and rounds odd values up to even, since Metal caps
+    /// the factor at 64 and the fractional-even partitioning these pipelines use needs an even
+    /// value. The tessellated pipelines are built with the value in effect when the renderer is
+    /// created; a later increase is capped to that value.
     public var tessellationMaxFactor: Int
 
-    /// Whether tessellation adapts to screen-space edge length.
+    /// Whether tessellation adapts to screen-space edge length (default `true`).
+    ///
+    /// `true` sizes each patch's factors from its projected edge length (target ~4 px per edge)
+    /// and surface curvature, capped at `tessellationMaxFactor`. `false` tessellates every patch
+    /// uniformly at `tessellationMaxFactor`, regardless of size on screen; that costs roughly
+    /// `tessellationMaxFactor²` triangles per input triangle, so keep the factor low when
+    /// turning adaptivity off.
     public var adaptiveTessellation: Bool
 
     // MARK: - Temporal Anti-Aliasing

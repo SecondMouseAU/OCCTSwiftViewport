@@ -392,7 +392,7 @@ config.enableFrustumCulling = false
 public var autoSmoothNormals: Bool  // default: false
 ```
 
-When `true`, crease-aware normal smoothing is applied to each body's mesh when its GPU buffers are first built. Flat-shaded meshes (per-face normals from some tessellators) cannot be rounded by Phong tessellation alone; this averages normals across shared vertices while preserving hard edges. Computed once per body and cached. Enabled by the `.cadHighQuality` preset.
+When `true`, crease-aware normal smoothing is applied to each body's mesh when its GPU buffers are first built. Flat-shaded meshes (per-face normals from some tessellators) cannot be rounded by Phong tessellation alone; this averages normals across shared vertices while preserving hard edges. Computed once per body and cached; the smoothed data feeds the standard, tessellated (`.enhanced`) and mesh-shader (`.maximum`) paths alike, since all three read the same vertex buffer. Direct-mesh bodies are not smoothed (their producer supplies the normals). Enabled by the `.cadHighQuality` preset.
 
 ---
 
@@ -478,7 +478,9 @@ Controls tessellation tier and mesh-shader usage. See [`RenderingQuality`](#rend
 public var tessellationMaxFactor: Int  // default: 32
 ```
 
-Maximum hardware tessellation factor per edge (1–64). Only used when `renderingQuality == .enhanced` or `.maximum`. The `.cadHighQuality` preset raises this to 48.
+Maximum hardware tessellation factor per edge. Only used when `renderingQuality == .enhanced` or `.maximum`. The `.cadHighQuality` preset raises this to 48.
+
+Metal caps the factor at 64, and the fractional-even partitioning the tessellated pipelines use needs an even value. An out-of-range or odd value used to make pipeline creation fail, silently disabling tessellation; the renderer now clamps it to `2...64` and rounds an odd value up to the next even one. The pipelines are built with the value in effect when the renderer is created, so raising it later is capped to that value.
 
 ---
 
@@ -488,7 +490,9 @@ Maximum hardware tessellation factor per edge (1–64). Only used when `renderin
 public var adaptiveTessellation: Bool  // default: true
 ```
 
-When `true`, the tessellation level adapts per edge to the projected screen-space length and surface curvature, concentrating triangles where the mesh is coarse relative to the viewport. Requires `renderingQuality != .standard`.
+When `true`, the tessellation level adapts per edge to the projected screen-space length (target about 4 px per tessellated edge) and surface curvature, concentrating triangles where the mesh is coarse relative to the viewport, capped at `tessellationMaxFactor`. Projection uses each body's `transform`, so moved and scaled bodies get the right factors.
+
+When `false`, every patch is tessellated uniformly at `tessellationMaxFactor`, whatever its size on screen. That costs roughly `tessellationMaxFactor²` triangles per input triangle, so lower the factor when turning adaptivity off. Requires `renderingQuality != .standard`.
 
 ---
 
@@ -670,7 +674,7 @@ Controls when in the render order a `ViewportBody` is drawn.
 | Case | Behaviour |
 |---|---|
 | `.geometry` | Drawn in the normal geometry pass with standard depth testing. |
-| `.overlay` | Drawn after the selection-outline pass using an always-pass depth state, so the body is visible even when behind other geometry. Use for manipulator widgets and similar always-on-top affordances. |
+| `.overlay` | Drawn after the selection-outline pass using an always-pass depth state, so the body is visible even when behind other geometry. Overlay bodies get no selection or hover outline (and no per-triangle highlight). Use for manipulator widgets and similar always-on-top affordances. |
 
 Set on `ViewportBody.renderLayer`. See [`ViewportBody`](ViewportBody.md) for the full body API.
 
