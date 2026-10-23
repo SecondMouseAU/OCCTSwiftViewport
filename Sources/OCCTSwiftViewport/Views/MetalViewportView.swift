@@ -128,6 +128,11 @@ public struct MetalViewportView: View {
             let sceneBodies = $bodies
             controller.attachSceneBodies { sceneBodies.wrappedValue }
         }
+        // ...and when the scene changes under a still camera: a model that loads or moves
+        // after the camera last moved would otherwise stay cut until the next gesture.
+        .onChange(of: controller.orthographicSceneBounds(of: bodies)) {
+            controller.cameraController.placeOrthographicEyeInFrontOfScene()
+        }
     }
 
     /// Passes the view's size to the controller, for picking and for a 1:1 pan.

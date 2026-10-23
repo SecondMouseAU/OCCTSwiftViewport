@@ -216,7 +216,7 @@ public final class PivotStrategy {
     /// pivot never reached the raycast branch (issue #208). It uses the distance at which the
     /// perspective camera would show the same height instead, `orthographicScale / (2 tan(fov/2))`,
     /// so `zoomThreshold` means the same framing in both projections.
-    static func zoomDistance(of cameraState: CameraState) -> Float {
+    nonisolated static func zoomDistance(of cameraState: CameraState) -> Float {
         guard cameraState.isOrthographic else { return cameraState.distance }
         let halfFovTan = tan(cameraState.fieldOfView * .pi / 180 * 0.5)
         guard halfFovTan.isFinite, halfFovTan > 1e-4 else { return cameraState.distance }

@@ -37,9 +37,7 @@ public final class CameraController: ObservableObject {
     ///
     /// In orthographic, with a `sceneBoundsProvider`, every change keeps the eye in front of the
     /// scene (see `CameraState.placingOrthographicEye(inFrontOf:)`).
-    @Published public private(set) var cameraState: CameraState {
-        didSet { keepOrthographicEyeInFrontOfScene() }
-    }
+    @Published public private(set) var cameraState: CameraState
 
     /// Whether an animation is in progress.
     @Published public private(set) var isAnimating: Bool = false
@@ -167,13 +165,10 @@ public final class CameraController: ObservableObject {
     /// change (issue #211). `MetalViewportView` sets one that reads its bodies. `nil` (the
     /// default) leaves the eye where `distance` puts it.
     public var sceneBoundsProvider: (@MainActor () -> BoundingBox?)? {
-        didSet { keepOrthographicEyeInFrontOfScene() }
+        didSet { placeOrthographicEyeInFrontOfScene() }
     }
 
     // MARK: - Internal State
-
-    /// Set while `keepOrthographicEyeInFrontOfScene()` writes `cameraState`.
-    private var isPlacingOrthographicEye = false
 
     /// Velocity for inertia (drag points per 1/60 s).
     private(set) var angularVelocity: SIMD2<Float> = .zero
@@ -420,7 +415,7 @@ public final class CameraController: ObservableObject {
         drag.applied = target
         var newState = cameraState
         newState.rotation = simd_normalize(cameraState.rotation * step)
-        cameraState = newState
+        setCameraState(newState)
     }
 
     /// The camera-space rotation an arcball drag from `start` to `end` applies to the camera.
@@ -494,7 +489,7 @@ public final class CameraController: ObservableObject {
         newState.rotation = simd_normalize(yaw * pitch * cameraState.rotation)
         // position = pivot + back × distance, so keep the eye and move the pivot.
         newState.pivot = eye - newState.rotation.act(SIMD3<Float>(0, 0, 1)) * newState.distance
-        cameraState = newState
+        setCameraState(newState)
     }
 
     // MARK: - Pan
@@ -530,7 +525,7 @@ public final class CameraController: ObservableObject {
         var newState = cameraState
         newState.pivot -= right * deltaX * scaleFactor
         newState.pivot += up * deltaY * scaleFactor
-        cameraState = newState
+        setCameraState(newState)
     }
 
     // MARK: - Zoom
@@ -553,7 +548,7 @@ public final class CameraController: ObservableObject {
         } else {
             newState.distance = max(minDistance, min(maxDistance, cameraState.distance / factor))
         }
-        cameraState = newState
+        setCameraState(newState)
     }
 
     /// Zooms by a pinch or drag-zoom magnification, scaled by `zoomSensitivity`.
@@ -632,7 +627,7 @@ public final class CameraController: ObservableObject {
         guard abs(zoomRatio) > 0 else { return }
         var newState = cameraState
         newState.pivot += cursorOffset * zoomRatio
-        cameraState = newState
+        setCameraState(newState)
     }
 
     // MARK: - Roll
@@ -653,7 +648,7 @@ public final class CameraController: ObservableObject {
             let rollQuat = simd_quatf(angle: deltaAngle, axis: SIMD3<Float>(0, 0, 1))
             var newState = cameraState
             newState.rotation = simd_normalize(cameraState.rotation * rollQuat)
-            cameraState = newState
+            setCameraState(newState)
         }
     }
 
@@ -672,7 +667,7 @@ public final class CameraController: ObservableObject {
         animatesPivotOnly = false
         guard duration > 0 else {
             cancelAnimation()
-            cameraState = target
+            setCameraState(target)
             updateSphericalFromRotation()
             return
         }
@@ -827,8 +822,8 @@ public final class CameraController: ObservableObject {
     /// changes, and the pivot is recomputed from the camera's position on every animation tick,
     /// so the view never moves, even while orbit or pan momentum is still coasting. A target at
     /// or behind the camera is ignored, and the distance stays within
-    /// `minDistance...maxDistance`. Like `adjustPivot(to:duration:)`, it does nothing while
-    /// another animation runs.
+    /// `minDistance...maxDistance` (in orthographic, only above `minDistance`). Like
+    /// `adjustPivot(to:duration:)`, it does nothing while another animation runs.
     ///
     /// - Parameters:
     ///   - point: A world point whose depth along the line of sight the pivot moves to. Only
@@ -838,7 +833,7 @@ public final class CameraController: ObservableObject {
         guard !isAnimating else { return }
         let depth = simd_dot(point - cameraState.position, cameraState.viewDirection)
         guard depth > 0 else { return }
-        let target = max(minDistance, min(maxDistance, depth))
+        let target = clampedPivotDistance(depth)
         guard abs(target - cameraState.distance) > 0.001 else { return }
         guard duration > 0 else {
             setDistanceKeepingPosition(target)
@@ -853,28 +848,51 @@ public final class CameraController: ObservableObject {
     private func setDistanceKeepingPosition(_ distance: Float) {
         let eye = cameraState.position
         var newState = cameraState
-        newState.distance = max(minDistance, min(maxDistance, distance))
+        newState.distance = clampedPivotDistance(distance)
         // position = pivot − viewDirection × distance.
         newState.pivot = eye + cameraState.viewDirection * newState.distance
-        cameraState = newState
+        setCameraState(newState)
     }
 
-    /// In orthographic, moves the eye back along the line of sight to the front of the scene.
+    /// Sets `cameraState`, first moving an orthographic eye in front of the scene.
     ///
-    /// The scene is the `sceneBoundsProvider`'s bounds. The picture does not change: only
-    /// `distance` grows.
+    /// Every change after `init` goes through here, so the state is published once, already
+    /// placed, rather than first with the eye inside the model.
+    private func setCameraState(_ state: CameraState) {
+        cameraState = placingOrthographicEye(state)
+    }
+
+    /// Returns `state` with an orthographic eye moved in front of the scene.
+    ///
+    /// The eye moves back along the line of sight to the front of the `sceneBoundsProvider`'s
+    /// bounds. The picture does not change: only `distance` grows.
     ///
     /// An eye already in front of the scene is left exactly where it is, so a pivot that slides
     /// along the line of sight (the dynamic pivot) never moves it.
-    private func keepOrthographicEyeInFrontOfScene() {
-        guard cameraState.isOrthographic, !isPlacingOrthographicEye,
-            let provider = sceneBoundsProvider
-        else { return }
-        let placed = cameraState.placingOrthographicEye(inFrontOf: provider())
-        guard placed != cameraState else { return }
-        isPlacingOrthographicEye = true
-        cameraState = placed
-        isPlacingOrthographicEye = false
+    private func placingOrthographicEye(_ state: CameraState) -> CameraState {
+        guard state.isOrthographic, let provider = sceneBoundsProvider else { return state }
+        return state.placingOrthographicEye(inFrontOf: provider())
+    }
+
+    /// Moves an orthographic eye in front of the scene now, without any other camera change.
+    ///
+    /// For when the scene changed rather than the camera: a model loaded or moved while the
+    /// camera was still. Does nothing if the eye is already in front, or without a
+    /// `sceneBoundsProvider`.
+    public func placeOrthographicEyeInFrontOfScene() {
+        let placed = placingOrthographicEye(cameraState)
+        if placed != cameraState { cameraState = placed }
+    }
+
+    /// Clamps a `distance` the pivot is moved to while the eye stays put.
+    ///
+    /// Perspective keeps it within `minDistance...maxDistance`. Orthographic keeps only the
+    /// floor: there `distance` just places the eye, which may sit further back than
+    /// `maxDistance` to be in front of a large scene, and capping it would stop the pivot short
+    /// of the surface it was sliding to.
+    private func clampedPivotDistance(_ distance: Float) -> Float {
+        let upper = cameraState.isOrthographic ? Float.greatestFiniteMagnitude : maxDistance
+        return max(minDistance, min(upper, distance))
     }
 
     /// Moves the pivot by `delta`, changing `distance` by the move's depth along the line of
@@ -885,8 +903,8 @@ public final class CameraController: ObservableObject {
         // position = pivot − viewDirection × distance, so growing distance by the move's
         // component along viewDirection leaves the camera's depth unchanged.
         let depth = cameraState.distance + simd_dot(delta, cameraState.viewDirection)
-        newState.distance = max(minDistance, min(maxDistance, depth))
-        cameraState = newState
+        newState.distance = clampedPivotDistance(depth)
+        setCameraState(newState)
     }
 
     // MARK: - Inertia
@@ -986,7 +1004,7 @@ public final class CameraController: ObservableObject {
 
         var newState = cameraState
         newState.rotation = simd_normalize(rotZ * rotX * rotRoll)
-        cameraState = newState
+        setCameraState(newState)
     }
 
     // MARK: - Animation Timer
@@ -1050,10 +1068,10 @@ public final class CameraController: ObservableObject {
                 // too is kept, and leave the rotation alone.
                 movePivotKeepingDepth(by: (target.pivot - start.pivot) * (t - previousT))
             } else if finished {
-                cameraState = target
+                setCameraState(target)
                 updateSphericalFromRotation()
             } else {
-                cameraState = start.interpolated(to: target, t: t)
+                setCameraState(start.interpolated(to: target, t: t))
             }
 
             if finished {

@@ -818,6 +818,15 @@ extension ViewportController {
         }
     }
 
+    /// The bounds an orthographic eye is kept in front of, or `nil` in perspective.
+    ///
+    /// `MetalViewportView` watches it, to re-place the eye when the scene changes while the
+    /// camera does not. Read from the per-generation bounding-box cache, so it is cheap.
+    internal func orthographicSceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
+        guard cameraState.isOrthographic else { return nil }
+        return pivotStrategy.sceneBounds(of: bodies)
+    }
+
     /// Schedules a dynamic pivot update with a 50ms coalesce delay.
     ///
     /// - Parameters:

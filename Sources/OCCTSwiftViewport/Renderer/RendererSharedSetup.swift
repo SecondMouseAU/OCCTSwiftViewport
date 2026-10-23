@@ -709,7 +709,9 @@ enum RendererSharedSetup {
                 gridOrigin: window.origin,
                 spacing: spacing,
                 columns: window.columns,
-                dotSize: max(2.0, 4.0 / cameraState.distance),
+                // The distance that shows the same height: in orthographic `distance` only
+                // places the eye, which may sit far back (#211).
+                dotSize: max(2.0, 4.0 / PivotStrategy.zoomDistance(of: cameraState)),
                 rows: window.rows,
                 dotColor: settings.gridColors.dot
             )

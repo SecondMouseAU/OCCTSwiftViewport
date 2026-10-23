@@ -6,6 +6,7 @@
 // behind the camera vanished, and a roll schedules no pivot update. Most checks project a point
 // with the matrices and clip planes the renderer builds.
 
+import Combine
 import CoreGraphics
 import Foundation
 import Testing
@@ -187,6 +188,58 @@ struct OrthographicFollowupTests {
         }
     }
 
+    @Test("Each orthographic camera change is published once, with the eye already placed")
+    func placedStatePublishedOnce() {
+        let controller = CameraController(initialState: camera(distance: 30, scale: 3))
+        let bounds = boxBounds
+        controller.sceneBoundsProvider = { bounds }
+        var published: [CameraState] = []
+        let subscription = controller.$cameraState.dropFirst().sink { published.append($0) }
+        defer { subscription.cancel() }
+
+        // Inside the box: the eye at z = 1 must come out to the front of it.
+        controller.focusOn(point: SIMD3(0, 0, -29), animated: false)
+        #expect(published.count == 1)
+        let radius = bounds.diagonalLength / 2
+        #expect(
+            published.first.map {
+                CameraState.nearestDepth(of: bounds, from: $0.position, along: $0.viewDirection)
+            }.map { $0 >= radius - 1e-3 } == true)
+    }
+
+    @Test("A scene that grows under a still orthographic camera re-places the eye on request")
+    func placeAfterSceneChange() {
+        final class Scene {
+            var bounds = BoundingBox(min: SIMD3(repeating: -1), max: SIMD3(repeating: 1))
+        }
+        let scene = Scene()
+        let controller = CameraController(initialState: camera(distance: 6, scale: 3))
+        controller.sceneBoundsProvider = { scene.bounds }
+        #expect(controller.cameraState.distance == 6)
+
+        scene.bounds = BoundingBox(min: SIMD3(repeating: -8), max: SIMD3(repeating: 8))
+        controller.placeOrthographicEyeInFrontOfScene()
+        for corner in corners(of: scene.bounds) {
+            #expect(isDrawn(corner, controller.cameraState, bounds: scene.bounds), "\(corner)")
+        }
+    }
+
+    @Test("An orthographic pivot slide past maxDistance still reaches the surface")
+    func orthographicSlideIgnoresMaxDistance() {
+        let controller = CameraController(initialState: camera(distance: 10, scale: 3))
+        controller.maxDistance = 20
+        let eye = controller.cameraState.position
+        controller.slidePivotAlongLineOfSight(toDepthOf: SIMD3(0, 0, -30), duration: 0)
+        #expect(abs(controller.cameraState.distance - 40) < 1e-3)
+        #expect(simd_distance(controller.cameraState.position, eye) < 1e-3)
+
+        // Perspective keeps the cap: there distance is the zoom.
+        let persp = CameraController(initialState: camera(orthographic: false))
+        persp.maxDistance = 20
+        persp.slidePivotAlongLineOfSight(toDepthOf: SIMD3(0, 0, -30), duration: 0)
+        #expect(persp.cameraState.distance == 20)
+    }
+
     // MARK: - 2. Orthographic rays start in front of the scene
 
     @Test("An orthographic pivot raycast from an eye inside the box finds the front face")
@@ -197,6 +250,20 @@ struct OrthographicFollowupTests {
                 cameraState: camera(distance: 1, scale: 1), bodies: [box], aspectRatio: 1,
                 config: .default))
         #expect(abs(pivot.z - 2) < 1e-3, "pivot \(pivot)")
+    }
+
+    @Test("An orthographic focus-on-point double-tap from an eye inside the box finds its front")
+    func orthographicFocusFromInside() {
+        var config = ViewportConfiguration()
+        config.gestureConfiguration = GestureConfiguration(
+            doubleTap: .focusOnPoint, doubleClick: .focusOnPoint)
+        config.initialCameraState = camera(distance: 1, scale: 1)
+        let vc = ViewportController(configuration: config)
+        vc.updateViewportSize(CGSize(width: 400, height: 400))
+        vc.inputSceneBodies = [box]
+        vc.dispatch(.tap(ndc: .zero, count: 2))
+        _ = vc.cameraController.advance(by: 1)
+        #expect(abs(vc.cameraState.pivot.z - 2) < 1e-3, "pivot \(vc.cameraState.pivot)")
     }
 
     @Test("Ray.fromCamera with scene bounds starts an orthographic ray in front of them")
@@ -279,25 +346,71 @@ struct OrthographicFollowupTests {
                 == nil)
     }
 
-    @Test("A headless distance measurement with one end behind the camera is still drawn")
-    func compositorDrawsClippedMeasurement() throws {
-        let width = 64
-        let height = 64
-        let base = try #require(Self.blackImage(width: width, height: height))
+    /// The kinds of measurement a headless render cuts.
+    enum Kind: CaseIterable { case distance, angle, radius }
+
+    @Test(
+        "A headless measurement with one end behind the camera is cut, not dropped",
+        arguments: Kind.allCases)
+    func compositorDrawsClippedMeasurement(kind: Kind) throws {
+        let size = 256
+        let base = try #require(Self.blackImage(width: size, height: size))
+        // Orthographic, eye at z = 10, 8 units tall: x = 4 is the right edge of the view.
         let state = camera(scale: 8)
         let vp = state.projectionMatrix(aspectRatio: 1, near: 0.5, far: 100) * state.viewMatrix
-        // From the left of the view to a point behind the eye at z = 10.
-        let measurement = ViewportMeasurement.distance(
-            DistanceMeasurement(start: SIMD3(-3, 0, 0), end: SIMD3(3, 0, 15)))
+        // From the lower left of the view to a point behind the eye. Cut at the near plane,
+        // z = 9.5, which is (0.8, 0.8): pixel (153.6, 102.4), top-down. The kept end, (-3, -3),
+        // is pixel (32, 224).
+        let inView = SIMD3<Float>(-3, -3, 0)
+        let behind = SIMD3<Float>(3, 3, 15)
+        let measurement: ViewportMeasurement
+        switch kind {
+        case .distance:
+            measurement = .distance(DistanceMeasurement(start: inView, end: behind))
+        case .angle:
+            measurement = .angle(
+                AngleMeasurement(pointA: behind, vertex: inView, pointB: SIMD3(-3, 0, 0)))
+        case .radius:
+            measurement = .radius(RadiusMeasurement(center: inView, edgePoint: behind))
+        }
         let image = try #require(
             MeasurementCompositor.composite(
                 baseImage: base, measurements: [measurement], viewProjection: vp,
-                viewportSize: CGSize(width: width, height: height)))
+                viewportSize: CGSize(width: size, height: size)))
         let pixels = Self.bgra(image)
-        let lit = stride(from: 0, to: pixels.count, by: 4).filter {
+        func lit(_ x: Int, _ y: Int) -> Bool {
+            let i = (y * size + x) * 4
+            return pixels[i] > 40 || pixels[i + 1] > 40 || pixels[i + 2] > 40
+        }
+        // The line runs through the cut point and halfway along to it.
+        #expect(lit(153, 102) || lit(154, 102) || lit(153, 103), "\(kind): the cut end")
+        #expect(lit(92, 163) || lit(93, 163) || lit(92, 164), "\(kind): the line")
+        // No end marker at the cut, 2 px off the line, inside where a marker would be.
+        #expect(!lit(155, 103), "\(kind): a marker was drawn at the cut")
+        if kind == .distance {
+            // ...but there is one at the end in view.
+            #expect(lit(33, 225), "\(kind): no marker at the end in view")
+        }
+    }
+
+    @Test("A headless angle whose vertex is behind the camera still draws its arms")
+    func compositorDrawsArmsWithoutVertex() throws {
+        let size = 256
+        let base = try #require(Self.blackImage(width: size, height: size))
+        let state = camera(scale: 8)
+        let vp = state.projectionMatrix(aspectRatio: 1, near: 0.5, far: 100) * state.viewMatrix
+        let measurement = ViewportMeasurement.angle(
+            AngleMeasurement(
+                pointA: SIMD3(-3, -3, 0), vertex: SIMD3(3, 3, 15), pointB: SIMD3(3, -3, 0)))
+        let image = try #require(
+            MeasurementCompositor.composite(
+                baseImage: base, measurements: [measurement], viewProjection: vp,
+                viewportSize: CGSize(width: size, height: size)))
+        let pixels = Self.bgra(image)
+        let lit = stride(from: 0, to: pixels.count, by: 4).contains {
             pixels[$0] > 40 || pixels[$0 + 1] > 40 || pixels[$0 + 2] > 40
         }
-        #expect(!lit.isEmpty, "the measurement was dropped")
+        #expect(lit)
     }
 
     private static func blackImage(width: Int, height: Int) -> CGImage? {

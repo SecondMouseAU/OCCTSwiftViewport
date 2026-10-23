@@ -347,7 +347,7 @@ To focus on a specific world point programmatically (bypassing the strategy):
 viewport.focusOn(point: pickResult.worldPosition, distance: 5.0, animated: true)
 ```
 
-`focusOn` stops any momentum, animated or not, so the camera stays on the point.
+`focusOn` stops any momentum, animated or not, so the camera stays on the point. Under an orthographic camera `distance` sets the zoom: the scale becomes the height a perspective camera 5 units away would show.
 
 ---
 

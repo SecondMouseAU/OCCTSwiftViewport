@@ -291,7 +291,19 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 
 ### `var sceneBoundsProvider: (@MainActor () -> BoundingBox?)?`
 
-Returns the world-space bounds of the scene, which an orthographic eye is kept in front of. With a provider set, each change to `cameraState` in orthographic moves the eye back along the line of sight, if need be, until it is in front of these bounds (see `CameraState.placingOrthographicEye(inFrontOf:)`); the picture does not change, only `distance`. An eye already in front is not moved, so the dynamic pivot sliding along the line of sight never moves it. `MetalViewportView` sets one that reads its bodies; `nil` (the default) leaves the eye where `distance` puts it (issue #211).
+Returns the world-space bounds of the scene, which an orthographic eye is kept in front of. With a provider set, each change to `cameraState` in orthographic moves the eye back along the line of sight, if need be, until it is in front of these bounds (see `CameraState.placingOrthographicEye(inFrontOf:)`); the picture does not change, only `distance`. An eye already in front is not moved, so the dynamic pivot sliding along the line of sight never moves it. `MetalViewportView` sets one that reads its bodies, and also re-places the eye when the scene's bounds change under a still camera; `nil` (the default) leaves the eye where `distance` puts it (issue #211). Each change is published once, already placed.
+
+While the eye stays put and the pivot moves (the dynamic pivot), an orthographic `distance` is kept above `minDistance` but not capped at `maxDistance`: the placed eye may sit further back than that in front of a large scene, and the cap stopped the pivot short of the surface it was sliding to.
+
+---
+
+### `func placeOrthographicEyeInFrontOfScene()`
+
+```swift
+public func placeOrthographicEyeInFrontOfScene()
+```
+
+Moves an orthographic eye in front of the `sceneBoundsProvider`'s bounds now, without any other camera change, for when the scene changed rather than the camera (a model loaded or moved). Does nothing in perspective, without a provider, or when the eye is already in front.
 
 ---
 
