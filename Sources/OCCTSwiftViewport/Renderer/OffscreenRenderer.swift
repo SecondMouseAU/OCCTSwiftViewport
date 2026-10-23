@@ -10,7 +10,9 @@ import ImageIO
 import UniformTypeIdentifiers
 import simd
 
-#if canImport(UIKit)
+#if os(macOS)
+    import AppKit
+#elseif canImport(UIKit)
     import UIKit
 #endif
 
@@ -46,8 +48,12 @@ public enum RenderAppearance: Sendable, Hashable {
     case light
     /// Dark appearance: `darkModeBackgroundColor`, or `backgroundColor` when that is `nil`.
     case dark
-    /// The system appearance at render time. On macOS this is the user's Light/Dark setting; on
-    /// iOS and visionOS it is `UITraitCollection.current`.
+    /// The appearance in effect at render time.
+    ///
+    /// On macOS, when the process has an `NSApplication`, this is `NSApp.effectiveAppearance`, so
+    /// an app that forces its own appearance with `NSApp.appearance` renders in it. A plain
+    /// headless process with no application falls back to the user's Light/Dark setting. On iOS
+    /// and visionOS it is `UITraitCollection.current`.
     case system
 
     /// Whether this appearance renders dark right now.
@@ -63,13 +69,32 @@ public enum RenderAppearance: Sendable, Hashable {
     @MainActor
     private static var systemIsDark: Bool {
         #if os(macOS)
-            return UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+            // `NSApp` is nil until something creates the shared application (issue #186).
+            let app: NSApplication? = NSApp
+            return isDark(
+                appAppearance: app?.effectiveAppearance,
+                interfaceStyle: UserDefaults.standard.string(forKey: "AppleInterfaceStyle"))
         #elseif canImport(UIKit)
             return UITraitCollection.current.userInterfaceStyle == .dark
         #else
             return false
         #endif
     }
+
+    #if os(macOS)
+        /// Whether `.system` renders dark, given the application's effective appearance (`nil`
+        /// when the process has no `NSApplication`) and the `AppleInterfaceStyle` user default.
+        ///
+        /// The application's appearance wins: it already reflects the system setting unless the
+        /// app overrides it. High-contrast variants match their light or dark base.
+        @MainActor
+        static func isDark(appAppearance: NSAppearance?, interfaceStyle: String?) -> Bool {
+            if let appAppearance {
+                return appAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            }
+            return interfaceStyle == "Dark"
+        }
+    #endif
 }
 
 /// Configuration for an offscreen render.
@@ -82,9 +107,13 @@ public enum RenderAppearance: Sendable, Hashable {
 /// by `LightingConfiguration.environmentMapURL` / `environmentMapData`. A map loaded imperatively
 /// with `ViewportRenderer.loadEnvironmentMap(...)` lives on that renderer and is not seen here.
 ///
-/// What the offscreen path does **not** reproduce: PN-triangle tessellation and mesh shaders
-/// (`RenderingQuality`, `tessellationMaxFactor`, `adaptiveTessellation`), TAA, depth of field,
-/// frustum culling, and the GPU pick pass.
+/// `renderingQuality` selects the same surface path as live: PN-triangle tessellation at
+/// `.enhanced` and `.maximum`, and mesh shaders at `.maximum` on Apple9 GPUs. Offscreen output
+/// stays deterministic: a uniform factor never follows system load (see
+/// `uniformTessellationFactor`).
+///
+/// What the offscreen path does **not** reproduce: TAA, depth of field, frustum culling, and the
+/// GPU pick pass.
 public struct OffscreenRenderOptions: Sendable {
     public var width: Int
     public var height: Int
@@ -201,6 +230,32 @@ public struct OffscreenRenderOptions: Sendable {
     /// Silhouette darkness, matching `ViewportConfiguration.silhouetteIntensity`.
     public var silhouetteIntensity: Float
 
+    /// Surface path, matching `ViewportConfiguration.renderingQuality`.
+    ///
+    /// `.enhanced` refines every interleaved mesh with GPU PN-triangle tessellation; `.maximum`
+    /// draws through mesh shaders on Apple9 GPUs (M3, A17 and later) and falls back to
+    /// tessellation elsewhere, as the live viewport does. Direct-mesh bodies, and bodies whose
+    /// `faceIndices` don't cover every triangle, always draw their mesh as given.
+    public var renderingQuality: RenderingQuality
+
+    /// Maximum tessellation factor, matching `ViewportConfiguration.tessellationMaxFactor`.
+    ///
+    /// Clamped to `2...64` and rounded up to an even value, as live.
+    public var tessellationMaxFactor: Int
+
+    /// Whether tessellation adapts to projected edge length, matching
+    /// `ViewportConfiguration.adaptiveTessellation`.
+    ///
+    /// Adaptive factors depend only on the camera, the output size and `tessellationMaxFactor`.
+    public var adaptiveTessellation: Bool
+
+    /// The factor used when `adaptiveTessellation` is `false`, matching
+    /// `ViewportConfiguration.uniformTessellationFactor`.
+    ///
+    /// `.fixed(n)` tessellates at `n`. `.loadAdaptive` has no load to adapt to offscreen and
+    /// always uses `tessellationMaxFactor`, so the same options always give the same image.
+    public var uniformTessellationFactor: UniformTessellationFactor
+
     /// Optional explicit orthographic projection bounds (world units).
     ///
     /// When set, overrides `cameraState.projectionMatrix(...)` and forces
@@ -270,7 +325,13 @@ public struct OffscreenRenderOptions: Sendable {
             ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
         enableSilhouettes: Bool = ViewportController.defaultConfiguration.enableSilhouettes,
         silhouetteThickness: Float = ViewportController.defaultConfiguration.silhouetteThickness,
-        silhouetteIntensity: Float = ViewportController.defaultConfiguration.silhouetteIntensity
+        silhouetteIntensity: Float = ViewportController.defaultConfiguration.silhouetteIntensity,
+        renderingQuality: RenderingQuality =
+            ViewportController.defaultConfiguration.renderingQuality,
+        tessellationMaxFactor: Int = ViewportController.defaultConfiguration.tessellationMaxFactor,
+        adaptiveTessellation: Bool = ViewportController.defaultConfiguration.adaptiveTessellation,
+        uniformTessellationFactor: UniformTessellationFactor =
+            ViewportController.defaultConfiguration.uniformTessellationFactor
     ) {
         self.width = width
         self.height = height
@@ -306,6 +367,10 @@ public struct OffscreenRenderOptions: Sendable {
         self.enableSilhouettes = enableSilhouettes
         self.silhouetteThickness = silhouetteThickness
         self.silhouetteIntensity = silhouetteIntensity
+        self.renderingQuality = renderingQuality
+        self.tessellationMaxFactor = tessellationMaxFactor
+        self.adaptiveTessellation = adaptiveTessellation
+        self.uniformTessellationFactor = uniformTessellationFactor
     }
 
     /// Options that reproduce what a controller's live viewport currently shows.
@@ -313,6 +378,9 @@ public struct OffscreenRenderOptions: Sendable {
     /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
     /// selection and hover, and every `ViewportConfiguration` field the offscreen path honours.
     /// Measurements are not copied; pass resolved ones in `measurements` to draw them.
+    ///
+    /// With `debugDisableTessellation` on, which switches the live view's tessellation and mesh
+    /// shaders off, the options use `.standard`.
     @MainActor
     public init(matching controller: ViewportController, width: Int, height: Int) {
         let config = controller.configuration
@@ -347,8 +415,14 @@ public struct OffscreenRenderOptions: Sendable {
             normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
             enableSilhouettes: config.enableSilhouettes,
             silhouetteThickness: config.silhouetteThickness,
-            silhouetteIntensity: config.silhouetteIntensity
+            silhouetteIntensity: config.silhouetteIntensity,
+            renderingQuality: config.renderingQuality,
+            tessellationMaxFactor: config.tessellationMaxFactor,
+            adaptiveTessellation: config.adaptiveTessellation,
+            uniformTessellationFactor: config.uniformTessellationFactor
         )
+        // `debugDisableTessellation` switches the live view's refinement off.
+        if controller.debugDisableTessellation { renderingQuality = .standard }
     }
 
     /// The background colour for `appearance`: `darkModeBackgroundColor` when it renders dark and
@@ -525,6 +599,13 @@ public final class OffscreenRenderer: Sendable {
     private var msaaDepthTexture: MTLTexture?
     private var resolveTexture: MTLTexture?
 
+    // Tessellation / mesh shaders (`OffscreenRenderOptions.renderingQuality`, #165), built on the
+    // first render that asks for them so `.standard` renders pay nothing.
+    private var tessellationManager: TessellationManager?
+    /// Set once building `tessellationManager` failed, so it is not retried every render.
+    private var tessellationManagerFailed = false
+    private var refinedPipelinesByKey: [RefinedPipelines.Key: RefinedPipelines] = [:]
+
     // Body buffer cache
     private var bodyBufferCache: [String: BodyBuffersOffscreen] = [:]
     private var bodyGeneration: [String: UInt64] = [:]
@@ -643,9 +724,14 @@ public final class OffscreenRenderer: Sendable {
             let pipelines = pipelines(forSampleCount: sampleCount)
         else { return nil }
 
+        // Tessellated / mesh-shader surface pipelines for `renderingQuality`, as live (#165).
+        let refined = refinedPipelines(for: options, sampleCount: sampleCount)
+        let refinement =
+            refined?.refinement(canTessellate: tessellationManager != nil) ?? .none
+
         // Ensure buffers for all bodies
         for body in bodies where body.isVisible {
-            ensureBuffers(for: body, options: options)
+            ensureBuffers(for: body, options: options, refinement: refinement)
         }
         pruneBufferCache(keeping: bodies)
 
@@ -760,6 +846,34 @@ public final class OffscreenRenderer: Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
+        // Tessellation factors for this camera and output size (#165). Never load-governed, so
+        // the same options always give the same image. Overlay bodies draw untessellated.
+        if refinement.tessellation, let tessellationManager {
+            let batch: [(TessellationBuffers, simd_float4x4)] = bodies.compactMap { body in
+                guard body.isVisible, body.renderLayer == .geometry,
+                    let tess = bodyBufferCache[body.id]?.tessellation
+                else {
+                    return nil
+                }
+                return (tess, body.transform)
+            }
+            if !batch.isEmpty, let computeEncoder = commandBuffer.makeComputeCommandEncoder() {
+                let maxFactor = TessellationManager.clampedMaxFactor(options.tessellationMaxFactor)
+                tessellationManager.updateTessFactors(
+                    tessBuffers: batch,
+                    viewProjectionMatrix: viewProjection,
+                    viewportSize: SIMD2<Float>(Float(w), Float(h)),
+                    adaptive: options.adaptiveTessellation,
+                    maxFactor: RendererSharedBuffers.deterministicTessellationFactor(
+                        requestedMaxFactor: options.tessellationMaxFactor,
+                        pipelineMaxFactor: maxFactor,
+                        adaptive: options.adaptiveTessellation,
+                        policy: options.uniformTessellationFactor),
+                    encoder: computeEncoder)
+                computeEncoder.endEncoding()
+            }
+        }
+
         // Shadow pass
         if shadowEnabled {
             shadowMapManager.ensureSize(lighting.shadowMapSize)
@@ -788,6 +902,13 @@ public final class OffscreenRenderer: Sendable {
                         else { continue }
                         var shadowUniforms = ShadowUniformsSwift(
                             lightViewProjectionMatrix: lightVP, modelMatrix: body.transform)
+                        if Self.encodeRefinedDraw(
+                            encoder: enc, buffers: buffers, meshPipeline: refined?.meshShadow,
+                            tessellatedPipeline: refined?.tessellatedShadow,
+                            uniforms: &shadowUniforms)
+                        {
+                            continue
+                        }
                         if let nb = buffers.normalBuffer {
                             // Direct-mesh body (Option A): position@0 + normal@2.
                             enc.setRenderPipelineState(shadowDirectPipeline)
@@ -897,14 +1018,33 @@ public final class OffscreenRenderer: Sendable {
         }
 
         /// Draws a body's shaded surface; the caller sets the depth-stencil state.
+        ///
+        /// With `refine`, interleaved bodies go through the mesh-shader or tessellated pipeline
+        /// when `renderingQuality` built one, as in the live main and transparent passes. Overlay
+        /// bodies pass `false`: live draws them with the plain pipeline.
         func encodeSurface(
             _ buffers: BodyBuffersOffscreen,
             uniforms: inout Uniforms,
-            bodyUniforms: inout BodyUniforms
+            bodyUniforms: inout BodyUniforms,
+            refine: Bool = true
         ) {
             guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
                 buffers.indexCount > 0
             else { return }
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(
+                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                mainEncoder.setFragmentTexture(shadowTex, index: 1)
+            }
+            if refine,
+                Self.encodeRefinedDraw(
+                    encoder: mainEncoder, buffers: buffers, meshPipeline: refined?.meshShaded,
+                    tessellatedPipeline: refined?.tessellatedShaded, uniforms: &uniforms)
+            {
+                return
+            }
             if let nb = buffers.normalBuffer {
                 // Direct-mesh path (Option A): position@0 + normal@2, no interleave.
                 mainEncoder.setRenderPipelineState(pipelines.directMeshPipeline)
@@ -915,13 +1055,6 @@ public final class OffscreenRenderer: Sendable {
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             }
             mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-            mainEncoder.setFragmentBytes(
-                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
-            if shadowEnabled, let shadowTex = shadowMapManager.texture {
-                mainEncoder.setFragmentTexture(shadowTex, index: 1)
-            }
             mainEncoder.drawIndexedPrimitives(
                 type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                 indexBuffer: ib, indexBufferOffset: 0)
@@ -1302,7 +1435,8 @@ public final class OffscreenRenderer: Sendable {
             uniforms.modelMatrix = body.transform
             var bodyUniforms = BodyUniforms(body: body, objectIndex: 0, isSelected: 0)
             if displayMode.showsSurfaces, hasMesh {
-                encodeSurface(buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                encodeSurface(
+                    buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms, refine: false)
             }
             encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
@@ -1318,6 +1452,7 @@ public final class OffscreenRenderer: Sendable {
                 options: options,
                 nearPlane: nearClip,
                 farPlane: farClip,
+                refined: refined,
                 makeUniforms: makeUniforms
             )
         }
@@ -1439,6 +1574,7 @@ public final class OffscreenRenderer: Sendable {
         options: OffscreenRenderOptions,
         nearPlane: Float,
         farPlane: Float,
+        refined: RefinedPipelines?,
         makeUniforms: () -> Uniforms
     ) {
         guard let compositePipeline = ssaoCompositePipeline,
@@ -1462,6 +1598,13 @@ public final class OffscreenRenderer: Sendable {
                 else { continue }
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                if Self.encodeRefinedDraw(
+                    encoder: encoder, buffers: buffers, meshPipeline: refined?.meshDepthOnly,
+                    tessellatedPipeline: refined?.tessellatedDepthOnly, uniforms: &uniforms)
+                {
+                    continue
+                }
                 if let nb = buffers.normalBuffer {
                     encoder.setRenderPipelineState(depthDirectPipeline)
                     encoder.setVertexBuffer(vb, offset: 0, index: 0)
@@ -1471,7 +1614,6 @@ public final class OffscreenRenderer: Sendable {
                     encoder.setVertexBuffer(vb, offset: 0, index: 0)
                 }
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 encoder.drawIndexedPrimitives(
                     type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                     indexBuffer: ib, indexBufferOffset: 0)
@@ -1581,6 +1723,73 @@ public final class OffscreenRenderer: Sendable {
         return built
     }
 
+    /// The tessellated and mesh-shader pipelines `options.renderingQuality` asks for, built and
+    /// cached on first use; `nil` at `.standard`.
+    private func refinedPipelines(
+        for options: OffscreenRenderOptions, sampleCount: Int
+    ) -> RefinedPipelines? {
+        guard RendererSharedSetup.wantsTessellation(options.renderingQuality) else { return nil }
+        // Mesh shaders don't need the manager, so a failed manager only loses tessellation.
+        if tessellationManager == nil, !tessellationManagerFailed {
+            tessellationManager = TessellationManager(device: device, library: library)
+            tessellationManagerFailed = tessellationManager == nil
+        }
+        let key = RefinedPipelines.Key(
+            sampleCount: sampleCount,
+            maxFactor: TessellationManager.clampedMaxFactor(options.tessellationMaxFactor),
+            meshShaders: RendererSharedSetup.wantsMeshShaders(
+                options.renderingQuality, device: device))
+        if let cached = refinedPipelinesByKey[key] { return cached }
+        let built = RefinedPipelines(device: device, library: library, key: key)
+        refinedPipelinesByKey[key] = built
+        return built
+    }
+
+    /// The refined surface paths the next render with `options` uses; exposed for tests.
+    func surfacePaths(for options: OffscreenRenderOptions) -> (
+        tessellation: Bool, meshShaders: Bool
+    ) {
+        let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
+        let refinement = refinedPipelines(for: options, sampleCount: sampleCount)?.refinement(
+            canTessellate: tessellationManager != nil)
+        return (refinement?.tessellation ?? false, refinement?.meshShaders ?? false)
+    }
+
+    /// Whether the cached buffers for `bodyID` include tessellation patches / meshlets; exposed
+    /// for tests.
+    func refinementBuffers(forBodyID bodyID: String) -> (tessellation: Bool, meshlets: Bool) {
+        let buffers = bodyBufferCache[bodyID]
+        return (buffers?.tessellation != nil, buffers?.meshlets != nil)
+    }
+
+    /// Draws `buffers` through the mesh-shader pipeline when it has meshlets, else the
+    /// tessellated pipeline when it has patches, mirroring the live renderer's precedence.
+    ///
+    /// - Returns: `false` when neither applies (direct-mesh bodies, `.standard`, or a body
+    ///   without `faceIndices`); the caller then draws the plain mesh.
+    private static func encodeRefinedDraw<U>(
+        encoder: MTLRenderCommandEncoder,
+        buffers: BodyBuffersOffscreen,
+        meshPipeline: MTLRenderPipelineState?,
+        tessellatedPipeline: MTLRenderPipelineState?,
+        uniforms: inout U
+    ) -> Bool {
+        guard buffers.normalBuffer == nil, let vb = buffers.vertexBuffer else { return false }
+        if let meshlets = buffers.meshlets, let meshPipeline {
+            RendererSharedSetup.encodeMeshletDraw(
+                encoder: encoder, pipeline: meshPipeline, meshlets: meshlets, vertexBuffer: vb,
+                uniforms: &uniforms)
+            return true
+        }
+        if let tessellation = buffers.tessellation, let tessellatedPipeline {
+            RendererSharedSetup.encodeTessellatedDraw(
+                encoder: encoder, pipeline: tessellatedPipeline, tessellation: tessellation,
+                uniforms: &uniforms)
+            return true
+        }
+        return false
+    }
+
     /// Drops cached buffers for bodies no longer passed to `render`, matching the live renderer.
     private func pruneBufferCache(keeping bodies: [ViewportBody]) {
         let activeIDs = Set(bodies.map(\.id))
@@ -1593,7 +1802,9 @@ public final class OffscreenRenderer: Sendable {
     /// Number of bodies with cached GPU buffers; exposed for tests.
     var cachedBodyCount: Int { bodyBufferCache.count }
 
-    private func ensureBuffers(for body: ViewportBody, options: OffscreenRenderOptions) {
+    private func ensureBuffers(
+        for body: ViewportBody, options: OffscreenRenderOptions, refinement: SurfaceRefinement
+    ) {
         let currentGen = body.generation
         // Crease-smoothed normals (issue #48) depend on the options as well as the body, so the
         // cached mesh is reused only when it was built with the same smoothing.
@@ -1601,8 +1812,12 @@ public final class OffscreenRenderer: Sendable {
             options.autoSmoothNormals && !body.usesDirectMesh && !body.vertexData.isEmpty
             && !body.indices.isEmpty
         let smoothingKey: Float? = smoothingApplies ? options.normalSmoothingCreaseAngle : nil
+        // Likewise the tessellation patches and meshlets depend on `renderingQuality`. A body with
+        // no geometry has no entry and stays a cache hit until its generation changes.
+        let cached = bodyBufferCache[body.id]
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen,
-            bodyBufferCache[body.id]?.smoothingKey == smoothingKey
+            cached?.smoothingKey == smoothingKey,
+            cached.map({ $0.refinement == refinement }) ?? true
         {
             return
         }
@@ -1637,6 +1852,11 @@ public final class OffscreenRenderer: Sendable {
             return
         }
 
+        let refined = RendererSharedBuffers.makeRefinementBuffers(
+            for: body, smoothedVertexData: smoothed, mesh: mesh,
+            tessellationManager: refinement.tessellation ? tessellationManager : nil,
+            buildMeshlets: refinement.meshShaders, device: device, commandQueue: commandQueue)
+
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
             vertexBuffer: mesh.vertexBuffer,
             normalBuffer: mesh.normalBuffer,
@@ -1650,7 +1870,10 @@ public final class OffscreenRenderer: Sendable {
             pointPositionBuffer: pointPositionVB,
             pointVertexCount: pointPositionVB != nil ? body.vertices.count : 0,
             pointColorBuffer: pointColorVB,
-            smoothingKey: smoothingKey
+            smoothingKey: smoothingKey,
+            tessellation: refined.tessellation,
+            meshlets: refined.meshlets,
+            refinement: refinement
         )
         bodyGeneration[body.id] = currentGen
     }
@@ -1688,4 +1911,11 @@ private struct BodyBuffersOffscreen {
 
     /// Crease angle the mesh normals were smoothed with, or `nil` when they are the body's own.
     let smoothingKey: Float?
+
+    /// PN-triangle patches, when the render tessellates and the body can be (#165).
+    let tessellation: TessellationBuffers?
+    /// Meshlets, when the render uses mesh shaders and the body can (#165).
+    let meshlets: MeshletBuffers?
+    /// The refined paths `tessellation` and `meshlets` were built for.
+    let refinement: SurfaceRefinement
 }

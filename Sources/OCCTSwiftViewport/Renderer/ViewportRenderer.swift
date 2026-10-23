@@ -789,10 +789,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.highlightDirectPipeline = highlightDirectPipeline
 
         // --- Hardware tessellation pipelines (PN triangles) ---
+        // Built through RendererSharedSetup, which OffscreenRenderer shares (#165).
         let quality = controller.configuration.renderingQuality
-        let wantsTessellation = quality == .enhanced || quality == .maximum
 
-        if wantsTessellation,
+        if RendererSharedSetup.wantsTessellation(quality),
             let tessMgr = TessellationManager(device: device, library: library)
         {
             self.tessellationManager = tessMgr
@@ -800,92 +800,36 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 controller.configuration.tessellationMaxFactor)
             self.pipelineMaxTessFactor = maxTessFactor
 
-            // Helper to configure tessellation on a pipeline descriptor
-            func configureTessellation(_ desc: MTLRenderPipelineDescriptor) {
-                desc.maxTessellationFactor = maxTessFactor
-                desc.tessellationFactorStepFunction = .perPatch
-                desc.tessellationPartitionMode = .fractionalEven
-                desc.tessellationFactorFormat = .half
-                desc.tessellationOutputWindingOrder = .counterClockwise
-                desc.vertexDescriptor = nil  // No vertex descriptor for tessellation
-            }
-
-            // Tessellated shaded pipeline
-            let tsDesc = MTLRenderPipelineDescriptor()
-            tsDesc.label = "tessellated_shaded"
-            tsDesc.vertexFunction = library.makeFunction(name: "tessellated_vertex")
-            tsDesc.fragmentFunction = library.makeFunction(name: "shaded_fragment")
-            tsDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-            tsDesc.colorAttachments[1].pixelFormat = .invalid
-            // Per-body surface transparency (issue #53).
-            tsDesc.colorAttachments[0].isBlendingEnabled = true
-            tsDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-            tsDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-            tsDesc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-            tsDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-            tsDesc.depthAttachmentPixelFormat = depthFormat
-            tsDesc.stencilAttachmentPixelFormat = depthFormat
-            tsDesc.rasterSampleCount = sampleCount
-            configureTessellation(tsDesc)
-
             var diagErrors: [String] = []
-            // Check if shader functions were found
-            if tsDesc.vertexFunction == nil {
-                diagErrors.append("tessellated_vertex function NOT FOUND")
-            }
-
             do {
-                self.tessellatedShadedPipeline = try device.makeRenderPipelineState(
-                    descriptor: tsDesc)
+                self.tessellatedShadedPipeline =
+                    try RendererSharedSetup.makeTessellatedShadedPipelineState(
+                        device: device, library: library, sampleCount: sampleCount,
+                        depthFormat: depthFormat, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadedPipeline = nil
                 diagErrors.append("shaded: \(error.localizedDescription)")
             }
-
-            // Tessellated shadow pipeline
-            let tshDesc = MTLRenderPipelineDescriptor()
-            tshDesc.label = "tessellated_shadow"
-            tshDesc.vertexFunction = library.makeFunction(name: "tessellated_shadow_vertex")
-            tshDesc.fragmentFunction = library.makeFunction(name: "shadow_clip_fragment")
-            tshDesc.depthAttachmentPixelFormat = .depth32Float
-            tshDesc.rasterSampleCount = 1
-            configureTessellation(tshDesc)
             do {
-                self.tessellatedShadowPipeline = try device.makeRenderPipelineState(
-                    descriptor: tshDesc)
+                self.tessellatedShadowPipeline =
+                    try RendererSharedSetup.makeTessellatedShadowPipelineState(
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedShadowPipeline = nil
                 diagErrors.append("shadow: \(error.localizedDescription)")
             }
-
-            // Tessellated depth-only pipeline (SSAO)
-            let tdDesc = MTLRenderPipelineDescriptor()
-            tdDesc.label = "tessellated_depth_only"
-            tdDesc.vertexFunction = library.makeFunction(name: "tessellated_depth_vertex")
-            tdDesc.fragmentFunction = library.makeFunction(name: "depth_only_clip_fragment")
-            tdDesc.depthAttachmentPixelFormat = .depth32Float
-            tdDesc.rasterSampleCount = 1
-            configureTessellation(tdDesc)
             do {
-                self.tessellatedDepthOnlyPipeline = try device.makeRenderPipelineState(
-                    descriptor: tdDesc)
+                self.tessellatedDepthOnlyPipeline =
+                    try RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedDepthOnlyPipeline = nil
                 diagErrors.append("depth: \(error.localizedDescription)")
             }
-
-            // Tessellated pick pipeline
-            let tpDesc = MTLRenderPipelineDescriptor()
-            tpDesc.label = "tessellated_pick"
-            tpDesc.vertexFunction = library.makeFunction(name: "tessellated_pick_vertex")
-            tpDesc.fragmentFunction = library.makeFunction(name: "tessellated_pick_fragment")
-            tpDesc.colorAttachments[0].pixelFormat = .r32Uint
-            tpDesc.depthAttachmentPixelFormat = .depth32Float
-            tpDesc.rasterSampleCount = 1
-            configureTessellation(tpDesc)
             do {
-                self.tessellatedPickPipeline = try device.makeRenderPipelineState(
-                    descriptor: tpDesc)
+                self.tessellatedPickPipeline =
+                    try RendererSharedSetup.makeTessellatedPickPipelineState(
+                        device: device, library: library, maxFactor: maxTessFactor)
             } catch {
                 self.tessellatedPickPipeline = nil
                 diagErrors.append("pick: \(error.localizedDescription)")
@@ -921,80 +865,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // --- Mesh shader pipelines (Apple9+ / M3+ / A17+) ---
-        let supportsMeshShaders = device.supportsFamily(.apple9)
-        let wantsMeshShaders = quality == .maximum && supportsMeshShaders
-
-        if wantsMeshShaders,
-            let objectFunc = library.makeFunction(name: "meshlet_object"),
-            let meshFunc = library.makeFunction(name: "meshlet_mesh"),
-            let shadowMeshFunc = library.makeFunction(name: "meshlet_shadow_mesh"),
-            let depthMeshFunc = library.makeFunction(name: "meshlet_depth_mesh"),
-            let pickMeshFunc = library.makeFunction(name: "meshlet_pick_mesh")
-        {
-
-            // Helper to create mesh render pipeline
-            func makeMeshPipeline(
-                meshFn: MTLFunction,
-                fragmentFn: MTLFunction?,
-                colorFormat: MTLPixelFormat,
-                depthFmt: MTLPixelFormat,
-                stencilFmt: MTLPixelFormat = .invalid,
-                samples: Int = 1,
-                blend: Bool = false,
-                label: String
-            ) -> MTLRenderPipelineState? {
-                let desc = MTLMeshRenderPipelineDescriptor()
-                desc.label = label
-                desc.objectFunction = objectFunc
-                desc.meshFunction = meshFn
-                desc.fragmentFunction = fragmentFn
-                if colorFormat != .invalid {
-                    desc.colorAttachments[0].pixelFormat = colorFormat
-                    if blend {
-                        // Per-body surface transparency (issue #53).
-                        desc.colorAttachments[0].isBlendingEnabled = true
-                        desc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-                        desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-                        desc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-                        desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                    }
-                }
-                desc.depthAttachmentPixelFormat = depthFmt
-                if stencilFmt != .invalid {
-                    desc.stencilAttachmentPixelFormat = stencilFmt
-                }
-                desc.rasterSampleCount = samples
-                desc.maxTotalThreadsPerObjectThreadgroup = 1
-                desc.maxTotalThreadsPerMeshThreadgroup = 64
-                return try? device.makeRenderPipelineState(descriptor: desc, options: []).0
-            }
-
-            let shadedFrag = library.makeFunction(name: "shaded_fragment")!
+        if RendererSharedSetup.wantsMeshShaders(quality, device: device) {
+            self.meshShaderShadedPipeline = RendererSharedSetup.makeMeshShaderShadedPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat)
             // Both the shadow map (#162) and the SSAO/silhouette prepass honour section planes.
-            let shadowFrag = library.makeFunction(name: "shadow_clip_fragment")
-            let depthClipFrag = library.makeFunction(name: "depth_only_clip_fragment")
-            let pickFrag = library.makeFunction(name: "meshlet_pick_fragment")
-
-            self.meshShaderShadedPipeline = makeMeshPipeline(
-                meshFn: meshFunc, fragmentFn: shadedFrag,
-                colorFormat: .bgra8Unorm, depthFmt: depthFormat, stencilFmt: depthFormat,
-                samples: sampleCount, blend: true, label: "mesh_shaded"
-            )
-            self.meshShaderShadowPipeline = makeMeshPipeline(
-                meshFn: shadowMeshFunc, fragmentFn: shadowFrag,
-                colorFormat: .invalid, depthFmt: .depth32Float,
-                label: "mesh_shadow"
-            )
-            self.meshShaderDepthOnlyPipeline = makeMeshPipeline(
-                meshFn: depthMeshFunc, fragmentFn: depthClipFrag,
-                colorFormat: .invalid, depthFmt: .depth32Float,
-                label: "mesh_depth_only"
-            )
-            self.meshShaderPickPipeline = makeMeshPipeline(
-                meshFn: pickMeshFunc, fragmentFn: pickFrag,
-                colorFormat: .r32Uint, depthFmt: .depth32Float,
-                label: "mesh_pick"
-            )
+            self.meshShaderShadowPipeline = RendererSharedSetup.makeMeshShaderShadowPipelineState(
+                device: device, library: library)
+            self.meshShaderDepthOnlyPipeline =
+                RendererSharedSetup.makeMeshShaderDepthOnlyPipelineState(
+                    device: device, library: library)
+            self.meshShaderPickPipeline = RendererSharedSetup.makeMeshShaderPipelineState(
+                device: device, library: library, meshFunction: "meshlet_pick_mesh",
+                fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .r32Uint,
+                depthPixelFormat: .depth32Float, label: "mesh_pick")
             self.meshShadersEnabled = meshShaderShadedPipeline != nil
             #if DEBUG
                 NSLog(
@@ -1008,7 +892,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.meshShaderPickPipeline = nil
             self.meshShadersEnabled = false
             #if DEBUG
-                NSLog("[ViewportRenderer] Mesh shaders: skipped (supports=%d)", supportsMeshShaders)
+                NSLog(
+                    "[ViewportRenderer] Mesh shaders: skipped (supports=%d)",
+                    device.supportsFamily(.apple9))
             #endif
         }
 
@@ -1520,10 +1406,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let computeEncoder = commandBuffer.makeComputeCommandEncoder()
             {
                 let config = controller.configuration
-                let maxFactor = Float(
-                    min(
-                        TessellationManager.clampedMaxFactor(config.tessellationMaxFactor),
-                        pipelineMaxTessFactor))
+                let maxFactor = RendererSharedBuffers.cappedMaxTessellationFactor(
+                    requested: config.tessellationMaxFactor,
+                    pipelineMaxFactor: pipelineMaxTessFactor)
                 var factor = maxFactor
                 if config.adaptiveTessellation {
                     lastUniformTessellationFactor = nil
@@ -1590,49 +1475,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             if useMeshShaders, let ml = buffers.meshlets,
                                 let msPipeline = meshShaderShadowPipeline
                             {
-                                shadowEncoder.setRenderPipelineState(msPipeline)
-                                shadowEncoder.setObjectBuffer(
-                                    ml.descriptorBuffer, offset: 0, index: 0)
-                                shadowEncoder.setObjectBytes(
-                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
-                                    index: 1)
-                                shadowEncoder.setMeshBuffer(
-                                    ml.descriptorBuffer, offset: 0, index: 0)
-                                shadowEncoder.setMeshBuffer(vb, offset: 0, index: 1)
-                                shadowEncoder.setMeshBuffer(
-                                    ml.vertexIndexBuffer, offset: 0, index: 2)
-                                shadowEncoder.setMeshBuffer(
-                                    ml.triangleIndexBuffer, offset: 0, index: 3)
-                                shadowEncoder.setMeshBytes(
-                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
-                                    index: 4)
-                                shadowEncoder.drawMeshThreadgroups(
-                                    MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                                    threadsPerObjectThreadgroup: MTLSize(
-                                        width: 1, height: 1, depth: 1),
-                                    threadsPerMeshThreadgroup: MTLSize(
-                                        width: 64, height: 1, depth: 1)
-                                )
+                                RendererSharedSetup.encodeMeshletDraw(
+                                    encoder: shadowEncoder, pipeline: msPipeline, meshlets: ml,
+                                    vertexBuffer: vb, uniforms: &shadowUniforms)
                             } else if useTessellation, let tess = buffers.tessellation,
                                 let tessPipeline = tessellatedShadowPipeline
                             {
-                                shadowEncoder.setRenderPipelineState(tessPipeline)
-                                shadowEncoder.setTessellationFactorBuffer(
-                                    tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                                shadowEncoder.setVertexBuffer(
-                                    tess.patchDataBuffer, offset: 0, index: 0)
-                                shadowEncoder.setVertexBytes(
-                                    &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
-                                    index: 1)
-                                shadowEncoder.drawPatches(
-                                    numberOfPatchControlPoints: 3,
-                                    patchStart: 0,
-                                    patchCount: tess.patchCount,
-                                    patchIndexBuffer: nil,
-                                    patchIndexBufferOffset: 0,
-                                    instanceCount: 1,
-                                    baseInstance: 0
-                                )
+                                RendererSharedSetup.encodeTessellatedDraw(
+                                    encoder: shadowEncoder, pipeline: tessPipeline,
+                                    tessellation: tess, uniforms: &shadowUniforms)
                             } else {
                                 if let nb = buffers.normalBuffer {
                                     // Direct-mesh body (Option A): position@0 + normal@2.
@@ -2423,54 +2274,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             if useMeshShaders, let ml = buffers.meshlets,
                                 let msPipeline = meshShaderPickPipeline
                             {
-                                pickEncoder.setRenderPipelineState(msPipeline)
-                                pickEncoder.setObjectBuffer(
-                                    ml.descriptorBuffer, offset: 0, index: 0)
-                                pickEncoder.setObjectBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                                pickEncoder.setMeshBuffer(vb, offset: 0, index: 1)
-                                pickEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-                                pickEncoder.setMeshBuffer(
-                                    ml.triangleIndexBuffer, offset: 0, index: 3)
-                                pickEncoder.setMeshBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
                                 pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
                                 )
-                                pickEncoder.drawMeshThreadgroups(
-                                    MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                                    threadsPerObjectThreadgroup: MTLSize(
-                                        width: 1, height: 1, depth: 1),
-                                    threadsPerMeshThreadgroup: MTLSize(
-                                        width: 64, height: 1, depth: 1)
-                                )
+                                RendererSharedSetup.encodeMeshletDraw(
+                                    encoder: pickEncoder, pipeline: msPipeline, meshlets: ml,
+                                    vertexBuffer: vb, uniforms: &uniforms)
                             } else if useTessellation, let tess = buffers.tessellation,
                                 let tessPipeline = tessellatedPickPipeline
                             {
-                                pickEncoder.setRenderPipelineState(tessPipeline)
-                                pickEncoder.setTessellationFactorBuffer(
-                                    tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                                pickEncoder.setVertexBuffer(
-                                    tess.patchDataBuffer, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
                                     &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
                                 )
-                                pickEncoder.drawPatches(
-                                    numberOfPatchControlPoints: 3,
-                                    patchStart: 0,
-                                    patchCount: tess.patchCount,
-                                    patchIndexBuffer: nil,
-                                    patchIndexBufferOffset: 0,
-                                    instanceCount: 1,
-                                    baseInstance: 0
-                                )
+                                RendererSharedSetup.encodeTessellatedDraw(
+                                    encoder: pickEncoder, pipeline: tessPipeline,
+                                    tessellation: tess, uniforms: &uniforms)
                             } else if let nb = buffers.normalBuffer {
                                 // Direct-mesh body (Option A): position@0 + normal@2.
                                 pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
@@ -2869,43 +2691,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         if useMeshShaders, let ml = buffers.meshlets,
                             let msPipeline = meshShaderDepthOnlyPipeline
                         {
-                            depthEncoder.setRenderPipelineState(msPipeline)
-                            depthEncoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                            depthEncoder.setObjectBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            depthEncoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-                            depthEncoder.setMeshBuffer(vb, offset: 0, index: 1)
-                            depthEncoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-                            depthEncoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-                            depthEncoder.setMeshBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
                             depthEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            depthEncoder.drawMeshThreadgroups(
-                                MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                                threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-                                threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
-                            )
+                            RendererSharedSetup.encodeMeshletDraw(
+                                encoder: depthEncoder, pipeline: msPipeline, meshlets: ml,
+                                vertexBuffer: vb, uniforms: &uniforms)
                         } else if useTessellation, let tess = buffers.tessellation,
                             let tessPipeline = tessellatedDepthOnlyPipeline
                         {
-                            depthEncoder.setRenderPipelineState(tessPipeline)
-                            depthEncoder.setTessellationFactorBuffer(
-                                tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-                            depthEncoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-                            depthEncoder.setVertexBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                             depthEncoder.setFragmentBytes(
                                 &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            depthEncoder.drawPatches(
-                                numberOfPatchControlPoints: 3,
-                                patchStart: 0,
-                                patchCount: tess.patchCount,
-                                patchIndexBuffer: nil,
-                                patchIndexBufferOffset: 0,
-                                instanceCount: 1,
-                                baseInstance: 0
-                            )
+                            RendererSharedSetup.encodeTessellatedDraw(
+                                encoder: depthEncoder, pipeline: tessPipeline, tessellation: tess,
+                                uniforms: &uniforms)
                         } else if let nb = buffers.normalBuffer {
                             // Direct-mesh body (Option A): position@0 + normal@2.
                             depthEncoder.setRenderPipelineState(depthOnlyDirectPipeline)
@@ -3080,35 +2878,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         } else if useMeshShaders, let ml = buffers.meshlets,
             let msPipeline = meshShaderShadedPipeline
         {
-            encoder.setRenderPipelineState(msPipeline)
-            encoder.setObjectBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-            encoder.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-            encoder.setMeshBuffer(ml.descriptorBuffer, offset: 0, index: 0)
-            encoder.setMeshBuffer(vb, offset: 0, index: 1)
-            encoder.setMeshBuffer(ml.vertexIndexBuffer, offset: 0, index: 2)
-            encoder.setMeshBuffer(ml.triangleIndexBuffer, offset: 0, index: 3)
-            encoder.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 4)
-            encoder.drawMeshThreadgroups(
-                MTLSize(width: ml.meshletCount, height: 1, depth: 1),
-                threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-                threadsPerMeshThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
-            )
+            RendererSharedSetup.encodeMeshletDraw(
+                encoder: encoder, pipeline: msPipeline, meshlets: ml, vertexBuffer: vb,
+                uniforms: &uniforms)
         } else if useTessellation, let tess = buffers.tessellation,
             let tessPipeline = tessellatedShadedPipeline
         {
-            encoder.setRenderPipelineState(tessPipeline)
-            encoder.setTessellationFactorBuffer(tess.tessFactorBuffer, offset: 0, instanceStride: 0)
-            encoder.setVertexBuffer(tess.patchDataBuffer, offset: 0, index: 0)
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-            encoder.drawPatches(
-                numberOfPatchControlPoints: 3,
-                patchStart: 0,
-                patchCount: tess.patchCount,
-                patchIndexBuffer: nil,
-                patchIndexBufferOffset: 0,
-                instanceCount: 1,
-                baseInstance: 0
-            )
+            RendererSharedSetup.encodeTessellatedDraw(
+                encoder: encoder, pipeline: tessPipeline, tessellation: tess, uniforms: &uniforms)
         } else {
             encoder.setRenderPipelineState(shadedPipeline)
             encoder.setVertexBuffer(vb, offset: 0, index: 0)
@@ -3222,53 +2999,29 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return
         }
 
-        // Build tessellation patch data if tessellation is enabled. Skipped for direct-mesh bodies:
-        // the patch builder consumes an interleaved stride-6 buffer + faceIndices, neither of which
-        // a direct body has (it brings its own normals; no PN refinement needed).
-        var tessBuffers: TessellationBuffers?
-        if tessellationEnabled, !body.usesDirectMesh,
-            let tessMgr = tessellationManager,
-            let vb = vertexBuffer, let ib = indexBuffer,
-            indexCount > 0
-        {
-            let triangleCount = indexCount / 3
-            tessBuffers = tessMgr.buildPatches(
-                vertexBuffer: vb,
-                indexBuffer: ib,
-                faceIndices: body.faceIndices,
-                triangleCount: triangleCount,
-                commandQueue: commandQueue
-            )
-            // One-shot diagnostic for the first body
-            #if DEBUG
-                if !tessMgr.didLogDiagnostic {
-                    tessMgr.didLogDiagnostic = true
-                    let msg = """
-                        ensureBuffers: body=\(body.id) tris=\(triangleCount) \
-                        faceIdx=\(body.faceIndices.count) tessResult=\(tessBuffers != nil) \
-                        tessEnabled=\(tessellationEnabled) vb=\(vb.length) ib=\(ib.length)
-                        """
-                    NSLog("[ViewportRenderer] %@", msg)
-                }
-            #endif
-        }
-
-        // Build meshlets if mesh shaders are enabled. The descriptors (bounding sphere, normal
-        // cone) are built from the same data uploaded to `vertexBuffer`, which the mesh shader
-        // reads, so they describe the smoothed normals when autoSmoothNormals ran. Direct-mesh
-        // bodies get none and draw through the direct pipeline.
-        var meshletBufs: MeshletBuffers?
-        if meshShadersEnabled,
-            let meshletVertexData = Self.meshletSourceVertexData(
-                for: body, smoothedVertexData: smoothedVertexData)
-        {
-            meshletBufs = MeshletBuilder.build(
-                vertexData: meshletVertexData,
-                indices: body.indices,
-                faceIndices: body.faceIndices,
-                device: device
-            )
-        }
+        // Tessellation patches and meshlets, shared with OffscreenRenderer (#165). Direct-mesh
+        // bodies get neither: both builders consume an interleaved stride-6 buffer + faceIndices,
+        // and a direct body brings its own normals. Patches read the uploaded (possibly smoothed)
+        // vertex buffer and meshlets the same smoothed data, so both see the smoothed normals.
+        let refinement = RendererSharedBuffers.makeRefinementBuffers(
+            for: body, smoothedVertexData: smoothedVertexData, mesh: mesh,
+            tessellationManager: tessellationEnabled ? tessellationManager : nil,
+            buildMeshlets: meshShadersEnabled, device: device, commandQueue: commandQueue)
+        let tessBuffers = refinement.tessellation
+        let meshletBufs = refinement.meshlets
+        #if DEBUG
+            // One-shot diagnostic for the first tessellated body.
+            if let tessMgr = tessellationManager, tessellationEnabled, !body.usesDirectMesh,
+                indexCount > 0, !tessMgr.didLogDiagnostic
+            {
+                tessMgr.didLogDiagnostic = true
+                let msg = """
+                    ensureBuffers: body=\(body.id) tris=\(indexCount / 3) \
+                    faceIdx=\(body.faceIndices.count) tessResult=\(tessBuffers != nil)
+                    """
+                NSLog("[ViewportRenderer] %@", msg)
+            }
+        #endif
 
         // Per-triangle highlight style buffer. Built only when the body has any
         // triangleStyles set; nil otherwise.

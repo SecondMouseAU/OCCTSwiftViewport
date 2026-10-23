@@ -708,7 +708,7 @@ public enum RenderingQuality: Sendable {
 }
 ```
 
-Controls the tessellation tier used by `ViewportRenderer`.
+Controls the tessellation tier used by `ViewportRenderer` and, through `OffscreenRenderOptions.renderingQuality`, by `OffscreenRenderer`.
 
 | Case | Description |
 |---|---|
@@ -744,7 +744,7 @@ How the uniform tessellation factor is chosen when `adaptiveTessellation == fals
 | `.loadAdaptive(minimum:)` | Default. The live renderer scales the factor between `minimum` and `tessellationMaxFactor` to fit system load. It starts at the maximum. When the smoothed GPU frame time (measured from each frame's command buffer) rises above 85% of the frame budget (`1 / preferredFramesPerSecond`, or 1/60), it lowers the factor by 20%. Below 55% it raises the factor by 2. Between the two it holds, and after any change it holds for 30 frames, so the factor never oscillates frame to frame. Thermal state caps the ceiling: `.fair` to 75% of the maximum, `.serious` to 50%, `.critical` to `minimum`. Low Power Mode halves it. A lowered cap applies at once. |
 | `.fixed(_:)` | Always tessellate at this factor, clamped to `1...tessellationMaxFactor`. |
 
-Off-screen renders (`renderHeadless(...)`) never adapt to load: `.loadAdaptive` uses `tessellationMaxFactor` there, so the output is deterministic.
+Off-screen renders (`renderHeadless(...)` and `OffscreenRenderer`) never adapt to load: `.loadAdaptive` uses `tessellationMaxFactor` there, so the output is deterministic.
 
 ```swift
 var config = ViewportConfiguration.cadHighQuality

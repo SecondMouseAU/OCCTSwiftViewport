@@ -21,7 +21,9 @@ controller:
 let options = OffscreenRenderOptions(matching: controller, width: 1024, height: 768)
 ```
 
-The headless path does not do tessellation, mesh shaders, TAA or depth of field; see
+`renderingQuality` works as live: `.enhanced` tessellates curved surfaces with PN triangles
+and `.maximum` uses mesh shaders on Apple9 GPUs, with a fixed (never load-governed) factor so
+the output is reproducible. The headless path does not do TAA or depth of field; see
 [Parity with the live viewport](../../reference/Rendering.md#parity-with-the-live-viewport).
 
 Typical uses: documentation figures, thumbnail generation, CI regression images,
@@ -238,7 +240,9 @@ options.backgroundColor = SIMD4<Float>(0.18, 0.18, 0.18, 1)  // mid-grey
 ```
 
 Like the onscreen view, a headless render follows the system appearance by default
-(`appearance = .system`), so on a Mac in dark mode it uses `darkModeBackgroundColor`. Pin an
+(`appearance = .system`), so on a Mac in dark mode it uses `darkModeBackgroundColor`. In an app,
+`.system` follows `NSApp.effectiveAppearance`, so an app that forces its own appearance renders
+its thumbnails in it. Pin an
 appearance for anything that must be reproducible, such as tests, CI or reference images:
 
 ```swift
