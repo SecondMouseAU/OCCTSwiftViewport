@@ -533,69 +533,6 @@ private struct SampledPipelines {
     }
 }
 
-// MARK: - Refined-surface pipelines
-
-/// Which refined surface paths a render uses, and so which per-body buffers it needs.
-private struct SurfaceRefinement: Hashable {
-    /// PN-triangle tessellation (`.enhanced`, and `.maximum` without mesh shaders).
-    var tessellation = false
-    /// Mesh shaders (`.maximum` on Apple9).
-    var meshShaders = false
-
-    static let none = SurfaceRefinement()
-}
-
-/// The tessellated and mesh-shader pipelines for one sample count and maximum factor (#165).
-///
-/// Built through `RendererSharedSetup` exactly as the live renderer builds them. A path whose
-/// shaded pipeline fails is reported as unavailable, and its bodies draw their plain mesh.
-private struct RefinedPipelines {
-    struct Key: Hashable {
-        let sampleCount: Int
-        let maxFactor: Int
-        let meshShaders: Bool
-    }
-
-    let tessellatedShaded: MTLRenderPipelineState?
-    let tessellatedShadow: MTLRenderPipelineState?
-    let tessellatedDepthOnly: MTLRenderPipelineState?
-    let meshShaded: MTLRenderPipelineState?
-    let meshShadow: MTLRenderPipelineState?
-    let meshDepthOnly: MTLRenderPipelineState?
-
-    init(device: MTLDevice, library: MTLLibrary, key: Key) {
-        let depthFormat: MTLPixelFormat = .depth32Float_stencil8
-        tessellatedShaded = try? RendererSharedSetup.makeTessellatedShadedPipelineState(
-            device: device, library: library, sampleCount: key.sampleCount,
-            depthFormat: depthFormat, maxFactor: key.maxFactor,
-            label: "offscreen_tessellated_shaded")
-        tessellatedShadow = try? RendererSharedSetup.makeTessellatedShadowPipelineState(
-            device: device, library: library, maxFactor: key.maxFactor,
-            label: "offscreen_tessellated_shadow")
-        tessellatedDepthOnly = try? RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
-            device: device, library: library, maxFactor: key.maxFactor,
-            label: "offscreen_tessellated_depth_only")
-        if key.meshShaders {
-            meshShaded = RendererSharedSetup.makeMeshShaderShadedPipelineState(
-                device: device, library: library, sampleCount: key.sampleCount,
-                depthFormat: depthFormat, label: "offscreen_mesh_shaded")
-            meshShadow = RendererSharedSetup.makeMeshShaderShadowPipelineState(
-                device: device, library: library, label: "offscreen_mesh_shadow")
-            meshDepthOnly = RendererSharedSetup.makeMeshShaderDepthOnlyPipelineState(
-                device: device, library: library, label: "offscreen_mesh_depth_only")
-        } else {
-            meshShaded = nil
-            meshShadow = nil
-            meshDepthOnly = nil
-        }
-    }
-
-    /// The paths these pipelines can actually draw.
-    var refinement: SurfaceRefinement {
-        SurfaceRefinement(tessellation: tessellatedShaded != nil, meshShaders: meshShaded != nil)
-    }
-}
-
 // MARK: - OffscreenRenderer
 
 /// Headless Metal renderer that renders [ViewportBody] to CGImage without MTKView.
@@ -782,7 +719,8 @@ public final class OffscreenRenderer: Sendable {
 
         // Tessellated / mesh-shader surface pipelines for `renderingQuality`, as live (#165).
         let refined = refinedPipelines(for: options, sampleCount: sampleCount)
-        let refinement = refined?.refinement ?? .none
+        let refinement =
+            refined?.refinement(canTessellate: tessellationManager != nil) ?? .none
 
         // Ensure buffers for all bodies
         for body in bodies where body.isVisible {
@@ -1779,15 +1717,15 @@ public final class OffscreenRenderer: Sendable {
     }
 
     /// The tessellated and mesh-shader pipelines `options.renderingQuality` asks for, built and
-    /// cached on first use; `nil` at `.standard` or when the GPU can't tessellate.
+    /// cached on first use; `nil` at `.standard`.
     private func refinedPipelines(
         for options: OffscreenRenderOptions, sampleCount: Int
     ) -> RefinedPipelines? {
         guard RendererSharedSetup.wantsTessellation(options.renderingQuality) else { return nil }
+        // Mesh shaders don't need the manager, so a failed manager only loses tessellation.
         if tessellationManager == nil {
             tessellationManager = TessellationManager(device: device, library: library)
         }
-        guard tessellationManager != nil else { return nil }
         let key = RefinedPipelines.Key(
             sampleCount: sampleCount,
             maxFactor: TessellationManager.clampedMaxFactor(options.tessellationMaxFactor),
@@ -1804,7 +1742,8 @@ public final class OffscreenRenderer: Sendable {
         tessellation: Bool, meshShaders: Bool
     ) {
         let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
-        let refinement = refinedPipelines(for: options, sampleCount: sampleCount)?.refinement
+        let refinement = refinedPipelines(for: options, sampleCount: sampleCount)?.refinement(
+            canTessellate: tessellationManager != nil)
         return (refinement?.tessellation ?? false, refinement?.meshShaders ?? false)
     }
 

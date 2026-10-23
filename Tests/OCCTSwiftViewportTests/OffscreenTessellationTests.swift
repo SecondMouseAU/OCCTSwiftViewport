@@ -148,21 +148,23 @@ struct OffscreenTessellationTests {
             "tessellated sphere covers \(refinedArea) px, the flat one \(flatArea) px")
     }
 
-    @Test("Live and offscreen tessellate the faceted sphere identically")
-    func liveMatchesOffscreenTessellation() throws {
+    @Test(
+        "Live and offscreen refine the faceted sphere identically",
+        arguments: [RenderingQuality.enhanced, .maximum])
+    func liveMatchesOffscreenRefinement(quality: RenderingQuality) throws {
         let sphere = Self.coarseSphere()
-        let options = Self.options(.enhanced, adaptive: false, uniform: .fixed(8))
+        let options = Self.options(quality, adaptive: false, uniform: .fixed(8))
         var config = ViewportConfiguration(
             initialCameraState: ParityRender.frontCamera, displayMode: .unlit,
             lightingConfiguration: ParityRender.plainLighting, showGrid: false,
             backgroundColor: SIMD4(0, 0, 0, 1), enableSilhouettes: false)
         config.showAxes = false
-        config.renderingQuality = .enhanced
+        config.renderingQuality = quality
         config.tessellationMaxFactor = options.tessellationMaxFactor
         config.adaptiveTessellation = false
         config.uniformTessellationFactor = .fixed(8)
         let controller = ViewportController(configuration: config)
-        guard
+        guard let renderer = OffscreenRenderer(),
             let live = ViewportRenderer(controller: controller, bodies: .constant([sphere])),
             let livePixels = live.renderHeadlessBGRA(
                 width: options.width, height: options.height,
@@ -171,15 +173,24 @@ struct OffscreenTessellationTests {
             Issue.record("Metal device unavailable")
             return
         }
-        #expect(live.tessellationEnabled)
-        let offscreen = try ParityRender.render([sphere], options)
-        let flat = try ParityRender.render([sphere], Self.options(.standard))
-        let liveArea = Self.coverage(livePixels, width: options.width, height: options.height)
-        let offscreenArea = Self.coverage(
-            offscreen.pixels, width: offscreen.width, height: offscreen.height)
-        let flatArea = Self.coverage(flat.pixels, width: flat.width, height: flat.height)
-        #expect(liveArea == offscreenArea)
-        #expect(offscreenArea != flatArea, "the comparison would pass without tessellation")
+        let paths = renderer.surfacePaths(for: options)
+        #expect(paths.tessellation == live.tessellationEnabled)
+        #expect(paths.meshShaders == live.meshShadersEnabled)
+
+        let offscreen = try ParityRender.render([sphere], options, renderer: renderer)
+        #expect(offscreen.pixels == livePixels, "\(quality): offscreen differs from live")
+
+        // Each path must leave a mark, or the comparison would pass with it switched off.
+        let tessellated = try ParityRender.render(
+            [sphere], Self.options(.enhanced, adaptive: false, uniform: .fixed(8)),
+            renderer: renderer)
+        let flat = try ParityRender.render([sphere], Self.options(.standard), renderer: renderer)
+        if paths.meshShaders {
+            // Meshlets draw the mesh as given: no PN rounding, unlike the tessellated fallback.
+            #expect(offscreen.pixels != tessellated.pixels)
+        } else {
+            #expect(offscreen.pixels != flat.pixels)
+        }
     }
 
     @Test("Tessellated offscreen output is deterministic")
@@ -200,27 +211,52 @@ struct OffscreenTessellationTests {
         #expect(first.pixels == fixedMax.pixels)
     }
 
-    @Test("Shaded, shadowed and composited tessellated renders complete at every quality")
-    func fullPipelineAtEveryQuality() throws {
-        guard let renderer = OffscreenRenderer() else {
+    @Test(
+        "Tessellated shadow map and silhouette prepass match live",
+        arguments: ["shadow", "silhouette"])
+    func refinedShadowAndDepthMatchLive(pass: String) throws {
+        // The faceted sphere casts its shadow on a wall behind it, or is outlined by the
+        // depth-based silhouette. Both renderers tessellate the main pass, so any difference
+        // comes from a shadow or depth pass drawing the unrefined mesh.
+        let sphere = Self.coarseSphere()
+        let wall = ParityRender.quad(
+            id: "wall", x0: -8, y0: -8, x1: 8, y1: 8, z: -4, color: SIMD4(0.8, 0.8, 0.8, 1))
+        let bodies = [sphere, wall]
+        var lighting = ParityRender.plainLighting
+        lighting.shadowsEnabled = pass == "shadow"
+        lighting.shadowIntensity = 0.8
+        lighting.keyLight.direction = simd_normalize(SIMD3<Float>(-0.5, -0.4, -1))
+        var config = ViewportConfiguration(
+            initialCameraState: ParityRender.frontCamera, displayMode: .shaded,
+            lightingConfiguration: lighting, showGrid: false,
+            backgroundColor: SIMD4(0, 0, 0, 1), enableSilhouettes: pass == "silhouette")
+        config.showAxes = false
+        config.renderingQuality = .enhanced
+        config.tessellationMaxFactor = 16
+        config.adaptiveTessellation = false
+        config.uniformTessellationFactor = .fixed(8)
+        config.silhouetteThickness = 2
+        config.silhouetteIntensity = 1
+        let controller = ViewportController(configuration: config)
+        var options = OffscreenRenderOptions(matching: controller, width: 128, height: 128)
+        options.appearance = .light
+        guard
+            let live = ViewportRenderer(controller: controller, bodies: .constant(bodies)),
+            let livePixels = live.renderHeadlessBGRA(
+                width: 128, height: 128, backgroundColor: config.backgroundColor, frameCount: 2)
+        else {
             Issue.record("Metal device unavailable")
             return
         }
-        for quality in [RenderingQuality.standard, .enhanced, .maximum] {
-            let bodies = ViewportRenderBattery.shadowBodies()
-            var options = Self.options(quality)
-            options.cameraState = ViewportRenderBattery.fittedCamera(for: bodies)
-            options.displayMode = .shadedWithEdges
-            options.lightingConfiguration = ViewportRenderBattery.shadowLighting()
-            options.lightingConfiguration.enableSSAO = true
-            options.enableSilhouettes = true
-            let result = try ParityRender.render(bodies, options, renderer: renderer)
-            let lit = ParityRender.count(result.pixels, width: result.width, height: result.height)
-            {
-                $0.x + $0.y + $0.z > 60
-            }
-            #expect(lit > 500, "\(quality): almost nothing drawn (\(lit) px)")
+        let offscreen = try ParityRender.render(bodies, options)
+        var differing = 0
+        for p in stride(from: 0, to: livePixels.count, by: 4) {
+            let delta =
+                (0..<3).map { abs(Int(livePixels[p + $0]) - Int(offscreen.pixels[p + $0])) }.max()
+                ?? 0
+            if delta > 8 { differing += 1 }
         }
+        #expect(differing == 0, "\(pass): \(differing) px differ from the live frame")
     }
 }
 

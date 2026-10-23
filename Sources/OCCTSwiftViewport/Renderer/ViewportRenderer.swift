@@ -1406,10 +1406,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let computeEncoder = commandBuffer.makeComputeCommandEncoder()
             {
                 let config = controller.configuration
-                let maxFactor = Float(
-                    min(
-                        TessellationManager.clampedMaxFactor(config.tessellationMaxFactor),
-                        pipelineMaxTessFactor))
+                let maxFactor = RendererSharedBuffers.cappedMaxTessellationFactor(
+                    requested: config.tessellationMaxFactor,
+                    pipelineMaxFactor: pipelineMaxTessFactor)
                 var factor = maxFactor
                 if config.adaptiveTessellation {
                     lastUniformTessellationFactor = nil
