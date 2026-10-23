@@ -111,6 +111,54 @@ extension RendererSharedSetup {
             depthPixelFormat: .depth32Float, maxFactor: maxFactor)
     }
 
+    /// The per-triangle highlight on the tessellated surface (#202).
+    ///
+    /// `tessellated_highlight_vertex` + `tessellated_highlight_fragment`, blended over the shaded
+    /// surface.
+    static func makeTessellatedHighlightPipelineState(
+        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
+        maxFactor: Int, label: String = "tessellated_highlight"
+    ) throws -> MTLRenderPipelineState {
+        try makeTessellatedPipelineState(
+            device: device, library: library, label: label,
+            vertexFunction: "tessellated_highlight_vertex",
+            fragmentFunction: "tessellated_highlight_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount, blending: .sourceOver, maxFactor: maxFactor)
+    }
+
+    /// The selection outline on the tessellated surface (#202).
+    ///
+    /// `tessellated_outline_vertex` + `selection_outline_fragment`.
+    static func makeTessellatedOutlinePipelineState(
+        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
+        maxFactor: Int, label: String = "tessellated_outline"
+    ) throws -> MTLRenderPipelineState {
+        try makeTessellatedPipelineState(
+            device: device, library: library, label: label,
+            vertexFunction: "tessellated_outline_vertex",
+            fragmentFunction: "selection_outline_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount, blending: .sourceOver, maxFactor: maxFactor)
+    }
+
+    /// The colourless selection stencil mask on the tessellated surface (#202).
+    ///
+    /// `tessellated_depth_vertex` + `depth_only_clip_fragment`, writing no colour.
+    static func makeTessellatedStencilMaskPipelineState(
+        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
+        maxFactor: Int, label: String = "tessellated_stencil_mask"
+    ) throws -> MTLRenderPipelineState {
+        let descriptor = renderPipelineDescriptor(
+            label: label, library: library, vertexFunction: "tessellated_depth_vertex",
+            fragmentFunction: "depth_only_clip_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount)
+        descriptor.colorAttachments[0].writeMask = []
+        applyTessellation(to: descriptor, maxFactor: maxFactor)
+        return try device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
     /// Why a mesh-shader pipeline could not be built: its label and Metal's reason.
     struct MeshPipelineError: Error, CustomStringConvertible {
         let label: String
@@ -262,6 +310,7 @@ extension RendererSharedBuffers {
     ///   - mesh: The body's uploaded mesh buffers.
     ///   - tessellationManager: Builds the patches; `nil` skips tessellation.
     ///   - buildMeshlets: Whether the mesh-shader path is in use.
+    ///   - creaseAngle: `normalSmoothingCreaseAngle`; PN patches keep edges sharper than this flat.
     ///   - device: Device for the meshlet buffers.
     ///   - commandQueue: Queue for the synchronous patch-building compute pass.
     /// - Returns: The patches and meshlets, each `nil` when not built.
@@ -272,6 +321,7 @@ extension RendererSharedBuffers {
         mesh: MeshBuffers,
         tessellationManager: TessellationManager?,
         buildMeshlets: Bool,
+        creaseAngle: Float,
         device: MTLDevice,
         commandQueue: MTLCommandQueue
     ) -> (tessellation: TessellationBuffers?, meshlets: MeshletBuffers?) {
@@ -281,7 +331,8 @@ extension RendererSharedBuffers {
         {
             tessellation = tessellationManager.buildPatches(
                 vertexBuffer: vb, indexBuffer: ib,
-                triangleCount: mesh.indexCount / 3, commandQueue: commandQueue)
+                triangleCount: mesh.indexCount / 3, creaseAngle: creaseAngle,
+                commandQueue: commandQueue)
         }
         var meshlets: MeshletBuffers?
         if buildMeshlets,
@@ -357,6 +408,10 @@ struct RefinedPipelines {
     let tessellatedShaded: MTLRenderPipelineState?
     let tessellatedShadow: MTLRenderPipelineState?
     let tessellatedDepthOnly: MTLRenderPipelineState?
+    /// Highlight, outline and stencil mask on the tessellated surface (#202).
+    let tessellatedHighlight: MTLRenderPipelineState?
+    let tessellatedOutline: MTLRenderPipelineState?
+    let tessellatedStencilMask: MTLRenderPipelineState?
     let meshShaded: MTLRenderPipelineState?
     let meshShadow: MTLRenderPipelineState?
     let meshDepthOnly: MTLRenderPipelineState?
@@ -373,6 +428,18 @@ struct RefinedPipelines {
         tessellatedDepthOnly = try? RendererSharedSetup.makeTessellatedDepthOnlyPipelineState(
             device: device, library: library, maxFactor: key.maxFactor,
             label: "offscreen_tessellated_depth_only")
+        tessellatedHighlight = try? RendererSharedSetup.makeTessellatedHighlightPipelineState(
+            device: device, library: library, sampleCount: key.sampleCount,
+            depthFormat: depthFormat, maxFactor: key.maxFactor,
+            label: "offscreen_tessellated_highlight")
+        tessellatedOutline = try? RendererSharedSetup.makeTessellatedOutlinePipelineState(
+            device: device, library: library, sampleCount: key.sampleCount,
+            depthFormat: depthFormat, maxFactor: key.maxFactor,
+            label: "offscreen_tessellated_outline")
+        tessellatedStencilMask = try? RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
+            device: device, library: library, sampleCount: key.sampleCount,
+            depthFormat: depthFormat, maxFactor: key.maxFactor,
+            label: "offscreen_tessellated_stencil_mask")
         if key.meshShaders {
             meshShaded = try? RendererSharedSetup.makeMeshShaderShadedPipelineState(
                 device: device, library: library, sampleCount: key.sampleCount,

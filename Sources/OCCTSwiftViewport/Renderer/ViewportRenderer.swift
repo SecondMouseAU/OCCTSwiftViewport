@@ -418,6 +418,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let tessellatedDepthOnlyPipeline: MTLRenderPipelineState?
     // Internal (not private) so headless tests can tell whether the tessellated pick path ran.
     let tessellatedPickPipeline: MTLRenderPipelineState?
+    /// Highlight, outline and stencil mask on the tessellated surface (#202).
+    ///
+    /// Drawn there rather than on the flat mesh under it. Internal so tests can see them.
+    let tessellatedHighlightPipeline: MTLRenderPipelineState?
+    let tessellatedOutlinePipeline: MTLRenderPipelineState?
+    let tessellatedStencilMaskPipeline: MTLRenderPipelineState?
     let tessellationEnabled: Bool
     /// The `maxTessellationFactor` the tessellated pipelines were built with (clamped, even).
     ///
@@ -841,6 +847,33 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 self.tessellatedPickPipeline = nil
                 diagErrors.append("pick: \(error.localizedDescription)")
             }
+            do {
+                self.tessellatedHighlightPipeline =
+                    try RendererSharedSetup.makeTessellatedHighlightPipelineState(
+                        device: device, library: library, sampleCount: sampleCount,
+                        depthFormat: depthFormat, maxFactor: maxTessFactor)
+            } catch {
+                self.tessellatedHighlightPipeline = nil
+                diagErrors.append("highlight: \(error.localizedDescription)")
+            }
+            do {
+                self.tessellatedOutlinePipeline =
+                    try RendererSharedSetup.makeTessellatedOutlinePipelineState(
+                        device: device, library: library, sampleCount: sampleCount,
+                        depthFormat: depthFormat, maxFactor: maxTessFactor)
+            } catch {
+                self.tessellatedOutlinePipeline = nil
+                diagErrors.append("outline: \(error.localizedDescription)")
+            }
+            do {
+                self.tessellatedStencilMaskPipeline =
+                    try RendererSharedSetup.makeTessellatedStencilMaskPipelineState(
+                        device: device, library: library, sampleCount: sampleCount,
+                        depthFormat: depthFormat, maxFactor: maxTessFactor)
+            } catch {
+                self.tessellatedStencilMaskPipeline = nil
+                diagErrors.append("stencil mask: \(error.localizedDescription)")
+            }
 
             self.tessellationEnabled = tessellatedShadedPipeline != nil
 
@@ -864,6 +897,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.tessellatedShadowPipeline = nil
             self.tessellatedDepthOnlyPipeline = nil
             self.tessellatedPickPipeline = nil
+            self.tessellatedHighlightPipeline = nil
+            self.tessellatedOutlinePipeline = nil
+            self.tessellatedStencilMaskPipeline = nil
             self.tessellationEnabled = false
             self.pipelineMaxTessFactor = 0
             #if DEBUG
@@ -1697,7 +1733,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 // they composite before the translucent pass rather than over it (#171).
                 if buffers.triangleStyleBuffer != nil {
                     mainEncoder.setDepthStencilState(highlightDepthState)
-                    encodeTriangleHighlight(mainEncoder, buffers: buffers, uniforms: &uniforms)
+                    encodeTriangleHighlight(
+                        mainEncoder, buffers: buffers, uniforms: &uniforms,
+                        patches: drawnPatches(
+                            of: buffers, useMeshShaders: useMeshShaders,
+                            useTessellation: useTessellation))
                     mainEncoder.setDepthStencilState(depthState)
                 }
             }
@@ -1814,7 +1854,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     if d.buffers.triangleStyleBuffer != nil {
                         mainEncoder.setDepthStencilState(highlightDepthState)
                         encodeTriangleHighlight(
-                            mainEncoder, buffers: d.buffers, uniforms: &uniforms)
+                            mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                            patches: drawnPatches(
+                                of: d.buffers, useMeshShaders: useMeshShaders,
+                                useTessellation: useTessellation))
                     }
                 }
             }
@@ -2007,6 +2050,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             uniforms.modelMatrix = body.transform
             mainEncoder.setDepthStencilState(selectionMaskState)
             mainEncoder.setStencilReferenceValue(1)
+            outlinedBodyIDs.insert(body.id)
+            if let patches = drawnPatches(
+                of: buffers, useMeshShaders: useMeshShaders, useTessellation: useTessellation),
+                let pipeline = tessellatedStencilMaskPipeline
+            {
+                // The tessellated silhouette, so the ring hugs the surface drawn (#202).
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                RendererSharedSetup.encodeTessellatedDraw(
+                    encoder: mainEncoder, pipeline: pipeline, tessellation: patches,
+                    uniforms: &uniforms)
+                continue
+            }
             mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             if let nb = buffers.normalBuffer {
                 mainEncoder.setRenderPipelineState(stencilMaskDirectPipeline)
@@ -2019,7 +2075,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             mainEncoder.drawIndexedPrimitives(
                 type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                 indexBuffer: ib, indexBufferOffset: 0)
-            outlinedBodyIDs.insert(body.id)
         }
 
         // 4. Selection outline pass (stencil test: draw only where stencil != 1). Only bodies
@@ -2054,6 +2109,23 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         Float(max(drawableSize.width, 1)), Float(max(drawableSize.height, 1)))
                 )
 
+                // Section clip planes (the outline fragment discards clipped fragments).
+                var outlineUniforms = makeUniforms()
+                if let patches = drawnPatches(
+                    of: buffers, useMeshShaders: useMeshShaders, useTessellation: useTessellation),
+                    let pipeline = tessellatedOutlinePipeline
+                {
+                    // Expanded from the tessellated silhouette, matching the mask (#202).
+                    mainEncoder.setFragmentBytes(
+                        &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
+                        index: 1)
+                    mainEncoder.setFragmentBytes(
+                        &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                    RendererSharedSetup.encodeTessellatedDraw(
+                        encoder: mainEncoder, pipeline: pipeline, tessellation: patches,
+                        uniforms: &outlineParams)
+                    continue
+                }
                 if let nb = buffers.normalBuffer {
                     // Direct-mesh body: position@0 + normal@2 (the outline expands along it).
                     mainEncoder.setRenderPipelineState(outlineDirectPipeline)
@@ -2068,8 +2140,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 mainEncoder.setFragmentBytes(
                     &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size, index: 1
                 )
-                // Section clip planes (the outline fragment discards clipped fragments).
-                var outlineUniforms = makeUniforms()
                 mainEncoder.setFragmentBytes(
                     &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
                 mainEncoder.drawIndexedPrimitives(
@@ -2931,18 +3001,42 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
     }
 
+    /// The PN patches a body's shaded surface is drawn from this frame, or `nil` when it draws
+    /// its plain mesh (direct mesh, meshlets, or no tessellation).
+    ///
+    /// Mirrors `encodeShadedSurface`'s choice, so the highlight, selection mask and outline lie
+    /// on the surface actually drawn (#202). Meshlets emit the input triangles unchanged.
+    private func drawnPatches(
+        of buffers: BodyBuffers, useMeshShaders: Bool, useTessellation: Bool
+    ) -> TessellationBuffers? {
+        guard buffers.normalBuffer == nil, useTessellation, tessellatedShadedPipeline != nil
+        else { return nil }
+        if useMeshShaders, buffers.meshlets != nil, meshShaderShadedPipeline != nil { return nil }
+        return buffers.tessellation
+    }
+
     /// Composites a body's `triangleStyles` over its shaded surface (issue #25).
     ///
     /// The caller sets the depth-stencil state (`highlightDepthState`) and cull mode. Rebinds
-    /// fragment buffers 1 (scene uniforms) and 2 (the style buffer).
+    /// fragment buffers 1 (scene uniforms) and 2 (the style buffer). With `patches`, draws on
+    /// the tessellated surface instead of the flat mesh (#202).
     private func encodeTriangleHighlight(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
-        uniforms: inout Uniforms
+        uniforms: inout Uniforms,
+        patches: TessellationBuffers?
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
             let styleBuf = buffers.triangleStyleBuffer, buffers.indexCount > 0
         else { return }
+        if let patches, let pipeline = tessellatedHighlightPipeline {
+            // On the tessellated surface the shaded pass drew (#202).
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            encoder.setFragmentBuffer(styleBuf, offset: 0, index: 2)
+            RendererSharedSetup.encodeTessellatedDraw(
+                encoder: encoder, pipeline: pipeline, tessellation: patches, uniforms: &uniforms)
+            return
+        }
         if let nb = buffers.normalBuffer {
             // Direct-mesh body: position@0 + normal@2.
             encoder.setRenderPipelineState(highlightDirectPipeline)
@@ -3065,7 +3159,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let refinement = RendererSharedBuffers.makeRefinementBuffers(
             for: body, smoothedVertexData: smoothedVertexData, mesh: mesh,
             tessellationManager: tessellationEnabled ? tessellationManager : nil,
-            buildMeshlets: meshShadersEnabled, device: device, commandQueue: commandQueue)
+            buildMeshlets: meshShadersEnabled,
+            creaseAngle: controller?.configuration.normalSmoothingCreaseAngle ?? 0.524,
+            device: device, commandQueue: commandQueue)
         let tessBuffers = refinement.tessellation
         let meshletBufs = refinement.meshlets
         #if DEBUG
@@ -3160,12 +3256,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// input to the per-frame tessellation-factor kernel.
     ///
     /// Also counts visible bodies that have a mesh but no tessellation data (for diagnostics).
+    /// Overlay-layer bodies are left out: they always draw their plain mesh, so their factors
+    /// would be computed every frame for nothing (#202), as `OffscreenRenderer` already does.
     func tessellationFactorBatch(
         for bodies: [ViewportBody]
     ) -> (batch: [(TessellationBuffers, simd_float4x4)], nonTessellatedCount: Int) {
         var batch: [(TessellationBuffers, simd_float4x4)] = []
         var nonTessellatedCount = 0
-        for body in bodies where body.isVisible {
+        for body in bodies where body.isVisible && body.renderLayer == .geometry {
             guard let buffers = bodyBufferCache[body.id] else { continue }
             if let tess = buffers.tessellation {
                 batch.append((tess, body.transform))

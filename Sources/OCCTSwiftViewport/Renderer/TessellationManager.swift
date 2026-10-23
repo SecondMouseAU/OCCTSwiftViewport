@@ -53,12 +53,15 @@ final class TessellationManager {
     ///   - vertexBuffer: Interleaved vertex buffer (stride 6 floats)
     ///   - indexBuffer: Triangle index buffer (UInt32)
     ///   - triangleCount: Number of triangles
+    ///   - creaseAngle: Radians; an edge whose end normals differ by more stays flat (no PN
+    ///     bulge). The renderers pass `normalSmoothingCreaseAngle`.
     ///   - commandQueue: Command queue for synchronous dispatch
     /// - Returns: TessellationBuffers with patch data and pre-allocated factor buffer
     func buildPatches(
         vertexBuffer: MTLBuffer,
         indexBuffer: MTLBuffer,
         triangleCount: Int,
+        creaseAngle: Float,
         commandQueue: MTLCommandQueue
     ) -> TessellationBuffers? {
         guard triangleCount > 0 else { return nil }
@@ -94,6 +97,8 @@ final class TessellationManager {
 
         var triCount = UInt32(triangleCount)
         encoder.setBytes(&triCount, length: MemoryLayout<UInt32>.size, index: 3)
+        var creaseCos = Self.creaseCosine(creaseAngle)
+        encoder.setBytes(&creaseCos, length: MemoryLayout<Float>.size, index: 4)
 
         let threadsPerGroup = min(pnPatchPipeline.maxTotalThreadsPerThreadgroup, 256)
         let threadgroups = (triangleCount + threadsPerGroup - 1) / threadsPerGroup
@@ -116,6 +121,12 @@ final class TessellationManager {
     ///
     /// 13 `packed_float3` control points and normals, 13 × 12 bytes. Must match the Metal struct.
     nonisolated static let patchStride = 156
+
+    /// Cosine of a crease angle clamped to `0...π`; a non-finite angle uses the 30° default.
+    nonisolated static func creaseCosine(_ angle: Float) -> Float {
+        guard angle.isFinite else { return cos(Float.pi / 6) }
+        return cos(min(max(angle, 0), .pi))
+    }
 
     /// Clamps a requested tessellation factor to what a tessellated pipeline accepts.
     ///

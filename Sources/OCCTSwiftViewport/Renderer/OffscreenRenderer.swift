@@ -53,7 +53,9 @@ public enum RenderAppearance: Sendable, Hashable {
     /// On macOS, when the process has an `NSApplication`, this is `NSApp.effectiveAppearance`, so
     /// an app that forces its own appearance with `NSApp.appearance` renders in it. A plain
     /// headless process with no application falls back to the user's Light/Dark setting. On iOS
-    /// and visionOS it is `UITraitCollection.current`.
+    /// and visionOS it is `UITraitCollection.current`, or, when that is unspecified (typical
+    /// outside a view's trait update, which is where headless renders run), the style of the
+    /// app's foreground window scene (#202). With neither, it renders light.
     case system
 
     /// Whether this appearance renders dark right now.
@@ -75,7 +77,14 @@ public enum RenderAppearance: Sendable, Hashable {
                 appAppearance: app?.effectiveAppearance,
                 interfaceStyle: UserDefaults.standard.string(forKey: "AppleInterfaceStyle"))
         #elseif canImport(UIKit)
-            return UITraitCollection.current.userInterfaceStyle == .dark
+            let current = UITraitCollection.current.userInterfaceStyle
+            if current != .unspecified { return current == .dark }
+            // Outside a trait update `current` is usually unspecified, so ask the foreground
+            // window scene, which carries the app's effective style (#202).
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let scene =
+                scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+            return scene?.traitCollection.userInterfaceStyle == .dark
         #else
             return false
         #endif
@@ -1145,6 +1154,14 @@ public final class OffscreenRenderer: Sendable {
         /// style buffer is built per render rather than cached, so mutating `triangleStyles` on an
         /// existing body (which keeps its `generation`) is always picked up. Leaves
         /// `highlightDepthState` set.
+        /// The PN patches `encodeSurface` draws a body's surface from, or `nil` when it draws the
+        /// plain mesh; the highlight, selection mask and outline follow it (#202).
+        func drawnPatches(_ buffers: BodyBuffersOffscreen) -> TessellationBuffers? {
+            guard buffers.normalBuffer == nil, refined?.tessellatedShaded != nil else { return nil }
+            if buffers.meshlets != nil, refined?.meshShaded != nil { return nil }
+            return buffers.tessellation
+        }
+
         func encodeHighlight(
             _ body: ViewportBody, _ buffers: BodyBuffersOffscreen, uniforms: inout Uniforms
         ) {
@@ -1156,8 +1173,18 @@ public final class OffscreenRenderer: Sendable {
                 let pipeline = buffers.normalBuffer != nil
                     ? pipelines.highlightDirectPipeline : pipelines.highlightPipeline
             else { return }
-            mainEncoder.setRenderPipelineState(pipeline)
             mainEncoder.setDepthStencilState(highlightDepthState)
+            if let patches = drawnPatches(buffers), let tessellated = refined?.tessellatedHighlight
+            {
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
+                RendererSharedSetup.encodeTessellatedDraw(
+                    encoder: mainEncoder, pipeline: tessellated, tessellation: patches,
+                    uniforms: &uniforms)
+                return
+            }
+            mainEncoder.setRenderPipelineState(pipeline)
             mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             if let nb = buffers.normalBuffer {
                 mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
@@ -1357,17 +1384,25 @@ public final class OffscreenRenderer: Sendable {
             else { continue }
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
+            outlinedBodyIDs.insert(body.id)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            if let patches = drawnPatches(buffers),
+                let tessellated = refined?.tessellatedStencilMask
+            {
+                RendererSharedSetup.encodeTessellatedDraw(
+                    encoder: mainEncoder, pipeline: tessellated, tessellation: patches,
+                    uniforms: &uniforms)
+                continue
+            }
             mainEncoder.setRenderPipelineState(pipeline)
             mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             if let nb = buffers.normalBuffer {
                 mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
             }
             mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.drawIndexedPrimitives(
                 type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                 indexBuffer: ib, indexBufferOffset: 0)
-            outlinedBodyIDs.insert(body.id)
         }
 
         // Selection outline pass: the body expanded in screen space, drawn only where the
@@ -1392,6 +1427,22 @@ public final class OffscreenRenderer: Sendable {
                     outlineWidth: style.width,
                     viewportSize: SIMD2<Float>(Float(max(w, 1)), Float(max(h, 1)))
                 )
+                mainEncoder.setFragmentBytes(
+                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
+                    index: 1)
+                // Section clip planes: the outline fragment discards clipped fragments.
+                var outlineUniforms = makeUniforms()
+                mainEncoder.setFragmentBytes(
+                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                if let patches = drawnPatches(buffers),
+                    let tessellated = refined?.tessellatedOutline
+                {
+                    // Expanded from the tessellated silhouette, as live (#202).
+                    RendererSharedSetup.encodeTessellatedDraw(
+                        encoder: mainEncoder, pipeline: tessellated, tessellation: patches,
+                        uniforms: &outlineParams)
+                    continue
+                }
                 mainEncoder.setRenderPipelineState(pipeline)
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                 if let nb = buffers.normalBuffer {
@@ -1400,13 +1451,6 @@ public final class OffscreenRenderer: Sendable {
                 mainEncoder.setVertexBytes(
                     &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
                     index: 1)
-                mainEncoder.setFragmentBytes(
-                    &outlineParams, length: MemoryLayout<SelectionOutlineParamsSwift>.size,
-                    index: 1)
-                // Section clip planes: the outline fragment discards clipped fragments.
-                var outlineUniforms = makeUniforms()
-                mainEncoder.setFragmentBytes(
-                    &outlineUniforms, length: MemoryLayout<Uniforms>.size, index: 2)
                 mainEncoder.drawIndexedPrimitives(
                     type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                     indexBuffer: ib, indexBufferOffset: 0)
@@ -1815,7 +1859,9 @@ public final class OffscreenRenderer: Sendable {
         let smoothingApplies =
             options.autoSmoothNormals && !body.usesDirectMesh && !body.vertexData.isEmpty
             && !body.indices.isEmpty
-        let smoothingKey: Float? = smoothingApplies ? options.normalSmoothingCreaseAngle : nil
+        // The PN patches read the crease angle too (#202).
+        let smoothingKey: Float? =
+            smoothingApplies || refinement.tessellation ? options.normalSmoothingCreaseAngle : nil
         // Likewise the tessellation patches and meshlets depend on `renderingQuality`. A body with
         // no geometry has no entry and stays a cache hit until its generation changes.
         let cached = bodyBufferCache[body.id]
@@ -1859,7 +1905,8 @@ public final class OffscreenRenderer: Sendable {
         let refined = RendererSharedBuffers.makeRefinementBuffers(
             for: body, smoothedVertexData: smoothed, mesh: mesh,
             tessellationManager: refinement.tessellation ? tessellationManager : nil,
-            buildMeshlets: refinement.meshShaders, device: device, commandQueue: commandQueue)
+            buildMeshlets: refinement.meshShaders, creaseAngle: options.normalSmoothingCreaseAngle,
+            device: device, commandQueue: commandQueue)
 
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
             vertexBuffer: mesh.vertexBuffer,

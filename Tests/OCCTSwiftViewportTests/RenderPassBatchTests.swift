@@ -523,3 +523,152 @@ struct RenderingQualityFallbackTests {
         #expect(auxiliary?.contains("mesh_pick: boom") == true)
     }
 }
+
+// MARK: - #202 Passes on the PN-tessellated surface
+
+@Suite("Highlight, outline and crease on the tessellated surface (#202)")
+@MainActor
+struct TessellatedSurfacePassTests {
+
+    /// A coarse sphere: neighbouring normals differ by 45-60°, so PN patches bulge only when the
+    /// crease angle allows it.
+    private func coarseSphere(highlighted: Bool = false) -> ViewportBody {
+        var body = ViewportBody.sphere(
+            id: "s", radius: 4, segments: 6, rings: 4, color: SIMD4(0.6, 0.6, 0.6, 1))
+        if highlighted {
+            body.triangleStyles = Array(
+                repeating: TriangleStyle(color: SIMD4(1, 0, 0, 1)), count: body.indices.count / 3)
+        }
+        return body
+    }
+
+    private let outline = SelectionOutlineStyle(color: SIMD3(1, 1, 0), width: 3)
+
+    private func offscreen(_ body: ViewportBody, crease: Float, selected: Bool) -> [UInt8]? {
+        guard let renderer = OffscreenRenderer() else { return nil }
+        var options = ParityRender.options(displayMode: .shaded)
+        options.renderingQuality = .enhanced
+        options.adaptiveTessellation = false
+        options.uniformTessellationFactor = .fixed(16)
+        options.normalSmoothingCreaseAngle = crease
+        options.selectionOutline = outline
+        if selected { options.selectedBodyIDs = [body.id] }
+        guard let image = renderer.render(bodies: [body], options: options) else { return nil }
+        return ParityRender.bgra(image).0
+    }
+
+    private func live(_ body: ViewportBody, crease: Float, selected: Bool) -> [UInt8]? {
+        var config = ViewportConfiguration(
+            initialCameraState: ParityRender.frontCamera, displayMode: .shaded,
+            lightingConfiguration: ParityRender.plainLighting, showGrid: false,
+            backgroundColor: SIMD4(0, 0, 0, 1), enableSilhouettes: false,
+            renderingQuality: .enhanced, adaptiveTessellation: false,
+            uniformTessellationFactor: .fixed(16))
+        config.normalSmoothingCreaseAngle = crease
+        config.selectionOutline = outline
+        let controller = ViewportController(configuration: config)
+        controller.showAxes = false
+        if selected { controller.selectedBodyIDs = [body.id] }
+        guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([body])),
+            renderer.tessellationEnabled
+        else { return nil }
+        return renderer.renderHeadlessBGRA(
+            width: PassScene.size, height: PassScene.size, backgroundColor: SIMD4(0, 0, 0, 1))
+    }
+
+    private func render(
+        _ which: String, _ body: ViewportBody, crease: Float, selected: Bool = false
+    ) -> [UInt8]? {
+        which == "live"
+            ? live(body, crease: crease, selected: selected)
+            : offscreen(body, crease: crease, selected: selected)
+    }
+
+    /// About 92°: every edge of the coarse sphere bulges.
+    private static let roundCrease: Float = 1.6
+
+    private func isBody(_ c: SIMD3<Int>) -> Bool { c.x + c.y + c.z > 30 }
+
+    @Test("normalSmoothingCreaseAngle sets the PN crease threshold, in both renderers")
+    func creaseAngleRoundsCoarseMesh() throws {
+        #expect(abs(TessellationManager.creaseCosine(.pi / 3) - 0.5) < 1e-5)
+        #expect(TessellationManager.creaseCosine(-1) == 1)
+        #expect(abs(TessellationManager.creaseCosine(.nan) - cos(Float.pi / 6)) < 1e-5)
+        for which in ["live", "offscreen"] {
+            guard let sharp = render(which, coarseSphere(), crease: 0.524),
+                let round = render(which, coarseSphere(), crease: Self.roundCrease)
+            else {
+                Issue.record("Metal device unavailable")
+                return
+            }
+            let sharpArea = PassScene.count(sharp, where: isBody)
+            let roundArea = PassScene.count(round, where: isBody)
+            #expect(
+                roundArea > sharpArea + 150,
+                "\(which): a 92° crease should round the coarse sphere (\(sharpArea) → \(roundArea))"
+            )
+        }
+    }
+
+    @Test("A per-triangle highlight covers the whole tessellated surface, in both renderers")
+    func highlightCoversBulgedSurface() throws {
+        for which in ["live", "offscreen"] {
+            guard
+                let pixels = render(
+                    which, coarseSphere(highlighted: true), crease: Self.roundCrease)
+            else {
+                Issue.record("Metal device unavailable")
+                return
+            }
+            let body = PassScene.count(pixels, where: isBody)
+            let red = PassScene.count(pixels, where: PassScene.isRed)
+            #expect(
+                Double(red) > Double(body) * 0.9,
+                "\(which): the flat highlight lost to the bulged surface (\(red) of \(body) red)")
+        }
+    }
+
+    @Test("Overlay bodies stay out of the live tessellation-factor batch")
+    func overlaysSkipFactorBatch() {
+        var config = ViewportConfiguration()
+        config.renderingQuality = .enhanced
+        let controller = ViewportController(configuration: config)
+        var gizmo = coarseSphere()
+        gizmo.renderLayer = .overlay
+        guard let renderer = ViewportRenderer(controller: controller, bodies: .constant([gizmo])),
+            renderer.tessellationEnabled
+        else { return }
+        _ = renderer.renderHeadlessBGRA(width: 64, height: 64, backgroundColor: SIMD4(0, 0, 0, 1))
+        let (batch, untessellated) = renderer.tessellationFactorBatch(for: [gizmo])
+        #expect(batch.isEmpty, "factors were computed for an overlay that draws untessellated")
+        #expect(untessellated == 0)
+    }
+
+    @Test("The selection outline rings the tessellated silhouette, in both renderers")
+    func outlineRingsBulgedSilhouette() throws {
+        let yellow: (SIMD3<Int>) -> Bool = { $0.x > 150 && $0.y > 150 && $0.z < 100 }
+        for which in ["live", "offscreen"] {
+            guard let plain = render(which, coarseSphere(), crease: Self.roundCrease),
+                let selected = render(
+                    which, coarseSphere(), crease: Self.roundCrease, selected: true)
+            else {
+                Issue.record("Metal device unavailable")
+                return
+            }
+            // Ring pixels painted over the surface itself: a ring around the flat mesh's
+            // silhouette lies inside the bulged one.
+            var inside = 0
+            var ring = 0
+            for y in 0..<PassScene.size {
+                for x in 0..<PassScene.size where yellow(PassScene.rgb(selected, x: x, y: y)) {
+                    ring += 1
+                    if isBody(PassScene.rgb(plain, x: x, y: y)) { inside += 1 }
+                }
+            }
+            #expect(ring > 100, "\(which): no outline ring")
+            #expect(
+                inside * 5 < ring,
+                "\(which): \(inside) of \(ring) ring pixels lie on the tessellated surface")
+        }
+    }
+}

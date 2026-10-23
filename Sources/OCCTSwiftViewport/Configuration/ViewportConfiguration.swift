@@ -395,7 +395,9 @@ public struct ViewportConfiguration: Sendable {
     /// Angle in radians above which `autoSmoothNormals` leaves an edge sharp.
     ///
     /// Edges whose adjacent faces differ by more than this keep their crease; anything flatter
-    /// gets its normals averaged. Defaults to roughly 30°.
+    /// gets its normals averaged. Defaults to roughly 30°. The PN-triangle tessellation of
+    /// `.enhanced` / `.maximum` uses the same angle: a patch edge whose end normals differ by
+    /// more stays flat, and anything smoother bulges (#202). Raise it to round coarse meshes.
     public var normalSmoothingCreaseAngle: Float
 
     // MARK: - Picking
