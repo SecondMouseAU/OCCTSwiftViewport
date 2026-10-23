@@ -605,12 +605,13 @@ struct PickPointVertexOut {
 
 vertex PickPointVertexOut pick_point_vertex(
     VertexIn in [[stage_in]],
-    constant Uniforms &uniforms [[buffer(1)]]
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant float &spriteSize [[buffer(2)]] // drawable px: 8 pt x content scale
 ) {
     PickPointVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-    out.pointSize = 8.0; // 8x8 px clickable footprint
+    out.pointSize = clamp(spriteSize, 1.0, 64.0);
     out.worldPosition = worldPos.xyz;
     return out;
 }
@@ -906,7 +907,7 @@ struct EdgeUniforms {
     float4   cameraPosition;
     float4   materialParams;
     float4   dashPatternParams;  // x = dashLength, y = gapLength, z = dotLength, w = phase
-    float4   edgeParams;         // x = width in pixels
+    float4   edgeParams;         // x = width in pixels, y = edgeIntensity
     float4   clipPlanes[4];
     uint     clipPlaneCount;
     uint     dashPatternType;
@@ -957,6 +958,39 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
         * float2(1.0 / viewportSize.x, 1.0 / viewportSize.y);
     float4 expandedClipPos = baseClipPos;
     expandedClipPos.xy += ndcOffset * baseW;
+    // Depth bias, so edges win over the faces they lie on. The quad's side corners keep the
+    // centreline's depth, but on a face tilted away from the viewer the face's depth there
+    // differs by up to (half width x the face's depth slope), so a constant bias alone (the
+    // wireframe_vertex one) loses part of a wide edge to the face. Pull each vertex toward the
+    // viewer along its own view ray (screen position unchanged) by its half width plus a pixel,
+    // times EDGE_BIAS_SLOPE, in world units at this depth: enough for faces tilted up to ~63
+    // degrees, and only a few pixels' worth of depth, so hidden edges stay hidden.
+    constexpr float EDGE_BIAS_SLOPE = 2.0;
+    float4x4 viewMatrix = uniforms.viewMatrix;
+    float3 cameraRight = float3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+    float3 cameraBack = float3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+    float4x4 vp = uniforms.viewProjectionMatrix;
+    bool orthographic = abs(vp[0][3]) + abs(vp[1][3]) + abs(vp[2][3]) < 1e-6;
+    float4 rightClipPos = vp * (worldPos + float4(cameraRight, 0.0));
+    float2 rightPixels = (rightClipPos.xy / max(rightClipPos.w, 1e-6) - baseClipPos.xy / baseW)
+        * viewportSize * 0.5;
+    float pixelsPerWorld = length(rightPixels);
+    if (pixelsPerWorld > 1e-6) {
+        float3 towardViewer = orthographic
+            ? cameraBack
+            : normalize(uniforms.cameraPosition.xyz - worldPos.xyz);
+        float pull = EDGE_BIAS_SLOPE * (0.5 * uniforms.edgeParams.x + 1.0) / pixelsPerWorld;
+        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * pull, 0.0));
+        if (pulledClipPos.w > 1e-6) {
+            expandedClipPos.z = pulledClipPos.z / pulledClipPos.w * expandedClipPos.w;
+        }
+    }
+    // No constant NDC bias on top (wireframe_vertex's 0.0001): with a wide near/far range, that
+    // much NDC depth spans whole world units and lets hidden edges show through faces.
+    // The near plane is fitted to the scene bounds, edges included (#135), so an edge at the
+    // front of the scene sits right at it: never let the bias alone push a vertex past it.
+    float unbiasedDepth = baseClipPos.z / baseW;
+    expandedClipPos.z = max(expandedClipPos.z, min(unbiasedDepth, 0.0) * expandedClipPos.w);
 
     QuadEdgeVertexOut out;
     out.clipPosition = expandedClipPos;
@@ -1025,11 +1059,41 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
 
-    // Matches the native wireframe path at its default edge intensity (1.0): no depth fade.
-    float edgeAlpha = alpha;
+    // Depth fade and edgeIntensity scaling, identical to wireframe_fragment.
+    float edgeIntensity = max(uniforms.edgeParams.y, 0.0);
+    float nearPlane = uniforms.cameraPosition.w;
+    float farPlane = uniforms.materialParams.w;
+    float linearDepth = saturate(
+        (in.clipPositionCopy.z / in.clipPositionCopy.w - nearPlane / farPlane)
+        / (1.0 - nearPlane / farPlane));
+    float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
+    float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
+    return out;
+}
+
+// Quad-expanded edge pick — kind=1, so picks cover the same width as the visible edge.
+// primSource.y == 0: primitiveID is the segment index (each segment is six strip vertices, so
+// triangle / 6). primSource.y == 1: primitiveID is primSource.x (the arc index, one draw per arc).
+// The packing must match pick_line_fragment.
+fragment PickFragmentOut pick_quad_edge_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant uint2 &primSource [[buffer(3)]],
+    uint primitiveID [[primitive_id]]
+) {
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        float4 plane = uniforms.clipPlanes[cp];
+        if (dot(plane.xyz, in.worldPosition) + plane.w < 0.0) {
+            discard_fragment();
+        }
+    }
+    uint segmentID = primSource.y != 0u ? primSource.x : primitiveID / 6u;
+    PickFragmentOut out;
+    out.pickID = bodyUniforms.objectIndex | ((segmentID & 0x3FFFu) << 16) | (1u << 30);
     return out;
 }
 

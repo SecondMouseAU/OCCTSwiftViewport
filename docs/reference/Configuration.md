@@ -711,7 +711,11 @@ The faint blue tint the shaded pass mixes into selected (15 %) and hovered (8 %)
 public struct EdgeLineConfiguration: Sendable
 ```
 
-Controls how body edge polylines are drawn. With `useQuadExpansion` on (the default), each edge segment is expanded into a screen-aligned quad, which is what makes widths other than 1 px and dash patterns possible. Width is constant in screen space regardless of camera distance. Both `ViewportRenderer` (via `ViewportConfiguration.edgeLineConfiguration`) and `OffscreenRenderer` (via `OffscreenRenderOptions.edgeLineConfiguration`) honour it.
+Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled each frame, with the dash pattern running continuously round the arc) and the edges of `RenderLayer.overlay` bodies. With `useQuadExpansion` on (the default), each edge segment is expanded into a screen-aligned quad, which is what makes widths other than 1 px and dash patterns possible. Width is constant in screen space regardless of camera distance. Both `ViewportRenderer` (via `ViewportConfiguration.edgeLineConfiguration`) and `OffscreenRenderer` (via `OffscreenRenderOptions.edgeLineConfiguration`) honour it. `OffscreenRenderer` does not draw `arcs`.
+
+Quad edges are shaded like native ones: `ViewportController.edgeIntensity` (or `OffscreenRenderOptions.edgeIntensity`) dims and depth-fades them, and they are depth-biased toward the viewer so an edge lying on a face is not lost to it. The bias grows with the line width: each edge vertex is pulled toward the viewer by twice (half the width + 1 px), measured as world distance per pixel at its depth, so a wide edge keeps its full width on faces tilted up to about 63° from the view plane. Only a face less than that distance in front of an edge can let it show through.
+
+With `PickingConfiguration.isEnabled`, edge and arc picks cover the same width as the drawn edge (at least 1 pt), so a wide edge is clickable across its whole width. Dash gaps are pickable too. See [Picking](Picking.md#pick-footprints).
 
 | Property | Type | Default | Notes |
 |---|---|---|---|

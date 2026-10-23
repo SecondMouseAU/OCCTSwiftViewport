@@ -84,7 +84,7 @@ public final class ViewportController: ObservableObject {
     /// NDC coordinates of the last pick tap (for sub-body selection).
     @Published public private(set) var lastPickNDC: SIMD2<Float> = .zero
 
-    /// Edge/wireframe intensity multiplier (0 = invisible, 1 = default, 2+ = bold).
+    /// Edge/wireframe intensity (0 = invisible, 1 = default and fully opaque; values above 1 act as 1).
     @Published public var edgeIntensity: Float = 1.0
 
     /// Clipping planes for section views.

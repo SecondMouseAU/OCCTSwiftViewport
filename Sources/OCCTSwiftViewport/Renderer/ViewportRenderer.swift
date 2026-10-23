@@ -124,7 +124,7 @@ struct EdgeUniforms {
     var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
     var materialParams: SIMD4<Float>  // fresnelPower, fresnelIntensity, matcapBlend, farPlane
     var dashPatternParams: SIMD4<Float>  // dashLength, gapLength, dotLength, phase
-    var edgeParams: SIMD4<Float>  // x = width (px), y/z/w = unused
+    var edgeParams: SIMD4<Float>  // x = width (px), y = edgeIntensity, z/w = unused
     var clipPlanes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
         .zero, .zero, .zero, .zero
     )
@@ -132,6 +132,41 @@ struct EdgeUniforms {
     var dashPatternType: UInt32 = 0
     var viewportSize: SIMD2<Float> = .zero
     var _pad: SIMD2<Float> = .zero
+}
+
+extension EdgeUniforms {
+    /// Quad-edge uniforms for one draw, taken from that draw's scene `Uniforms`.
+    ///
+    /// The edge intensity comes from `uniforms.shadowParams.w`, where both renderers already put
+    /// it for the native wireframe path, so the two edge paths fade and dim identically.
+    ///
+    /// - Parameters:
+    ///   - uniforms: The draw's scene uniforms (matrices, camera, clip planes, edge intensity).
+    ///   - configuration: Width and dash pattern.
+    ///   - viewportSize: Render target size in pixels.
+    ///   - width: Overrides `configuration.width`, e.g. for a wider pick footprint.
+    init(
+        uniforms: Uniforms,
+        configuration: EdgeLineConfiguration,
+        viewportSize: SIMD2<Float>,
+        width: Float? = nil
+    ) {
+        let dash = configuration.dashPattern
+        self.init(
+            viewProjectionMatrix: uniforms.viewProjectionMatrix,
+            modelMatrix: uniforms.modelMatrix,
+            viewMatrix: uniforms.viewMatrix,
+            cameraPosition: uniforms.cameraPosition,
+            materialParams: uniforms.materialParams,
+            dashPatternParams: SIMD4<Float>(
+                dash.dashLength, dash.gapLength, dash.dotLength, dash.phase),
+            edgeParams: SIMD4<Float>(width ?? configuration.width, uniforms.shadowParams.w, 0, 0),
+            clipPlanes: uniforms.clipPlanes,
+            clipPlaneCount: uniforms.clipPlaneCount,
+            dashPatternType: dash.kind.rawValue,
+            viewportSize: simd_max(viewportSize, SIMD2<Float>(1, 1))
+        )
+    }
 }
 
 struct ShadowUniformsSwift {
@@ -280,6 +315,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Same vertex shader as `pick_vertex`; the fragment emits kind=1 in the pick encoding.
     private let pickLinePipeline: MTLRenderPipelineState?
     private let pickArcPipeline: MTLRenderPipelineState?
+    /// Quad-expanded edge + arc pick pipeline, so the pick footprint matches the visible width.
+    private let pickQuadEdgePipeline: MTLRenderPipelineState?
     /// Point-sprite pick pipeline for vertex picking.
     ///
     /// The vertex shader writes `[[point_size]]` so individual points have a clickable
@@ -425,10 +462,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// rebuilt each frame, so picks of those kinds are flagged `isPrimitiveIndexAmbiguous`.
     private var currentAmbiguousKinds: [String: Set<PrimitiveKind>] = [:]
 
-    /// Reused buffer for per-frame adaptively-sampled analytic arc edges (issue #48).
+    /// Buffers for the per-frame adaptively-sampled analytic arc edges (issue #48): line
+    /// segments and, with quad expansion, their quad strips.
     ///
-    /// Grown on demand; written CPU-side each frame.
-    private var arcLineBuffer: MTLBuffer?
+    /// Written CPU-side each frame. Each frame takes buffers no earlier frame still has in flight
+    /// and returns them when its command buffer completes, so the CPU never overwrites arc data
+    /// the GPU is still drawing or picking from. Internal so tests can check reuse.
+    lazy var arcBufferPool = FrameBufferPool(device: device)
+
+    /// Drawable pixels per point, updated each live frame from the view.
+    ///
+    /// Scales the vertex pick sprite and the minimum edge pick width so pick footprints keep their
+    /// size in points on Retina displays. Headless renders keep `1`.
+    var pickContentScale: Float = 1
 
     /// Most recent drawable size in pixels, updated each frame.
     ///
@@ -585,6 +631,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             vertexFunction: "pick_vertex", fragmentFunction: "pick_arc_fragment",
             colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
+
+        // 1x quad edge pick pipeline — quad_edge_vertex expands segments to the visible edge
+        // width; pick_quad_edge_fragment emits kind=1 with the segment (or arc) index.
+        self.pickQuadEdgePipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "pick_quad_edge", library: library,
+            vertexFunction: "quad_edge_vertex", fragmentFunction: "pick_quad_edge_fragment",
+            colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
 
         // 1x point pick pipeline (vertex picking) — pick_point_vertex outputs
         // point_size for clickable footprint; fragment emits kind=2.
@@ -1197,6 +1251,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         guard let drawable = view.currentDrawable,
             let renderPassDescriptor = view.currentRenderPassDescriptor
         else { return }
+        if view.bounds.width > 0 {
+            pickContentScale = max(Float(view.drawableSize.width / view.bounds.width), 1)
+        }
 
         encodeFrame(
             into: FrameRenderTargets(
@@ -1337,6 +1394,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 unlit: controller.displayMode == .unlit
             )
         }
+        // Quad-expanded edges (body edges, arcs, overlay edges) and their pick footprints.
+        let frameEdgeConfig = controller.configuration.edgeLineConfiguration
+        let edgeViewportSize = SIMD2<Float>(Float(drawableSize.width), Float(drawableSize.height))
 
         let bodies = bodiesBinding.wrappedValue
         let displayMode = controller.displayMode
@@ -1732,27 +1792,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 {
                     // Quad-expanded pipeline: variable width + dash patterns
                     var edgeUniforms = EdgeUniforms(
-                        viewProjectionMatrix: uniforms.viewProjectionMatrix,
-                        modelMatrix: uniforms.modelMatrix,
-                        viewMatrix: uniforms.viewMatrix,
-                        cameraPosition: uniforms.cameraPosition,
-                        materialParams: uniforms.materialParams,
-                        dashPatternParams: SIMD4<Float>(
-                            edgeConfig.dashPattern.dashLength,
-                            edgeConfig.dashPattern.gapLength,
-                            edgeConfig.dashPattern.dotLength,
-                            edgeConfig.dashPattern.phase
-                        ),
-                        edgeParams: SIMD4<Float>(edgeConfig.width, 0, 0, 0),
-                        clipPlanes: uniforms.clipPlanes,
-                        clipPlaneCount: clipPlaneCount,
-                        dashPatternType: edgeConfig.dashPattern.kind.rawValue,
-                        viewportSize: SIMD2<Float>(
-                            Float(max(drawableSize.width, 1)),
-                            Float(max(drawableSize.height, 1))
-                        ),
-                        _pad: SIMD2<Float>(0, 0)
-                    )
+                        uniforms: uniforms, configuration: edgeConfig,
+                        viewportSize: edgeViewportSize)
                     mainEncoder.setRenderPipelineState(quadPipeline)
                     mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
@@ -1835,14 +1876,24 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Adaptively samples each visible body's `arcs` to line segments by their
         // projected size, so circular feature edges stay smooth at any zoom
         // independent of mesh density. Per-arc segment ranges are recorded in
-        // `frameArcDraws` and the data lives in `arcLineBuffer`, so the pick pass
+        // `frameArcDraws` and the data lives in `frameArcLineBuffer`, so the pick pass
         // below re-draws the same segments to the pick texture without re-sampling.
+        // With quad expansion on, the same samples are also expanded into quad strips (from
+        // `frameArcQuadBuffer`, ranges `quadStart`/`quadCount`) so arcs get the configured width and
+        // dash pattern like polyline edges, and their pick footprint matches.
         var frameArcDraws:
-            [(body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int)] = []
+            [(
+                body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int,
+                quadStart: Int, quadCount: Int
+            )] = []
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
+        let useQuadArcs = frameEdgeConfig.useQuadExpansion && quadEdgePipeline != nil
+        var frameArcQuadBuffer: MTLBuffer?
+        var frameArcLineBuffer: MTLBuffer?
         if !arcBodies.isEmpty {
             let vpSize = SIMD2<Float>(Float(w), Float(h))
             var arcVerts: [Float] = []
+            var arcQuadVerts: [Float] = []
             for entry in arcBodies {
                 // Match the edge-pass visibility rule: show feature edges when the
                 // display mode draws edges, or when the body is edge-only.
@@ -1853,31 +1904,55 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 for (arcIndex, arc) in entry.body.arcs.enumerated() {
                     let segs = ArcSampling.segmentCount(arc: arc, mvp: mvp, viewportSize: vpSize)
                     let startVert = arcVerts.count / 6
-                    var prev = arc.point(at: 0)
-                    for s in 1...segs {
-                        let cur = arc.point(at: Float(s) / Float(segs))
+                    let points = RendererSharedBuffers.sampledArcPolyline(arc, segmentCount: segs)
+                    for (prev, cur) in zip(points, points.dropFirst()) {
                         arcVerts.append(contentsOf: [
                             prev.x, prev.y, prev.z, 0, 0, 0,
                             cur.x, cur.y, cur.z, 0, 0, 0,
                         ])
-                        prev = cur
                     }
                     let count = arcVerts.count / 6 - startVert
+                    let quadStart = arcQuadVerts.count / 9
+                    if useQuadArcs {
+                        arcQuadVerts += RendererSharedBuffers.quadEdgeLineVertices(from: [points])
+                    }
+                    let quadCount = arcQuadVerts.count / 9 - quadStart
                     if count > 0 {
                         frameArcDraws.append(
-                            (entry.body, entry.objectIndex, arcIndex, startVert, count))
+                            (
+                                entry.body, entry.objectIndex, arcIndex, startVert, count,
+                                quadStart, quadCount
+                            ))
                     }
                 }
             }
 
             if !arcVerts.isEmpty,
-                let arcBuf = ensureArcBuffer(byteCount: arcVerts.count * MemoryLayout<Float>.size)
+                let arcBuf = arcBufferPool.acquire(
+                    byteCount: arcVerts.count * MemoryLayout<Float>.size)
             {
+                arcBufferPool.release(arcBuf, after: commandBuffer)
+                frameArcLineBuffer = arcBuf
                 arcVerts.withUnsafeBytes { raw in
                     arcBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
                 }
-                mainEncoder.setRenderPipelineState(wireframePipeline)
-                mainEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
+                if useQuadArcs, !arcQuadVerts.isEmpty,
+                    let quadBuf = arcBufferPool.acquire(
+                        byteCount: arcQuadVerts.count * MemoryLayout<Float>.size)
+                {
+                    arcBufferPool.release(quadBuf, after: commandBuffer)
+                    arcQuadVerts.withUnsafeBytes { raw in
+                        quadBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+                    }
+                    frameArcQuadBuffer = quadBuf
+                }
+                if let quadBuf = frameArcQuadBuffer, let quadPipeline = quadEdgePipeline {
+                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    mainEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
+                } else {
+                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    mainEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
+                }
                 for d in frameArcDraws {
                     let bodyHasMesh = (bodyBufferCache[d.body.id]?.indexCount ?? 0) > 0
                     var uniforms = makeUniforms()
@@ -1885,14 +1960,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var arcBodyUniforms = BodyUniforms(
                         body: d.body, objectIndex: d.objectIndex, isSelected: 0)
                     if !bodyHasMesh { arcBodyUniforms.metallic = -1.0 }  // use body colour directly
-                    mainEncoder.setVertexBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
                         &arcBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: d.start, vertexCount: d.count)
+                    if frameArcQuadBuffer != nil {
+                        var edgeUniforms = EdgeUniforms(
+                            uniforms: uniforms, configuration: frameEdgeConfig,
+                            viewportSize: edgeViewportSize)
+                        mainEncoder.setVertexBytes(
+                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        mainEncoder.setFragmentBytes(
+                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        mainEncoder.drawPrimitives(
+                            type: .triangleStrip, vertexStart: d.quadStart,
+                            vertexCount: d.quadCount)
+                    } else {
+                        mainEncoder.setVertexBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        mainEncoder.setFragmentBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        mainEncoder.drawPrimitives(
+                            type: .line, vertexStart: d.start, vertexCount: d.count)
+                    }
                 }
             }
         }
@@ -2118,16 +2206,35 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     if !hasMesh {
                         edgeBodyUniforms.metallic = -1.0
                     }
-                    mainEncoder.setRenderPipelineState(wireframePipeline)
-                    mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                    mainEncoder.setVertexBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                    mainEncoder.setFragmentBytes(
-                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                    mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    if frameEdgeConfig.useQuadExpansion, let quadPipeline = quadEdgePipeline,
+                        let quadEdgeVB = buffers.quadEdgeVertexBuffer,
+                        buffers.quadEdgeVertexCount > 0
+                    {
+                        // Same width / dash / intensity as geometry-layer edges.
+                        var edgeUniforms = EdgeUniforms(
+                            uniforms: uniforms, configuration: frameEdgeConfig,
+                            viewportSize: edgeViewportSize)
+                        mainEncoder.setRenderPipelineState(quadPipeline)
+                        mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                        mainEncoder.setVertexBytes(
+                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        mainEncoder.setFragmentBytes(
+                            &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        mainEncoder.drawPrimitives(
+                            type: .triangleStrip, vertexStart: 0,
+                            vertexCount: buffers.quadEdgeVertexCount)
+                    } else {
+                        mainEncoder.setRenderPipelineState(wireframePipeline)
+                        mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
+                        mainEncoder.setVertexBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        mainEncoder.setFragmentBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        mainEncoder.drawPrimitives(
+                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    }
                 }
             }
         }
@@ -2281,13 +2388,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     // `edgeIndices` set. Uses `.lessEqual` so edges co-planar with
                     // a face overwrite the face's pick ID. The fragment encodes
                     // kind=1, primitiveID = line-segment index.
+                    // With quad expansion on, edges and arcs are picked as quads as wide as
+                    // the visible edge (at least 1 pt), not as 1 px lines.
+                    let quadPickPipeline =
+                        frameEdgeConfig.useQuadExpansion ? pickQuadEdgePipeline : nil
+                    let pickEdgeWidth = max(frameEdgeConfig.width, pickContentScale)
                     if let pickLinePipeline {
                         let hasEdgePickable = bodies.contains {
                             $0.isVisible && !$0.edgeIndices.isEmpty
                         }
                         if hasEdgePickable {
                             pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                            pickEncoder.setRenderPipelineState(pickLinePipeline)
                             objectIndex = 0
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
@@ -2304,6 +2415,35 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 var bodyUniforms = BodyUniforms(
                                     body: body, objectIndex: bodyObjectIndex)
 
+                                if let quadPickPipeline,
+                                    let quadEdgeVB = buffers.quadEdgeVertexBuffer,
+                                    buffers.quadEdgeVertexCount > 0
+                                {
+                                    var edgeUniforms = EdgeUniforms(
+                                        uniforms: uniforms, configuration: frameEdgeConfig,
+                                        viewportSize: edgeViewportSize, width: pickEdgeWidth)
+                                    var primSource = SIMD2<UInt32>(0, 0)  // segment = triangle / 6
+                                    pickEncoder.setRenderPipelineState(quadPickPipeline)
+                                    pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
+                                    pickEncoder.setVertexBytes(
+                                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size,
+                                        index: 1)
+                                    pickEncoder.setFragmentBytes(
+                                        &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size,
+                                        index: 1)
+                                    pickEncoder.setFragmentBytes(
+                                        &bodyUniforms, length: MemoryLayout<BodyUniforms>.size,
+                                        index: 2)
+                                    pickEncoder.setFragmentBytes(
+                                        &primSource, length: MemoryLayout<SIMD2<UInt32>>.size,
+                                        index: 3)
+                                    pickEncoder.drawPrimitives(
+                                        type: .triangleStrip, vertexStart: 0,
+                                        vertexCount: buffers.quadEdgeVertexCount)
+                                    continue
+                                }
+
+                                pickEncoder.setRenderPipelineState(pickLinePipeline)
                                 pickEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                                 pickEncoder.setVertexBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -2322,10 +2462,42 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     }
 
                     // Arc pick pass (issue #48): re-draw this frame's adaptively
-                    // sampled arc segments (from `arcLineBuffer`, ranges in
+                    // sampled arc segments (from `frameArcLineBuffer`, ranges in
                     // `frameArcDraws`) to the pick texture. Each arc is drawn
                     // separately so the fragment can stamp the ARC index (kind=1).
-                    if let pickArcPipeline, !frameArcDraws.isEmpty, let arcBuf = arcLineBuffer {
+                    if let quadPickPipeline, !frameArcDraws.isEmpty,
+                        let quadBuf = frameArcQuadBuffer
+                    {
+                        // Quad arcs: same footprint as the visible arc (the samples drawn above).
+                        pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
+                        pickEncoder.setRenderPipelineState(quadPickPipeline)
+                        pickEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
+                        for d in frameArcDraws {
+                            if !d.body.isPickable { continue }  // issue #63
+                            var uniforms = makeUniforms()
+                            uniforms.modelMatrix = d.body.transform
+                            var bodyUniforms = BodyUniforms(
+                                body: d.body, objectIndex: d.objectIndex)
+                            var edgeUniforms = EdgeUniforms(
+                                uniforms: uniforms, configuration: frameEdgeConfig,
+                                viewportSize: edgeViewportSize, width: pickEdgeWidth)
+                            var primSource = SIMD2<UInt32>(
+                                UInt32(truncatingIfNeeded: d.arcIndex), 1)  // fixed arc index
+                            pickEncoder.setVertexBytes(
+                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                            pickEncoder.setFragmentBytes(
+                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                            pickEncoder.setFragmentBytes(
+                                &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+                            pickEncoder.drawPrimitives(
+                                type: .triangleStrip, vertexStart: d.quadStart,
+                                vertexCount: d.quadCount)
+                        }
+                    } else if let pickArcPipeline, !frameArcDraws.isEmpty,
+                        let arcBuf = frameArcLineBuffer
+                    {
                         pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
                         pickEncoder.setRenderPipelineState(pickArcPipeline)
                         pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
@@ -2359,6 +2531,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         if hasVertexPickable {
                             pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
                             pickEncoder.setRenderPipelineState(pickPointPipeline)
+                            // 8 pt clickable footprint, in drawable pixels.
+                            var pointSpriteSize = 8 * pickContentScale
                             objectIndex = 0
                             for body in bodies where body.isVisible {
                                 let bodyObjectIndex = objectIndex
@@ -2378,6 +2552,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
                                 pickEncoder.setVertexBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                                pickEncoder.setVertexBytes(
+                                    &pointSpriteSize, length: MemoryLayout<Float>.size, index: 2)
                                 pickEncoder.setFragmentBytes(
                                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                                 pickEncoder.setFragmentBytes(
@@ -2846,13 +3022,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     }
 
     // MARK: - Buffer Management
-
-    /// Returns the reused arc-line buffer, growing it if needed.
-    private func ensureArcBuffer(byteCount: Int) -> MTLBuffer? {
-        if let b = arcLineBuffer, b.length >= byteCount { return b }
-        arcLineBuffer = device.makeBuffer(length: max(byteCount, 4096), options: .storageModeShared)
-        return arcLineBuffer
-    }
 
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation

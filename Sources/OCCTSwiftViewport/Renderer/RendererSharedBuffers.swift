@@ -3,6 +3,7 @@
 //
 // GPU buffer construction shared by ViewportRenderer and OffscreenRenderer.
 
+import Foundation
 @preconcurrency import Metal
 import simd
 
@@ -83,6 +84,10 @@ enum RendererSharedBuffers {
     ///   `side` (-0.5 or 0.5) is the perpendicular offset, in units of the line width.
     /// - `direction` is the normalized local-space segment direction.
     /// - Each segment produces 6 vertices: 4 corners plus 2 repeated vertices that break the strip.
+    ///   A zero-length segment still produces its 6 (zero-area) vertices, so segment `k` always
+    ///   starts at vertex `6k` and its triangles are `[[primitive_id]]` `6k...6k+5`: the quad edge
+    ///   pick shader recovers the segment index as `primitive_id / 6`, matching the native line
+    ///   buffer's numbering.
     static func quadEdgeLineVertices(from polylines: [[SIMD3<Float>]]) -> [Float] {
         var vertices: [Float] = []
         for polyline in polylines {
@@ -97,8 +102,10 @@ enum RendererSharedBuffers {
                 let b = polyline[i + 1]
                 let segment = b - a
                 let segmentLength = length(segment)
-                guard segmentLength > 0 else { continue }
-                let direction = segment / segmentLength
+                // Any unit direction will do for a zero-length segment: both ends coincide, so
+                // its quad has no area and draws nothing.
+                let direction =
+                    segmentLength > 0 ? segment / segmentLength : SIMD3<Float>(1, 0, 0)
                 let arcA = arcLengths[i]
                 let arcB = arcLengths[i + 1]
                 // Strip order: start-left (twice), start-right, end-left, end-right (twice). With the
@@ -123,6 +130,22 @@ enum RendererSharedBuffers {
             }
         }
         return vertices
+    }
+
+    /// Samples an analytic arc to `segmentCount` segments: `segmentCount + 1` points from
+    /// `t = 0` to `t = 1`.
+    static func sampledArcPolyline(_ arc: ViewportArc, segmentCount: Int) -> [SIMD3<Float>] {
+        let segments = max(segmentCount, 1)
+        return (0...segments).map { arc.point(at: Float($0) / Float(segments)) }
+    }
+
+    /// Quad-strip vertices for one arc sampled to `segmentCount` segments.
+    ///
+    /// Same layout as `quadEdgeLineVertices(from:)` (stride 9, six vertices per segment), with the
+    /// arc length measured from the arc's start so dash patterns run continuously round it. Used by
+    /// both renderers so arcs honour `EdgeLineConfiguration` width and dashes like polyline edges.
+    static func arcQuadEdgeVertices(_ arc: ViewportArc, segmentCount: Int) -> [Float] {
+        quadEdgeLineVertices(from: [sampledArcPolyline(arc, segmentCount: segmentCount)])
     }
 
     /// Flattens edge polylines into line-segment pairs for native Metal line rendering.
@@ -197,5 +220,52 @@ enum RendererSharedBuffers {
                 options: .storageModeShared
             )
         }
+    }
+}
+
+// MARK: - Per-frame buffer pool
+
+/// Shared-storage buffers for data the CPU rewrites every frame, such as sampled arcs.
+///
+/// A buffer handed out by `acquire(byteCount:)` stays reserved until `release(_:)`, which the
+/// renderer calls from the frame's command-buffer completion handler. So the CPU never rewrites a
+/// buffer the GPU may still be reading, however many frames are in flight. Released buffers are
+/// reused, so a steady scene settles at one buffer per frame in flight.
+final class FrameBufferPool: @unchecked Sendable {
+
+    private let device: MTLDevice
+    private let lock = NSLock()
+    private var free: [MTLBuffer] = []
+    private(set) var allocatedCount = 0
+
+    init(device: MTLDevice) {
+        self.device = device
+    }
+
+    /// A buffer of at least `byteCount` bytes that no in-flight frame is using.
+    func acquire(byteCount: Int) -> MTLBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let index = free.firstIndex(where: { $0.length >= byteCount }) {
+            return free.remove(at: index)
+        }
+        guard
+            let buffer = device.makeBuffer(
+                length: max(byteCount, 4096), options: .storageModeShared)
+        else { return nil }
+        allocatedCount += 1
+        return buffer
+    }
+
+    /// Returns `buffer` to the pool once the GPU has finished with it.
+    func release(_ buffer: MTLBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        free.append(buffer)
+    }
+
+    /// Releases `buffer` when `commandBuffer` completes.
+    func release(_ buffer: MTLBuffer, after commandBuffer: MTLCommandBuffer) {
+        commandBuffer.addCompletedHandler { [self] _ in release(buffer) }
     }
 }

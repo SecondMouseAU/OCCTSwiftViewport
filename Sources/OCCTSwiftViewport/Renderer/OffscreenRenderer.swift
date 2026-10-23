@@ -53,6 +53,12 @@ public struct OffscreenRenderOptions: Sendable {
     /// Edge line rendering configuration (width, dash pattern, quad expansion).
     public var edgeLineConfiguration: EdgeLineConfiguration
 
+    /// Edge intensity, mirroring `ViewportController.edgeIntensity`.
+    ///
+    /// `0` hides edges, `1` (the default) is normal, and values toward `0` dim and depth-fade them.
+    /// Applies to both the quad-expanded and the native edge paths.
+    public var edgeIntensity: Float
+
     /// Optional explicit orthographic projection bounds (world units).
     ///
     /// When set, overrides `cameraState.projectionMatrix(...)` and forces
@@ -92,7 +98,8 @@ public struct OffscreenRenderOptions: Sendable {
         edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
-        measurements: [ViewportMeasurement] = []
+        measurements: [ViewportMeasurement] = [],
+        edgeIntensity: Float = 1.0
     ) {
         self.width = width
         self.height = height
@@ -109,6 +116,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
         self.measurements = measurements
+        self.edgeIntensity = edgeIntensity
     }
 }
 
@@ -379,7 +387,8 @@ public final class OffscreenRenderer: Sendable {
             lightVP = matrix_identity_float4x4
         }
         let shadowParams = SIMD4<Float>(
-            lighting.shadowBias, lighting.shadowIntensity, shadowEnabled ? 1.0 : 0.0, 1.0)
+            lighting.shadowBias, lighting.shadowIntensity, shadowEnabled ? 1.0 : 0.0,
+            options.edgeIntensity)
         let shadowParams2 = SIMD4<Float>(
             lighting.shadowLightSize, lighting.shadowSearchRadius, 0, 0)
 
@@ -577,24 +586,8 @@ public final class OffscreenRenderer: Sendable {
                 let edgeConfig = options.edgeLineConfiguration
                 let useQuadExpansion = edgeConfig.useQuadExpansion
                 var edgeUniforms = EdgeUniforms(
-                    viewProjectionMatrix: uniforms.viewProjectionMatrix,
-                    modelMatrix: uniforms.modelMatrix,
-                    viewMatrix: uniforms.viewMatrix,
-                    cameraPosition: uniforms.cameraPosition,
-                    materialParams: uniforms.materialParams,
-                    dashPatternParams: SIMD4<Float>(
-                        edgeConfig.dashPattern.dashLength,
-                        edgeConfig.dashPattern.gapLength,
-                        edgeConfig.dashPattern.dotLength,
-                        edgeConfig.dashPattern.phase
-                    ),
-                    edgeParams: SIMD4<Float>(edgeConfig.width, 0, 0, 0),
-                    clipPlanes: uniforms.clipPlanes,
-                    clipPlaneCount: uniforms.clipPlaneCount,
-                    dashPatternType: edgeConfig.dashPattern.kind.rawValue,
-                    viewportSize: SIMD2<Float>(Float(max(w, 1)), Float(max(h, 1))),
-                    _pad: SIMD2<Float>(0, 0)
-                )
+                    uniforms: uniforms, configuration: edgeConfig,
+                    viewportSize: SIMD2<Float>(Float(w), Float(h)))
 
                 if useQuadExpansion,
                     let quadPipeline = pipelines.quadEdgePipeline,
