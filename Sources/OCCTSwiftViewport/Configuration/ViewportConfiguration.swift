@@ -129,8 +129,13 @@ public struct SelectionOutlineStyle: Sendable, Hashable {
 // MARK: - Grid Style
 
 /// Rendering style for the ground grid.
+///
+/// The grid lies in the XY plane at z = 0 (the world is Z-up). Both styles use the adaptive
+/// spacing from `gridBaseSpacing` / `gridSubdivisions`, centre on the camera pivot and stop at
+/// the `gridSize` square around the origin.
 public enum GridStyle: Sendable {
-    /// Solid plane (default).
+    /// Ground plane: grid lines over a faint translucent fill, with every
+    /// `gridSubdivisions`-th line drawn darker (default).
     case plane
     /// Adaptive dot grid that snaps spacing levels based on zoom.
     case dots
@@ -139,10 +144,14 @@ public enum GridStyle: Sendable {
 // MARK: - Axis Style
 
 /// Rendering style for coordinate axes.
+///
+/// Either way each axis is an unlit cylinder `axisLength` long from the origin (X red, Y green,
+/// Z blue) over a 1 px centre line, so it never vanishes when the radius falls below a pixel.
 public enum AxisStyle: Sendable {
-    /// Fixed world-space radius (default).
+    /// Fixed world-space radius, `axisRadius` (default).
     case cylinder
-    /// Radius auto-scales with camera distance to maintain constant screen width.
+    /// Radius scales with the view's visible height at the pivot, so the axes keep the screen
+    /// width `axisRadius` gives from the default camera (distance 10, 45° FOV) at any zoom.
     case constantScreenWidth
 }
 
@@ -190,8 +199,22 @@ public struct ViewportConfiguration: Sendable {
     /// Maximum distance from pivot.
     public var maxDistance: Float
 
-    /// Default field of view in degrees.
+    /// Vertical field of view of the initial perspective camera, in degrees.
+    ///
+    /// Applied to `initialCameraState` when a `ViewportController` is created (see
+    /// `effectiveInitialCameraState`), and the field of view `ViewportController.reset(animated:)`
+    /// returns to. Overrides `initialCameraState.fieldOfView`; when the initializer is given no
+    /// value it adopts `initialCameraState.fieldOfView`, so a camera built with its own FOV keeps
+    /// it.
     public var defaultFieldOfView: Float
+
+    /// `initialCameraState` with `defaultFieldOfView` applied: the camera a new
+    /// `ViewportController` starts from.
+    public var effectiveInitialCameraState: CameraState {
+        var state = initialCameraState
+        state.fieldOfView = defaultFieldOfView
+        return state
+    }
 
     // MARK: - Gesture Settings
 
@@ -227,10 +250,11 @@ public struct ViewportConfiguration: Sendable {
     /// Whether to show coordinate axes.
     public var showAxes: Bool
 
-    /// Axis length in world units.
+    /// Axis length in world units, measured from the origin.
     public var axisLength: Float
 
-    /// Axis radius (or base radius for screen-space style).
+    /// Axis cylinder radius in world units (`.cylinder`), or the radius at the default camera's
+    /// zoom (`.constantScreenWidth`).
     public var axisRadius: Float
 
     /// Rendering style for coordinate axes.
@@ -242,7 +266,10 @@ public struct ViewportConfiguration: Sendable {
     /// Rendering style for the ground grid.
     public var gridStyle: GridStyle
 
-    /// Grid plane size in world units (for `.plane` style).
+    /// Side length of the square grid, in world units, centred on the world origin.
+    ///
+    /// Bounds both styles: no line or dot is drawn outside the square. Zero, negative or
+    /// `.infinity` leaves the grid unbounded (it still only covers a window around the pivot).
     public var gridSize: Float
 
     /// Fundamental grid unit in world units (for `.dots` style).
@@ -252,7 +279,24 @@ public struct ViewportConfiguration: Sendable {
     public var gridSubdivisions: Int
 
     /// Background color (platform-agnostic).
+    ///
+    /// `MetalViewportView` uses it in both light and dark mode unless `darkModeBackgroundColor`
+    /// is set.
     public var backgroundColor: SIMD4<Float>
+
+    /// Optional background colour `MetalViewportView` uses while the environment's colour scheme
+    /// is dark.
+    ///
+    /// `nil` (the default) uses `backgroundColor` in both schemes. Set it, for example to
+    /// `SIMD4<Float>(0.12, 0.12, 0.12, 1)`, to opt into a separate dark-mode background.
+    public var darkModeBackgroundColor: SIMD4<Float>?
+
+    /// The background colour for the given colour scheme: `darkModeBackgroundColor` when `isDark`
+    /// and it is set, otherwise `backgroundColor`.
+    public func resolvedBackgroundColor(isDark: Bool) -> SIMD4<Float> {
+        if isDark, let dark = darkModeBackgroundColor { return dark }
+        return backgroundColor
+    }
 
     // MARK: - Anti-Aliasing
 
@@ -396,7 +440,7 @@ public struct ViewportConfiguration: Sendable {
         rotationStyle: RotationStyle = .turntable,
         minDistance: Float = 0.1,
         maxDistance: Float = 10000,
-        defaultFieldOfView: Float = 45,
+        defaultFieldOfView: Float? = nil,
         gestureConfiguration: GestureConfiguration = .default,
         displayMode: DisplayMode = .shaded,
         lightingConfiguration: LightingConfiguration = .threePoint,
@@ -412,6 +456,7 @@ public struct ViewportConfiguration: Sendable {
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
         backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
+        darkModeBackgroundColor: SIMD4<Float>? = nil,
         msaaSampleCount: Int = 4,
         enableSilhouettes: Bool = true,
         silhouetteThickness: Float = 1.0,
@@ -440,7 +485,7 @@ public struct ViewportConfiguration: Sendable {
         self.rotationStyle = rotationStyle
         self.minDistance = minDistance
         self.maxDistance = maxDistance
-        self.defaultFieldOfView = defaultFieldOfView
+        self.defaultFieldOfView = defaultFieldOfView ?? initialCameraState.fieldOfView
         self.gestureConfiguration = gestureConfiguration
         self.displayMode = displayMode
         self.lightingConfiguration = lightingConfiguration
@@ -456,6 +501,7 @@ public struct ViewportConfiguration: Sendable {
         self.gridBaseSpacing = gridBaseSpacing
         self.gridSubdivisions = gridSubdivisions
         self.backgroundColor = backgroundColor
+        self.darkModeBackgroundColor = darkModeBackgroundColor
         self.msaaSampleCount = msaaSampleCount
         self.enableSilhouettes = enableSilhouettes
         self.silhouetteThickness = silhouetteThickness

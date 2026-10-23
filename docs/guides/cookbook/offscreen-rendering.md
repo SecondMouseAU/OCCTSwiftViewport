@@ -66,8 +66,13 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `displayMode` | `DisplayMode` | `.shadedWithEdges` | See [Display modes](#display-modes) |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back + ambient |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1)` | RGBA, linear |
-| `showGrid` | `Bool` | `false` | Adaptive dot grid |
+| `showGrid` | `Bool` | `false` | Ground grid on the XY plane |
 | `showAxes` | `Bool` | `false` | RGB world-space axes |
+| `gridStyle` | `GridStyle` | `.plane` | Line grid with a faint fill, or `.dots` |
+| `gridSize` | `Float` | `100` | Side of the square grid around the origin |
+| `axisLength` | `Float` | `2` | Axis length from the origin |
+| `axisRadius` | `Float` | `0.02` | Axis cylinder radius |
+| `axisStyle` | `AxisStyle` | `.cylinder` | Or `.constantScreenWidth` |
 | `msaaSampleCount` | `Int` | `4` | MSAA samples (1, 2, or 4) |
 | `gridBaseSpacing` | `Float` | `1.0` | Grid unit in world units (matches `ViewportConfiguration`) |
 | `gridSubdivisions` | `Int` | `10` | Adaptive grid spacing factor (matches `ViewportConfiguration`) |

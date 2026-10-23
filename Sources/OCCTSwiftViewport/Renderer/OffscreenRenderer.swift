@@ -50,6 +50,22 @@ public struct OffscreenRenderOptions: Sendable {
     /// `ViewportConfiguration.gridSubdivisions`.
     public var gridSubdivisions: Int
 
+    /// Grid rendering style, matching `ViewportConfiguration.gridStyle`.
+    public var gridStyle: GridStyle
+
+    /// Side length of the square grid centred on the world origin, matching
+    /// `ViewportConfiguration.gridSize`.
+    public var gridSize: Float
+
+    /// Axis length in world units, matching `ViewportConfiguration.axisLength`.
+    public var axisLength: Float
+
+    /// Axis cylinder radius, matching `ViewportConfiguration.axisRadius`.
+    public var axisRadius: Float
+
+    /// Axis rendering style, matching `ViewportConfiguration.axisStyle`.
+    public var axisStyle: AxisStyle
+
     /// Edge line rendering configuration (width, dash pattern, quad expansion).
     public var edgeLineConfiguration: EdgeLineConfiguration
 
@@ -95,6 +111,11 @@ public struct OffscreenRenderOptions: Sendable {
         msaaSampleCount: Int = 4,
         gridBaseSpacing: Float = 1.0,
         gridSubdivisions: Int = 10,
+        gridStyle: GridStyle = .plane,
+        gridSize: Float = 100.0,
+        axisLength: Float = 2.0,
+        axisRadius: Float = 0.02,
+        axisStyle: AxisStyle = .cylinder,
         edgeLineConfiguration: EdgeLineConfiguration = .default,
         explicitOrthoBounds: OrthoBounds? = nil,
         pixelPan: SIMD2<Float>? = nil,
@@ -112,6 +133,11 @@ public struct OffscreenRenderOptions: Sendable {
         self.msaaSampleCount = msaaSampleCount
         self.gridBaseSpacing = gridBaseSpacing
         self.gridSubdivisions = gridSubdivisions
+        self.gridStyle = gridStyle
+        self.gridSize = gridSize
+        self.axisLength = axisLength
+        self.axisRadius = axisRadius
+        self.axisStyle = axisStyle
         self.edgeLineConfiguration = edgeLineConfiguration
         self.explicitOrthoBounds = explicitOrthoBounds
         self.pixelPan = pixelPan
@@ -214,7 +240,8 @@ public final class OffscreenRenderer: Sendable {
     private let depthState: MTLDepthStencilState
     private let transparentDepthState: MTLDepthStencilState
     private let matcapTexture: MTLTexture
-    private let axisVertexBuffer: MTLBuffer
+    /// Axis cylinders and the cached `.plane` grid-line buffer.
+    private let gridAxisBuffers: GridAxisBuffers
 
     /// Image-based lighting from `LightingConfiguration.environmentMapURL`/`environmentMapData`,
     /// loaded on demand so headless renders light like the interactive viewport.
@@ -296,10 +323,10 @@ public final class OffscreenRenderer: Sendable {
         else { return nil }
         self.transparentDepthState = transparentDepthState
 
-        guard let axisVB = RendererSharedSetup.makeAxisVertexBuffer(device: device) else {
+        guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
         }
-        self.axisVertexBuffer = axisVB
+        self.gridAxisBuffers = gridAxisBuffers
 
         guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else { return nil }
         self.matcapTexture = matcap
@@ -340,6 +367,13 @@ public final class OffscreenRenderer: Sendable {
             guard let box = body.boundingBox?.transformed(by: body.transform) else { continue }
             sceneBounds = sceneBounds.map { $0.union(box) } ?? box
         }
+        sceneBounds = GridAxisGeometry.clipBounds(
+            sceneBounds: sceneBounds,
+            settings: GridAxisSettings(options: options),
+            cameraState: cameraState,
+            showGrid: options.showGrid,
+            showAxes: options.showAxes
+        )
         let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
         let nearClip: Float = clip.near
         let farClip: Float = clip.far
@@ -504,14 +538,18 @@ public final class OffscreenRenderer: Sendable {
         }
 
         // Grid
+        let gridAxisSettings = GridAxisSettings(options: options)
         if options.showGrid {
             RendererSharedSetup.encodeGrid(
                 encoder: mainEncoder,
-                pipeline: pipelines.gridPipeline,
+                dotPipeline: pipelines.gridPipeline,
+                linePipeline: pipelines.axisPipeline,
+                fillDepthState: transparentDepthState,
+                depthState: depthState,
+                buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
                 cameraState: cameraState,
-                baseSpacing: options.gridBaseSpacing,
-                subdivisions: options.gridSubdivisions
+                settings: gridAxisSettings
             )
         }
 
@@ -520,8 +558,10 @@ public final class OffscreenRenderer: Sendable {
             RendererSharedSetup.encodeAxes(
                 encoder: mainEncoder,
                 pipeline: pipelines.axisPipeline,
-                vertexBuffer: axisVertexBuffer,
-                viewProjection: viewProjection
+                buffers: gridAxisBuffers,
+                viewProjection: viewProjection,
+                cameraState: cameraState,
+                settings: gridAxisSettings
             )
         }
 

@@ -1151,25 +1151,27 @@ fragment HighlightFragmentOut highlight_fragment(
 
 // MARK: - Grid Pipeline (Instanced Dots)
 
+// Swift↔Metal sync: ViewportRenderer.swift `struct GridUniforms`.
 struct GridUniforms {
     float4x4 viewProjectionMatrix;
-    float3   gridOrigin;
+    float3   gridOrigin;   // world position of the window's minimum-index dot
     float    spacing;
-    int      halfCount;
+    int      columns;      // dots along X
     float    dotSize;
+    int      rows;         // dots along Y
     float4   dotColor;
 };
 
+// Dots on the XY ground plane (Z-up world), `columns` x `rows` from `gridOrigin`.
 vertex GridVertexOut grid_vertex(
     uint vertexID [[vertex_id]],
     uint instanceID [[instance_id]],
     constant GridUniforms &uniforms [[buffer(0)]]
 ) {
-    int count = uniforms.halfCount * 2 + 1;
-    int ix = int(instanceID) % count - uniforms.halfCount;
-    int iz = int(instanceID) / count - uniforms.halfCount;
+    int ix = int(instanceID) % uniforms.columns;
+    int iy = int(instanceID) / uniforms.columns;
 
-    float3 pos = uniforms.gridOrigin + float3(float(ix) * uniforms.spacing, 0.0, float(iz) * uniforms.spacing);
+    float3 pos = uniforms.gridOrigin + float3(float(ix) * uniforms.spacing, float(iy) * uniforms.spacing, 0.0);
     GridVertexOut out;
     out.clipPosition = uniforms.viewProjectionMatrix * float4(pos, 1.0);
     out.pointSize = uniforms.dotSize;

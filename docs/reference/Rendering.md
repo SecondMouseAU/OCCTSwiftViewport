@@ -97,8 +97,13 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `displayMode` | `DisplayMode` | `.shadedWithEdges` | Visual representation style. |
 | `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, IBL. |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1.0)` | RGBA background colour, linear space. |
-| `showGrid` | `Bool` | `false` | Draw the adaptive dot grid. |
-| `showAxes` | `Bool` | `false` | Draw RGB world-space axis lines. |
+| `showGrid` | `Bool` | `false` | Draw the ground grid (XY plane). |
+| `showAxes` | `Bool` | `false` | Draw the RGB world-space axes. |
+| `gridStyle` | `GridStyle` | `.plane` | Grid style; matches `ViewportConfiguration.gridStyle`. |
+| `gridSize` | `Float` | `100` | Side of the square grid around the origin; matches `ViewportConfiguration.gridSize`. |
+| `axisLength` | `Float` | `2` | Axis length; matches `ViewportConfiguration.axisLength`. |
+| `axisRadius` | `Float` | `0.02` | Axis radius; matches `ViewportConfiguration.axisRadius`. |
+| `axisStyle` | `AxisStyle` | `.cylinder` | Axis style; matches `ViewportConfiguration.axisStyle`. |
 | `msaaSampleCount` | `Int` | `4` | MSAA sample count. `1` or less disables MSAA; otherwise the largest of 8, 4 and 2 that does not exceed it and that the device supports is used. Can change between renders on one `OffscreenRenderer`. |
 | `gridBaseSpacing` | `Float` | `1.0` | Fundamental grid unit in world units, mirroring `ViewportConfiguration.gridBaseSpacing`. |
 | `gridSubdivisions` | `Int` | `10` | Subdivision factor between adaptive grid spacing levels, mirroring `ViewportConfiguration.gridSubdivisions`. |
@@ -123,6 +128,11 @@ public init(
     msaaSampleCount: Int = 4,
     gridBaseSpacing: Float = 1.0,
     gridSubdivisions: Int = 10,
+    gridStyle: GridStyle = .plane,
+    gridSize: Float = 100.0,
+    axisLength: Float = 2.0,
+    axisRadius: Float = 0.02,
+    axisStyle: AxisStyle = .cylinder,
     edgeLineConfiguration: EdgeLineConfiguration = .default,
     explicitOrthoBounds: OrthoBounds? = nil,
     pixelPan: SIMD2<Float>? = nil,

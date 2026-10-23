@@ -45,7 +45,8 @@ Three static presets are provided for the most common axis-aligned sections:
 
 | Preset | Normal | Clips |
 |---|---|---|
-| `ClipPlane.groundPlane` | `(0, 1, 0)` | everything below Y = 0 |
+| `ClipPlane.groundPlane` | `(0, 0, 1)` | everything below Z = 0 (the Z-up ground; was Y = 0 up to v1.2.2) |
+| `ClipPlane.yPlane` | `(0, 1, 0)` | everything at negative Y |
 | `ClipPlane.xPlane` | `(1, 0, 0)` | everything at negative X |
 | `ClipPlane.zPlane` | `(0, 0, 1)` | everything at negative Z |
 

@@ -92,12 +92,18 @@ struct PointParamsSwift {
     var _pad: UInt32 = 0  // offset 28
 }
 
+// Swift↔Metal sync: Renderer/Shaders.metal `struct GridUniforms` (same field order; `rows`
+// fills the 4 bytes of padding before the 16-byte-aligned `dotColor`, so the size stays 112).
 struct GridUniforms {
     var viewProjectionMatrix: simd_float4x4
+    /// World position of the window's minimum-index dot.
     var gridOrigin: SIMD3<Float>
     var spacing: Float
-    var halfCount: Int32
+    /// Dots along X.
+    var columns: Int32
     var dotSize: Float
+    /// Dots along Y.
+    var rows: Int32
     var dotColor: SIMD4<Float>
 }
 
@@ -455,8 +461,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
     private var bodyStyleGeneration: [String: UInt64] = [:]
 
-    /// Axis vertex buffer (6 vertices: 3 line segments with position+color).
-    private let axisVertexBuffer: MTLBuffer
+    /// Axis cylinders and the cached `.plane` grid-line buffer.
+    private let gridAxisBuffers: GridAxisBuffers
 
     // MARK: - Picking
 
@@ -1090,11 +1096,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
         self.transparentSurfaceDepthState = transparentSurfaceDepthState
 
-        // Build axis vertex buffer (6 vertices for 3 lines)
-        guard let axisVB = RendererSharedSetup.makeAxisVertexBuffer(device: device) else {
+        // Axis cylinders + grid-line cache.
+        guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
         }
-        self.axisVertexBuffer = axisVB
+        self.gridAxisBuffers = gridAxisBuffers
 
         // Generate procedural matcap texture (256x256 RGBA8)
         guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else {
@@ -1312,6 +1318,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let worldBox = localBox.transformed(by: body.transform)
             sceneBounds = sceneBounds.map { $0.union(worldBox) } ?? worldBox
         }
+        sceneBounds = GridAxisGeometry.clipBounds(
+            sceneBounds: sceneBounds,
+            settings: GridAxisSettings(configuration: controller.configuration),
+            cameraState: cameraState,
+            showGrid: controller.showGrid,
+            showAxes: controller.showAxes
+        )
         let clip = cameraState.clipPlanes(sceneBounds: sceneBounds)
 
         var projMatrix = cameraState.projectionMatrix(
@@ -1690,15 +1703,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // 1. Draw grid
+        let gridAxisSettings = GridAxisSettings(configuration: controller.configuration)
         if controller.showGrid {
-            let config = controller.configuration
             RendererSharedSetup.encodeGrid(
                 encoder: mainEncoder,
-                pipeline: gridPipeline,
+                dotPipeline: gridPipeline,
+                linePipeline: axisPipeline,
+                fillDepthState: transparentSurfaceDepthState,
+                depthState: depthState,
+                buffers: gridAxisBuffers,
                 viewProjection: viewProjection,
                 cameraState: cameraState,
-                baseSpacing: config.gridBaseSpacing,
-                subdivisions: config.gridSubdivisions
+                settings: gridAxisSettings
             )
         }
 
@@ -1707,8 +1723,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             RendererSharedSetup.encodeAxes(
                 encoder: mainEncoder,
                 pipeline: axisPipeline,
-                vertexBuffer: axisVertexBuffer,
-                viewProjection: viewProjection
+                buffers: gridAxisBuffers,
+                viewProjection: viewProjection,
+                cameraState: cameraState,
+                settings: gridAxisSettings
             )
         }
 
