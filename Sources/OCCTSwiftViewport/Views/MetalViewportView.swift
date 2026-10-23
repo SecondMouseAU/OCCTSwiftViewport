@@ -201,8 +201,12 @@ public struct MetalViewportView: View {
     /// Dispatches a tap or click to the input router, then picks at it.
     ///
     /// `count` is the tap count: 1 for a single tap, 2 for the second click of a macOS
-    /// double-click. The router interprets doubles via `GestureConfiguration.doubleClick`.
-    private func handlePickAt(_ location: CGPoint, viewSize: CGSize, count: Int = 1) {
+    /// double-click. `modifiers` are the keys held (macOS). The router interprets doubles via
+    /// `GestureConfiguration.resetViewTriggers` and `doubleClick`.
+    private func handlePickAt(
+        _ location: CGPoint, viewSize: CGSize, count: Int = 1,
+        modifiers: ViewportModifierKeys = []
+    ) {
         guard viewSize.width > 0, viewSize.height > 0 else { return }
 
         // Compute NDC from tap location for sub-body selection
@@ -217,10 +221,11 @@ public struct MetalViewportView: View {
         let ndc = SIMD2<Float>(ndcX, ndcY)
 
         // A single tap routes nothing but surfaces on the input-event stream (e.g. for a HUD
-        // input inspector); a double runs GestureConfiguration.doubleClick. Dispatched before
+        // input inspector); a double runs a matching resetViewTriggers entry or doubleClick.
+        // The modifiers ride along for `.doubleClick(modifiers:)` triggers. Dispatched before
         // the picking guard so it still works with picking disabled.
         if count >= 2 { controller.inputSceneBodies = bodies }
-        controller.dispatch(.tap(ndc: ndc, count: count))
+        controller.dispatch(.tap(ndc: ndc, count: count), tapModifiers: modifiers)
 
         guard controller.configuration.pickingConfiguration.isEnabled else { return }
         guard let pixel = viewToPixel(location, viewSize: viewSize) else { return }
@@ -283,9 +288,16 @@ public struct MetalViewportView: View {
                     ))
                 controller.scheduleDynamicPivotUpdate(bodies: bodies)
             }
-            let onMouseDown: (CGPoint, CGSize, Int) -> Void = { location, viewSize, clickCount in
-                handlePickAt(location, viewSize: viewSize, count: clickCount)
+            let onMouseDown: (CGPoint, CGSize, Int, ViewportModifierKeys) -> Void = {
+                location, viewSize, clickCount, modifiers in
+                handlePickAt(location, viewSize: viewSize, count: clickCount, modifiers: modifiers)
             }
+            // Only claim keys when a key-combination trigger is configured, so by default every
+            // key still goes to the responder chain untouched.
+            let onKeyCombination: ((Character, ViewportModifierKeys) -> Bool)? =
+                controller.wantsViewportKeyEvents
+                ? { key, modifiers in controller.handleKeyCombination(key, modifiers: modifiers) }
+                : nil
             let onDrag: (SIMD2<Float>, ViewportModifierKeys) -> Void = { delta, modifiers in
                 controller.dispatch(.dragChanged(delta: delta, modifiers: modifiers))
             }
@@ -320,6 +332,7 @@ public struct MetalViewportView: View {
                 preferredFramesPerSecond: controller.configuration.preferredFramesPerSecond,
                 onScrollWheel: onScrollWheel,
                 onMouseDown: onMouseDown,
+                onKeyCombination: onKeyCombination,
                 onDrag: onDrag,
                 onDragEnd: onDragEnd,
                 onMagnify: onMagnify,

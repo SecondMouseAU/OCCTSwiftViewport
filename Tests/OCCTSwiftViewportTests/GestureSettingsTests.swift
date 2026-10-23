@@ -117,18 +117,24 @@ struct GestureSettingsTests {
         #expect(vc.cameraState.distance == before)
     }
 
-    @Test("Double-tap and double-click default to .resetView")
-    func doubleTapDefaults() {
-        #expect(GestureConfiguration.default.doubleTap == .resetView)
-        #expect(GestureConfiguration.default.doubleClick == .resetView)
+    @Test(
+        "No preset binds view reset or a double-tap action",
+        arguments: [
+            GestureConfiguration.default, .blender, .fusion360, .visionOS,
+        ])
+    func presetsHaveNoResetBinding(gestures: GestureConfiguration) {
+        #expect(gestures.doubleTap == .none)
+        #expect(gestures.doubleClick == .none)
+        #expect(gestures.resetViewTriggers.isEmpty)
     }
 
-    @Test("A double-tap mapped to .none leaves the camera alone")
-    func doubleTapNone() {
-        let vc = controller(GestureConfiguration(doubleTap: .none, doubleClick: .none))
+    @Test("By default a double-tap or double-click leaves the camera alone")
+    func doubleTapDoesNothingByDefault() {
+        let vc = controller()
         vc.dispatch(.dragChanged(delta: SIMD2(60, 0), modifiers: []))
         let before = vc.cameraState
         vc.dispatch(.tap(ndc: .zero, count: 2))
+        vc.dispatch(.tap(ndc: .zero, count: 2), tapModifiers: [.option])
         #expect(!vc.cameraController.isAnimating)
         #expect(vc.cameraState == before)
     }
@@ -159,16 +165,91 @@ struct GestureSettingsTests {
 
     // MARK: - Reset
 
-    @Test("Double-tap reset returns to configuration.initialCameraState")
-    func doubleTapResetsToInitialState() {
+    private func resettable(_ triggers: [ViewResetTrigger]) -> ViewportController {
         var config = ViewportConfiguration()
         config.initialCameraState = .top
+        config.gestureConfiguration.resetViewTriggers = triggers
+        let vc = ViewportController(configuration: config)
+        vc.dispatch(.dragChanged(delta: SIMD2(60, 30), modifiers: []))
+        return vc
+    }
+
+    private func isAtTop(_ vc: ViewportController) -> Bool {
+        _ = vc.cameraController.advance(by: 1)
+        return sameRotation(vc.cameraState.rotation, CameraState.top.rotation)
+            && isClose(vc.cameraState.distance, CameraState.top.distance)
+    }
+
+    @Test("A configured double-tap / double-click trigger resets to initialCameraState")
+    func doubleTapTriggerResetsToInitialState() {
+        let vc = resettable([.doubleTap, .doubleClick(modifiers: [])])
+        vc.dispatch(.tap(ndc: .zero, count: 2))
+        #expect(isAtTop(vc))
+    }
+
+    @Test("A single tap never fires a double-tap trigger")
+    func singleTapDoesNotReset() {
+        let vc = resettable([.doubleTap, .doubleClick(modifiers: [])])
+        vc.dispatch(.tap(ndc: .zero, count: 1))
+        #expect(!vc.cameraController.isAnimating)
+    }
+
+    @Test("A key-combination trigger resets; other keys and modifiers do not")
+    func keyCombinationResets() {
+        let vc = resettable([.keyCombination(key: "h", modifiers: [.command, .shift])])
+        #expect(vc.wantsViewportKeyEvents)
+        #expect(!vc.handleKeyCombination("h", modifiers: [.command]))
+        #expect(!vc.handleKeyCombination("j", modifiers: [.command, .shift]))
+        #expect(!vc.cameraController.isAnimating)
+        // Case-insensitive, so a shifted character still matches.
+        #expect(vc.handleKeyCombination("H", modifiers: [.command, .shift]))
+        #expect(isAtTop(vc))
+    }
+
+    @Test("With no key trigger, keys are left alone")
+    func noKeyTriggerNoKeys() {
+        let vc = controller()
+        #expect(!vc.wantsViewportKeyEvents)
+        #expect(!vc.handleKeyCombination("h", modifiers: []))
+        #expect(!vc.cameraController.isAnimating)
+    }
+
+    #if os(macOS)
+        @Test("macOS: a modified double-click trigger matches only its modifiers")
+        func modifiedDoubleClickResets() {
+            let vc = resettable([.doubleClick(modifiers: [.option])])
+            vc.dispatch(.tap(ndc: .zero, count: 2))
+            vc.dispatch(.tap(ndc: .zero, count: 2), tapModifiers: [.command])
+            #expect(!vc.cameraController.isAnimating)
+            vc.dispatch(.tap(ndc: .zero, count: 2), tapModifiers: [.option])
+            #expect(isAtTop(vc))
+        }
+
+        @Test("macOS: a .doubleTap trigger does not fire on a double-click")
+        func doubleTapTriggerIgnoredOnMac() {
+            let vc = resettable([.doubleTap])
+            vc.dispatch(.tap(ndc: .zero, count: 2))
+            #expect(!vc.cameraController.isAnimating)
+        }
+    #else
+        @Test("Touch: a .doubleClick trigger does not fire on a double-tap")
+        func doubleClickTriggerIgnoredOnTouch() {
+            let vc = resettable([.doubleClick(modifiers: [])])
+            vc.dispatch(.tap(ndc: .zero, count: 2))
+            #expect(!vc.cameraController.isAnimating)
+        }
+    #endif
+
+    @Test("doubleTap / doubleClick = .resetView still resets (shorthand)")
+    func resetViewActionStillWorks() {
+        var config = ViewportConfiguration()
+        config.initialCameraState = .top
+        config.gestureConfiguration = GestureConfiguration(
+            doubleTap: .resetView, doubleClick: .resetView)
         let vc = ViewportController(configuration: config)
         vc.dispatch(.dragChanged(delta: SIMD2(60, 30), modifiers: []))
         vc.dispatch(.tap(ndc: .zero, count: 2))
-        _ = vc.cameraController.advance(by: 1)
-        #expect(sameRotation(vc.cameraState.rotation, CameraState.top.rotation))
-        #expect(isClose(vc.cameraState.distance, CameraState.top.distance))
+        #expect(isAtTop(vc))
     }
 
     @Test("CameraController.reset returns to its initial state, not CameraState()")
@@ -280,18 +361,48 @@ struct GestureSettingsTests {
         @Test("macOS: mouse down forwards the click count, so double-clicks reach the router")
         func macClickCountForwarded() throws {
             let view = ScrollCaptureMTKView()
-            var counts: [Int] = []
-            view.onMouseDown = { _, _, count in counts.append(count) }
-            for clickCount in [1, 2] {
+            var clicks: [(Int, ViewportModifierKeys)] = []
+            view.onMouseDown = { _, _, count, modifiers in clicks.append((count, modifiers)) }
+            for (clickCount, flags) in [(1, NSEvent.ModifierFlags()), (2, .option)] {
                 let event = try #require(
                     NSEvent.mouseEvent(
-                        with: .leftMouseDown, location: CGPoint(x: 5, y: 5), modifierFlags: [],
+                        with: .leftMouseDown, location: CGPoint(x: 5, y: 5), modifierFlags: flags,
                         timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0,
                         clickCount: clickCount, pressure: 1))
                 view.mouseDown(with: event)
                 view.mouseUp(with: event)
             }
-            #expect(counts == [1, 2])
+            #expect(clicks.map(\.0) == [1, 2])
+            #expect(clicks.map(\.1) == [[], [.option]])
+        }
+
+        private func keyDown(_ characters: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent
+        {
+            try #require(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                    windowNumber: 0, context: nil, characters: characters,
+                    charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 4))
+        }
+
+        @Test("macOS: the view ignores keys unless a key handler is installed")
+        func macKeysIgnoredByDefault() throws {
+            let view = ScrollCaptureMTKView()
+            #expect(!view.handleKeyCombination(try keyDown("h", [.command, .shift])))
+        }
+
+        @Test("macOS: the view forwards key equivalents with their modifiers")
+        func macKeyForwarded() throws {
+            let view = ScrollCaptureMTKView()
+            var seen: [(Character, ViewportModifierKeys)] = []
+            view.onKeyCombination = { key, modifiers in
+                seen.append((key, modifiers))
+                return true
+            }
+            #expect(view.performKeyEquivalent(with: try keyDown("h", [.command, .shift])))
+            #expect(seen.count == 1)
+            #expect(seen.first?.0 == "h")
+            #expect(seen.first?.1 == [.command, .shift])
         }
     #endif
 }

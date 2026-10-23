@@ -20,6 +20,37 @@ extension ViewportController {
     /// X-axis inversion, the drag-to-zoom curve) lives here, so the meaning is
     /// identical regardless of the input source.
     public func dispatch(_ event: ViewportInputEvent) {
+        dispatch(event, tapModifiers: [])
+    }
+
+    /// Resets the camera if `key` with exactly `modifiers` held matches a `.keyCombination` in
+    /// `GestureConfiguration.resetViewTriggers`.
+    ///
+    /// `MetalViewportView` calls this on macOS for keys typed into the viewport. Call it yourself
+    /// to forward keys from elsewhere (for example a SwiftUI `onKeyPress` on iOS).
+    ///
+    /// - Returns: `true` if the key was handled, so the caller can stop passing it on.
+    @discardableResult
+    public func handleKeyCombination(_ key: Character, modifiers: ViewportModifierKeys) -> Bool {
+        guard configuration.gestureConfiguration.resetsView(onKey: key, modifiers: modifiers)
+        else { return false }
+        reset(animated: true)
+        return true
+    }
+
+    /// Whether any `.keyCombination` reset trigger is configured, so the platform view only takes
+    /// keyboard focus when something will use it.
+    var wantsViewportKeyEvents: Bool {
+        configuration.gestureConfiguration.resetViewTriggers.contains {
+            if case .keyCombination = $0 { return true }
+            return false
+        }
+    }
+
+    /// `dispatch(_:)` with the modifier keys held during a tap.
+    ///
+    /// `ViewportInputEvent.tap` does not carry modifiers. The macOS view passes them so `.doubleClick(modifiers:)` triggers match.
+    func dispatch(_ event: ViewportInputEvent, tapModifiers: ViewportModifierKeys) {
         onInputEvent?(event)
 
         switch event {
@@ -63,6 +94,12 @@ extension ViewportController {
 
         case .tap(let ndc, let count):
             guard count >= 2 else { break }
+            if resetTriggerMatchesDoubleTap(modifiers: tapModifiers) {
+                reset(animated: true)
+                break
+            }
+            // The per-gesture action applies to an unmodified double-tap / double-click only.
+            guard tapModifiers.isEmpty else { break }
             switch resolvedDoubleTapAction {
             case .resetView:
                 reset(animated: true)
@@ -101,6 +138,15 @@ extension ViewportController {
             return configuration.gestureConfiguration.doubleClick
         #else
             return configuration.gestureConfiguration.doubleTap
+        #endif
+    }
+
+    /// Whether a double-tap (double-click on macOS) with `modifiers` matches a reset trigger.
+    private func resetTriggerMatchesDoubleTap(modifiers: ViewportModifierKeys) -> Bool {
+        #if os(macOS)
+            return configuration.gestureConfiguration.resetsView(onDoubleClickWith: modifiers)
+        #else
+            return configuration.gestureConfiguration.resetsViewOnDoubleTap
         #endif
     }
 

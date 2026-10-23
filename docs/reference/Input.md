@@ -9,7 +9,7 @@ These types form the platform-neutral input pipeline for OCCTSwiftViewport. Nati
 
 ## Topics
 
-- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [GestureAction](#gestureaction)
+- [ViewportInputEvent](#viewportinputevent) · [ViewportModifierKeys](#viewportmodifierkeys) · [GestureConfiguration](#gestureconfiguration) · [View reset](#view-reset) · [GestureAction](#gestureaction)
 
 ---
 
@@ -141,13 +141,12 @@ Scroll-wheel input (macOS). `delta` is a single-axis scroll amount; positive val
 case tap(ndc: SIMD2<Float>, count: Int)
 ```
 
-A tap or click at `ndc` (normalized-device coordinates). When `count >= 2` the router runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS):
+A tap or click at `ndc` (normalized-device coordinates). By default a double-tap (`count >= 2`) does nothing. When the app opts in, the router checks two things in order:
 
-- `.resetView` (the default) calls `reset(animated: true)`, which animates back to `ViewportConfiguration.initialCameraState`.
-- `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit. A miss does nothing.
-- Any other action ignores the double-tap.
+1. If `GestureConfiguration.resetViewTriggers` contains `.doubleTap`, or on macOS a `.doubleClick(modifiers:)` whose modifiers match those held, it calls `reset(animated: true)`, which animates back to `ViewportConfiguration.initialCameraState`.
+2. Otherwise, for an unmodified double-tap, it runs `GestureConfiguration.doubleTap` (`doubleClick` on macOS). `.focusOnPoint` raycasts the scene under `ndc` and animates the orbit pivot onto the nearest surface hit; a miss does nothing. `.resetView` resets, as a shorthand for the matching trigger. Anything else, including the default `.none`, ignores the double-tap.
 
-`MetalViewportView` dispatches the real tap location for double-taps on iOS / visionOS and forwards the click count on macOS, so a double-click arrives as `count: 2`. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
+`MetalViewportView` dispatches the real tap location for double-taps on iOS / visionOS. On macOS it forwards the click count and the modifier keys held, so a double-click arrives as `count: 2`. A `.tap` event you dispatch yourself carries no modifiers, so it only matches `.doubleClick(modifiers: [])`. Single taps are delivered to any `onInputEvent` observer but do not trigger a built-in camera action (object picking runs through a separate renderer-bound path).
 
 ---
 
@@ -239,7 +238,7 @@ Configuration for gesture handling in the viewport. Controls sensitivity, orbit-
 public static let `default` = GestureConfiguration()
 ```
 
-Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch and scroll zoom; double-tap/click resets the view.
+Shapr3D-style defaults: single-finger / bare-mouse drag orbits; shift-drag pans; option-drag zooms; command-drag selects; two-finger pan pans; pinch and scroll zoom. Nothing resets the view and double-tap/click does nothing until the app opts in (see [View reset](#view-reset)).
 
 #### `.blender`
 
@@ -319,7 +318,7 @@ public var dampingFactor: Float   // default 0.1
 public var singleFingerDrag: GestureAction  // default .orbit
 public var twoFingerDrag:    GestureAction  // default .pan
 public var pinchGesture:     GestureAction  // default .zoom
-public var doubleTap:        GestureAction  // default .resetView
+public var doubleTap:        GestureAction  // default .none
 ```
 
 These also apply on visionOS. Each field supports a subset of `GestureAction`; any other value makes the router ignore that gesture, so `.none` disables it:
@@ -328,7 +327,7 @@ These also apply on visionOS. Each field supports a subset of `GestureAction`; a
 |---|---|
 | `singleFingerDrag`, `twoFingerDrag` | `.orbit`, `.pan`, `.zoom` |
 | `pinchGesture` | `.zoom` |
-| `doubleTap` | `.resetView`, `.focusOnPoint` |
+| `doubleTap` | `.focusOnPoint`, `.resetView` |
 
 ---
 
@@ -341,16 +340,76 @@ public var optionDrag:    GestureAction  // default .zoom
 public var commandDrag:   GestureAction  // default .select
 public var scrollWheel:   GestureAction  // default .zoom
 public var trackpadPinch: GestureAction  // default .zoom
-public var doubleClick:   GestureAction  // default .resetView
+public var doubleClick:   GestureAction  // default .none
 ```
 
 | Field | Supported actions |
 |---|---|
 | `mouseDrag`, `shiftDrag`, `optionDrag`, `commandDrag` | `.orbit`, `.pan`, `.zoom` (`.select` leaves the drag to the app) |
 | `scrollWheel`, `trackpadPinch` | `.zoom` |
-| `doubleClick` | `.resetView`, `.focusOnPoint` |
+| `doubleClick` (unmodified) | `.focusOnPoint`, `.resetView` |
 
-`doubleTap` and `doubleClick` defaulted to `.focusOnPoint` in earlier releases, but nothing read them and a double-tap always reset the view. The defaults are now `.resetView`, the behaviour the router always had and the presets document. Set `.focusOnPoint` to re-centre the orbit on the surface under the tap instead.
+`doubleTap` and `doubleClick` defaulted to `.focusOnPoint` in earlier releases, but nothing read them, and a double-tap on iOS always reset the view. Both now default to `.none`, and a double-tap no longer resets unless the app opts in. Bind view reset with `resetViewTriggers` (below); `.resetView` on these fields remains as a shorthand.
+
+---
+
+### View reset
+
+```swift
+public var resetViewTriggers: [ViewResetTrigger]  // default []
+```
+
+The inputs that reset the camera to `ViewportConfiguration.initialCameraState`. The list is empty by default, so nothing resets the view unless the app opts in. No preset ships a binding. List several triggers to cover more than one platform or input style.
+
+```swift
+var gestures = GestureConfiguration.default
+gestures.resetViewTriggers = [
+    .keyCombination(key: "h", modifiers: [.command, .shift]),  // ⇧⌘H on macOS
+    .doubleTap,                                                // iPhone / iPad
+]
+```
+
+The reset action itself is the public `ViewportController.reset(animated:)`. An app can call it from its own menu item, toolbar button or `.keyboardShortcut` instead of, or as well as, configuring a trigger.
+
+#### `ViewResetTrigger`
+
+```swift
+public enum ViewResetTrigger: Sendable, Hashable {
+    case keyCombination(key: Character, modifiers: ViewportModifierKeys)
+    case doubleClick(modifiers: ViewportModifierKeys)
+    case doubleTap
+}
+```
+
+| Case | Fires on |
+|---|---|
+| `.keyCombination(key:modifiers:)` | `key` pressed with exactly `modifiers` held. `key` is the unshifted character and compares case-insensitively, so Shift+H is `.keyCombination(key: "h", modifiers: [.shift])`. On macOS, `MetalViewportView` handles these itself: key equivalents (combinations with ⌘) work while the viewport's window is key, and other keys work while the viewport has focus. The view claims keys only when a key trigger is configured. On other platforms, forward keys to `ViewportController.handleKeyCombination(_:modifiers:)`. |
+| `.doubleClick(modifiers:)` | A macOS double-click with exactly `modifiers` held. Use `[]` for a plain double-click. |
+| `.doubleTap` | An iOS / visionOS double-tap. |
+
+#### `handleKeyCombination(_:modifiers:)`
+
+```swift
+@discardableResult
+public func handleKeyCombination(_ key: Character, modifiers: ViewportModifierKeys) -> Bool
+```
+
+A method on `ViewportController`. It resets the camera if a `.keyCombination` trigger matches, and returns `true` if it did, so the caller can stop passing the key on.
+
+```swift
+// iPad with a hardware keyboard
+.onKeyPress { press in
+    let key = press.characters.first ?? " "
+    var modifiers: ViewportModifierKeys = []
+    if press.modifiers.contains(.shift) { modifiers.insert(.shift) }
+    if press.modifiers.contains(.control) { modifiers.insert(.control) }
+    if press.modifiers.contains(.option) { modifiers.insert(.option) }
+    if press.modifiers.contains(.command) { modifiers.insert(.command) }
+    return controller.handleKeyCombination(key, modifiers: modifiers) ? .handled : .ignored
+}
+```
+
+The helpers `GestureConfiguration.resetsView(onKey:modifiers:)`, `resetsView(onDoubleClickWith:)` and `resetsViewOnDoubleTap` expose the same matching for custom input layers.
 
 ---
 
@@ -370,14 +429,15 @@ public init(
     singleFingerDrag:     GestureAction = .orbit,
     twoFingerDrag:        GestureAction = .pan,
     pinchGesture:         GestureAction = .zoom,
-    doubleTap:            GestureAction = .resetView,
+    doubleTap:            GestureAction = .none,
     mouseDrag:            GestureAction = .orbit,
     shiftDrag:            GestureAction = .pan,
     optionDrag:           GestureAction = .zoom,
     commandDrag:          GestureAction = .select,
     scrollWheel:          GestureAction = .zoom,
     trackpadPinch:        GestureAction = .zoom,
-    doubleClick:          GestureAction = .resetView
+    doubleClick:          GestureAction = .none,
+    resetViewTriggers:    [ViewResetTrigger] = []
 )
 ```
 
@@ -421,7 +481,7 @@ The set of named actions that a gesture or modifier-key combination can trigger.
 | `.zoom` | Zoom in or out. |
 | `.select` | Select objects under the pointer (handled outside the camera router). |
 | `.focusOnPoint` | Focus the camera on the point under the cursor. |
-| `.resetView` | Reset the camera to its default view. |
+| `.resetView` | Reset the camera to `initialCameraState` (honoured by `doubleTap` / `doubleClick`; prefer `resetViewTriggers`). |
 | `.none` | No action — the gesture is ignored. |
 
 `GestureAction` conforms to `CaseIterable`, so you can enumerate all cases to populate a preference UI.

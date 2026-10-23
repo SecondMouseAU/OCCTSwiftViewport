@@ -56,7 +56,7 @@ final class InputEventLog: ObservableObject {
         case let .scroll(delta, cursor, _):
             return "scroll \(f(delta)) @(\(f(cursor.x)), \(f(cursor.y)))"
         case let .tap(_, count):
-            return count >= 2 ? "double-tap → reset" : "tap"
+            return count >= 2 ? "double-tap" : "tap"
         @unknown default:
             return "event"
         }

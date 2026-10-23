@@ -23,7 +23,7 @@ Two types form the public entry point to the viewport: `MetalViewportView` is th
 
 ## MetalViewportView
 
-A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap (`GestureConfiguration.doubleTap`, reset by default); on macOS: mouse drag, scroll-wheel zoom, trackpad magnify/rotate and double-click (`doubleClick`, reset by default), all handled natively by the `MTKView` subclass. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
+A Metal-backed 3D viewport `View`. Wraps `MTKView` through platform-specific representables and wires up the full gesture stack: on iOS / visionOS: single-finger orbit (`DragGesture`), two-finger pan (`UIPanGestureRecognizer` overlay), pinch-to-zoom (`MagnifyGesture`), roll (`RotateGesture`), single tap (pick), double-tap; on macOS: mouse drag, scroll-wheel zoom, trackpad magnify/rotate, double-click and configured reset key combinations, all handled natively by the `MTKView` subclass. Double-taps, double-clicks and keys do nothing unless `GestureConfiguration.resetViewTriggers`, `doubleTap` or `doubleClick` opt in. Modifier-key interpretation for macOS (orbit / pan / zoom) lives in `ViewportController.dispatch(_:)` via `GestureConfiguration`.
 
 Built-in overlays that the view manages automatically:
 
@@ -336,7 +336,7 @@ Moves the camera orbit pivot to `point`. Optionally sets the camera-to-pivot `di
 public func reset(animated: Bool = true)
 ```
 
-Resets the camera to the initial state defined by `configuration.initialCameraState`. A double-tap or double-click in `MetalViewportView` calls this when `GestureConfiguration.doubleTap` / `doubleClick` is `.resetView` (the default).
+Resets the camera to the initial state defined by `configuration.initialCameraState`. Nothing calls it by default. `MetalViewportView` calls it for any input listed in `GestureConfiguration.resetViewTriggers` (a key combination, a double-click with modifiers, or a double-tap). Apps can also call it from their own menu item or shortcut.
 
 #### `toggleProjection()`
 
@@ -734,4 +734,4 @@ Platform-neutral viewport input event. Pass to `ViewportController.dispatch(_:)`
 | `.rotateChanged(radians:)` | In-plane rotation, incremental radians |
 | `.rotateEnded` | Rotation gesture ended |
 | `.scroll(delta:cursorNDC:aspectRatio:)` | Scroll-wheel zoom toward cursor (macOS) |
-| `.tap(ndc:count:)` | Tap / click; `count >= 2` resets the view |
+| `.tap(ndc:count:)` | Tap / click; `count >= 2` runs a matching `resetViewTriggers` entry or `doubleTap` / `doubleClick` (nothing by default) |

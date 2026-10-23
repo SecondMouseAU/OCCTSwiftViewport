@@ -45,10 +45,13 @@ struct SpikeView: View {
     /// when running on visionOS (issue #36, Phase 2).
     private static func makeConfiguration() -> ViewportConfiguration {
         #if os(visionOS)
-        let gestures: GestureConfiguration = .visionOS
+        var gestures: GestureConfiguration = .visionOS
         #else
-        let gestures: GestureConfiguration = .default
+        var gestures: GestureConfiguration = .default
         #endif
+        // View reset is opt-in. On macOS, ⇧⌘H resets to the initial view (MetalViewportView
+        // handles the key itself). Other platforms would forward keys to handleKeyCombination.
+        gestures.resetViewTriggers = [.keyCombination(key: "h", modifiers: [.command, .shift])]
         return ViewportConfiguration(
             rotationStyle: .turntable,
             gestureConfiguration: gestures,

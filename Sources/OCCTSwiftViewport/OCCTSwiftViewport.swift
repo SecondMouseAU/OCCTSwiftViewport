@@ -44,6 +44,7 @@ public typealias _OrthoBounds = OrthoBounds
 public typealias _ViewportConfiguration = ViewportConfiguration
 public typealias _GestureConfiguration = GestureConfiguration
 public typealias _GestureAction = GestureAction
+public typealias _ViewResetTrigger = ViewResetTrigger
 public typealias _ViewportModifierKeys = ViewportModifierKeys
 public typealias _ViewportInputEvent = ViewportInputEvent
 public typealias _ViewCubePosition = ViewCubePosition

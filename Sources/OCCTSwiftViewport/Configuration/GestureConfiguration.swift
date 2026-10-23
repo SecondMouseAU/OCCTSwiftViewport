@@ -62,7 +62,10 @@ public struct GestureConfiguration: Sendable {
     /// Action for pinch gesture on iOS: `.zoom`; anything else ignores the pinch.
     public var pinchGesture: GestureAction
 
-    /// Action for double-tap on iOS: `.resetView` or `.focusOnPoint`; anything else ignores it.
+    /// Action for double-tap on iOS (default `.none`).
+    ///
+    /// Supports `.focusOnPoint` and `.resetView`; anything else ignores the double-tap. To bind
+    /// view reset, prefer `resetViewTriggers`.
     public var doubleTap: GestureAction
 
     // MARK: - macOS Gesture Mapping
@@ -85,8 +88,52 @@ public struct GestureConfiguration: Sendable {
     /// Action for trackpad pinch: `.zoom`; anything else ignores the pinch.
     public var trackpadPinch: GestureAction
 
-    /// Action for double-click: `.resetView` or `.focusOnPoint`; anything else ignores it.
+    /// Action for an unmodified double-click (default `.none`).
+    ///
+    /// Supports `.focusOnPoint` and `.resetView`; anything else ignores the double-click. To bind
+    /// view reset, prefer `resetViewTriggers`.
     public var doubleClick: GestureAction
+
+    // MARK: - View Reset
+
+    /// Inputs that reset the camera to `ViewportConfiguration.initialCameraState`.
+    ///
+    /// Empty by default: nothing resets the view unless the app opts in. Each trigger is a key
+    /// combination, a double-click with optional modifiers (macOS), or a double-tap (iOS /
+    /// visionOS); list several to cover more than one platform or input style. The reset itself is
+    /// `ViewportController.reset(animated:)`, which an app can also call from its own menu item or
+    /// shortcut.
+    ///
+    /// ```swift
+    /// var gestures = GestureConfiguration.default
+    /// gestures.resetViewTriggers = [
+    ///     .keyCombination(key: "h", modifiers: [.command, .shift]),
+    ///     .doubleTap,
+    /// ]
+    /// ```
+    public var resetViewTriggers: [ViewResetTrigger]
+
+    /// Whether `key` with exactly `modifiers` held matches a `.keyCombination` reset trigger.
+    ///
+    /// Keys compare case-insensitively.
+    public func resetsView(onKey key: Character, modifiers: ViewportModifierKeys) -> Bool {
+        resetViewTriggers.contains { trigger in
+            guard case .keyCombination(let bound, let boundModifiers) = trigger else {
+                return false
+            }
+            return bound.lowercased() == key.lowercased() && boundModifiers == modifiers
+        }
+    }
+
+    /// Whether a double-click with exactly `modifiers` held matches a `.doubleClick` reset trigger.
+    public func resetsView(onDoubleClickWith modifiers: ViewportModifierKeys) -> Bool {
+        resetViewTriggers.contains(.doubleClick(modifiers: modifiers))
+    }
+
+    /// Whether a `.doubleTap` reset trigger is configured.
+    public var resetsViewOnDoubleTap: Bool {
+        resetViewTriggers.contains(.doubleTap)
+    }
 
     // MARK: - Initialization
 
@@ -104,14 +151,15 @@ public struct GestureConfiguration: Sendable {
         singleFingerDrag: GestureAction = .orbit,
         twoFingerDrag: GestureAction = .pan,
         pinchGesture: GestureAction = .zoom,
-        doubleTap: GestureAction = .resetView,
+        doubleTap: GestureAction = .none,
         mouseDrag: GestureAction = .orbit,
         shiftDrag: GestureAction = .pan,
         optionDrag: GestureAction = .zoom,
         commandDrag: GestureAction = .select,
         scrollWheel: GestureAction = .zoom,
         trackpadPinch: GestureAction = .zoom,
-        doubleClick: GestureAction = .resetView
+        doubleClick: GestureAction = .none,
+        resetViewTriggers: [ViewResetTrigger] = []
     ) {
         self.orbitSensitivity = orbitSensitivity
         self.panSensitivity = panSensitivity
@@ -133,6 +181,7 @@ public struct GestureConfiguration: Sendable {
         self.scrollWheel = scrollWheel
         self.trackpadPinch = trackpadPinch
         self.doubleClick = doubleClick
+        self.resetViewTriggers = resetViewTriggers
     }
 
     // MARK: - Presets
@@ -185,6 +234,26 @@ public struct GestureConfiguration: Sendable {
         if modifiers.contains(.option) { return optionDrag }
         return mouseDrag
     }
+}
+
+// MARK: - View Reset Trigger
+
+/// An input that resets the viewport camera.
+///
+/// See `GestureConfiguration.resetViewTriggers`.
+public enum ViewResetTrigger: Sendable, Hashable {
+    /// A key pressed with exactly `modifiers` held (macOS `MetalViewportView`, or any app that
+    /// forwards keys to `ViewportController.handleKeyCombination(_:modifiers:)`).
+    ///
+    /// `key` is the unshifted character, compared case-insensitively: Shift+H is
+    /// `.keyCombination(key: "h", modifiers: [.shift])`.
+    case keyCombination(key: Character, modifiers: ViewportModifierKeys)
+
+    /// A double-click with exactly `modifiers` held (macOS). Pass `[]` for a plain double-click.
+    case doubleClick(modifiers: ViewportModifierKeys)
+
+    /// A double-tap (iOS / visionOS).
+    case doubleTap
 }
 
 // MARK: - Gesture Action
