@@ -2,8 +2,9 @@
 // OCCTSwiftViewport
 //
 // CPU-side partitioning of triangle meshes into meshlets for mesh shader rendering.
-// Each meshlet is a group of triangles sharing vertices, with bounding sphere
-// and normal cone for per-meshlet frustum and backface culling.
+// Each meshlet is a group of triangles sharing vertices, with a bounding sphere
+// (per-meshlet behind-camera culling) and a normal cone. The object shader does not
+// cone-cull: the other render paths draw back faces, so the cone is kept for future use.
 
 @preconcurrency import Metal
 import simd

@@ -293,8 +293,8 @@ let controller = ViewportController(configuration: .cadHighQuality)
 
 // or set the knobs on any configuration:
 //   renderingQuality     = .enhanced     // enables GPU PN-triangle tessellation
-//   adaptiveTessellation = true          // refine by projected size (vs fixed)
-//   tessellationMaxFactor = 48           // upper bound on subdivision (1...64)
+//   adaptiveTessellation = true          // refine by projected size (vs uniform; see uniformTessellationFactor)
+//   tessellationMaxFactor = 48           // upper bound on subdivision (2...64, even)
 ```
 
 **What controls smoothness**

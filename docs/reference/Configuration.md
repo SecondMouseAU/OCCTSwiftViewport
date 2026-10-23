@@ -5,13 +5,13 @@ parent: API Reference
 
 # Configuration
 
-These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
+These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `MetalViewportView` (or mutated on `ViewportController.configuration`) that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
 
 [`GestureConfiguration`](Input.md#gestureconfiguration) and [`DynamicPivotConfiguration`](Camera.md#dynamicpivotconfiguration) are documented on the Input and Camera pages respectively — `ViewportConfiguration` embeds them by value.
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -392,7 +392,7 @@ config.enableFrustumCulling = false
 public var autoSmoothNormals: Bool  // default: false
 ```
 
-When `true`, crease-aware normal smoothing is applied to each body's mesh when its GPU buffers are first built. Flat-shaded meshes (per-face normals from some tessellators) cannot be rounded by Phong tessellation alone; this averages normals across shared vertices while preserving hard edges. Computed once per body and cached. Enabled by the `.cadHighQuality` preset.
+When `true`, crease-aware normal smoothing is applied to each body's mesh when its GPU buffers are first built. Flat-shaded meshes (per-face normals from some tessellators) cannot be rounded by Phong tessellation alone; this averages normals across shared vertices while preserving hard edges. Computed once per body and cached; the smoothed data feeds the standard, tessellated (`.enhanced`) and mesh-shader (`.maximum`) paths alike, since all three read the same vertex buffer. Direct-mesh bodies are not smoothed (their producer supplies the normals). Enabled by the `.cadHighQuality` preset.
 
 ---
 
@@ -478,7 +478,9 @@ Controls tessellation tier and mesh-shader usage. See [`RenderingQuality`](#rend
 public var tessellationMaxFactor: Int  // default: 32
 ```
 
-Maximum hardware tessellation factor per edge (1–64). Only used when `renderingQuality == .enhanced` or `.maximum`. The `.cadHighQuality` preset raises this to 48.
+Maximum hardware tessellation factor per edge. Only used when `renderingQuality == .enhanced` or `.maximum`. The `.cadHighQuality` preset raises this to 48.
+
+Metal caps the factor at 64, and the fractional-even partitioning the tessellated pipelines use needs an even value. An out-of-range or odd value used to make pipeline creation fail, silently disabling tessellation; the renderer now clamps it to `2...64` and rounds an odd value up to the next even one. The pipelines are built with the value in effect when the renderer is created, so raising it later is capped to that value.
 
 ---
 
@@ -488,7 +490,19 @@ Maximum hardware tessellation factor per edge (1–64). Only used when `renderin
 public var adaptiveTessellation: Bool  // default: true
 ```
 
-When `true`, the tessellation level adapts per edge to the projected screen-space length and surface curvature, concentrating triangles where the mesh is coarse relative to the viewport. Requires `renderingQuality != .standard`.
+When `true`, the tessellation level adapts per edge to the projected screen-space length (target about 4 px per tessellated edge) and surface curvature, concentrating triangles where the mesh is coarse relative to the viewport, capped at `tessellationMaxFactor`. Projection uses each body's `transform`, so moved and scaled bodies get the right factors.
+
+When `false`, every patch is tessellated uniformly, whatever its size on screen, at the factor [`uniformTessellationFactor`](#uniformtessellationfactor) chooses. A uniform factor `f` costs roughly `f²` triangles per input triangle. Requires `renderingQuality != .standard`.
+
+---
+
+#### `uniformTessellationFactor`
+
+```swift
+public var uniformTessellationFactor: UniformTessellationFactor  // default: .loadAdaptive()
+```
+
+The factor used when `adaptiveTessellation == false`. See [`UniformTessellationFactor`](#uniformtessellationfactor-1).
 
 ---
 
@@ -544,6 +558,7 @@ public init(
     renderingQuality: RenderingQuality = .standard,
     tessellationMaxFactor: Int = 32,
     adaptiveTessellation: Bool = true,
+    uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive(),
     enableTAA: Bool = false,
     taaBlendFactor: Float = 0.9,
     dynamicPivotConfiguration: DynamicPivotConfiguration = .default,
@@ -656,6 +671,32 @@ if config.renderingQuality == .standard {
 
 ---
 
+## UniformTessellationFactor
+
+```swift
+public enum UniformTessellationFactor: Sendable, Equatable {
+    case loadAdaptive(minimum: Int = 4)
+    case fixed(Int)
+}
+```
+
+How the uniform tessellation factor is chosen when `adaptiveTessellation == false`.
+
+| Case | Description |
+|---|---|
+| `.loadAdaptive(minimum:)` | Default. The live renderer scales the factor between `minimum` and `tessellationMaxFactor` to fit system load. It starts at the maximum. When the smoothed GPU frame time (measured from each frame's command buffer) rises above 85% of the frame budget (`1 / preferredFramesPerSecond`, or 1/60), it lowers the factor by 20%. Below 55% it raises the factor by 2. Between the two it holds, and after any change it holds for 30 frames, so the factor never oscillates frame to frame. Thermal state caps the ceiling: `.fair` to 75% of the maximum, `.serious` to 50%, `.critical` to `minimum`. Low Power Mode halves it. A lowered cap applies at once. |
+| `.fixed(_:)` | Always tessellate at this factor, clamped to `1...tessellationMaxFactor`. |
+
+Off-screen renders (`renderHeadless(...)`) never adapt to load: `.loadAdaptive` uses `tessellationMaxFactor` there, so the output is deterministic.
+
+```swift
+var config = ViewportConfiguration.cadHighQuality
+config.adaptiveTessellation = false
+config.uniformTessellationFactor = .loadAdaptive(minimum: 8)  // or .fixed(12) to pin it
+```
+
+---
+
 ## RenderLayer
 
 ```swift
@@ -670,7 +711,7 @@ Controls when in the render order a `ViewportBody` is drawn.
 | Case | Behaviour |
 |---|---|
 | `.geometry` | Drawn in the normal geometry pass with standard depth testing. |
-| `.overlay` | Drawn after the selection-outline pass using an always-pass depth state, so the body is visible even when behind other geometry. Use for manipulator widgets and similar always-on-top affordances. |
+| `.overlay` | Drawn after the selection-outline pass using an always-pass depth state, so the body is visible even when behind other geometry. Overlay bodies get no selection or hover outline (and no per-triangle highlight). Use for manipulator widgets and similar always-on-top affordances. |
 
 Set on `ViewportBody.renderLayer`. See [`ViewportBody`](ViewportBody.md) for the full body API.
 

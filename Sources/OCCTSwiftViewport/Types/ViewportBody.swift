@@ -10,7 +10,7 @@ import simd
 /// `.geometry` participates in normal depth testing. `.overlay` is drawn after the
 /// selection outline pass with an always-pass depth state, so the body is visible
 /// even when occluded by other geometry, which is what manipulator widgets and similar
-/// always-on-top UI affordances need.
+/// always-on-top UI affordances need. Overlay bodies get no selection or hover outline.
 public enum RenderLayer: Hashable, Sendable {
     case geometry
     case overlay

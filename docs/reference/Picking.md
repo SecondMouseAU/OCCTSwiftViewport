@@ -348,7 +348,7 @@ public static func cast(
 ) -> RaycastHit?
 ```
 
-Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `nil` on a complete miss. Non-visible bodies (`body.isVisible == false`) and bodies absent from `boundingBoxCache` are skipped.
+Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `nil` on a complete miss. Non-visible bodies (`body.isVisible == false`) and bodies absent from `boundingBoxCache` are skipped. Each body is tested in its own local space: the ray is mapped through the inverse of `body.transform`, and `RaycastHit.point` / `distance` are returned in world space, so moved, rotated and scaled bodies are hit where they are drawn. Bodies with a non-invertible transform are skipped.
 
 **Parameters:**
 
@@ -356,7 +356,7 @@ Casts `ray` against all visible bodies, returning the nearest `RaycastHit` or `n
 |-----------|------|-------------|
 | `ray` | `Ray` | The world-space ray to cast |
 | `bodies` | `[ViewportBody]` | Scene bodies to test |
-| `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed bounding boxes keyed by body ID; typically sourced from `ViewportController` |
+| `boundingBoxCache` | `[String: BoundingBox]` | Pre-computed **local-space** bounding boxes keyed by body ID (`ViewportBody.boundingBox`, before `transform`) |
 
 **Example: cast a ray through a screen tap**
 

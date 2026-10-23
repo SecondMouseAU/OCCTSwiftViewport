@@ -278,6 +278,12 @@ struct FrameRenderTargets {
 
     /// Drawable presented when the frame's command buffer commits; `nil` off-screen.
     let presentable: (any MTLDrawable)?
+
+    /// Time available per frame, in seconds, on the live path; `nil` off-screen.
+    ///
+    /// Drives the uniform-tessellation load governor; off-screen frames leave it `nil` so they
+    /// tessellate at the configured factor and stay deterministic.
+    var frameBudget: Double?
 }
 
 // MARK: - ViewportRenderer
@@ -389,7 +395,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let tessellatedDepthOnlyPipeline: MTLRenderPipelineState?
     // Internal (not private) so headless tests can tell whether the tessellated pick path ran.
     let tessellatedPickPipeline: MTLRenderPipelineState?
-    private let tessellationEnabled: Bool
+    let tessellationEnabled: Bool
+    /// The `maxTessellationFactor` the tessellated pipelines were built with (clamped, even).
+    ///
+    /// Per-frame factors are capped to this, since a later `tessellationMaxFactor` raise cannot
+    /// exceed what the pipelines were created for.
+    private let pipelineMaxTessFactor: Int
+    /// Load governor for the uniform tessellation factor (live frames only).
+    private var tessLoadGovernor = TessellationLoadGovernor()
+    /// Latest GPU frame time, fed to `tessLoadGovernor`.
+    private let gpuFrameTimes = GPUFrameTimeRecorder()
+    /// The uniform tessellation factor the last frame used (`nil` when adaptive or untessellated).
+    private(set) var lastUniformTessellationFactor: Float?
 
     // Mesh shaders (Apple9+ / M3+ / A17+)
     private let meshShaderShadedPipeline: MTLRenderPipelineState?
@@ -397,7 +414,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let meshShaderDepthOnlyPipeline: MTLRenderPipelineState?
     // Internal (not private) so headless tests can tell whether the mesh-shader pick path ran.
     let meshShaderPickPipeline: MTLRenderPipelineState?
-    private let meshShadersEnabled: Bool
+    let meshShadersEnabled: Bool
 
     /// Off-screen attachment set backing `renderHeadless(...)`; `nil` until the first such call.
     ///
@@ -755,7 +772,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let tessMgr = TessellationManager(device: device, library: library)
         {
             self.tessellationManager = tessMgr
-            let maxTessFactor = controller.configuration.tessellationMaxFactor
+            let maxTessFactor = TessellationManager.clampedMaxFactor(
+                controller.configuration.tessellationMaxFactor)
+            self.pipelineMaxTessFactor = maxTessFactor
 
             // Helper to configure tessellation on a pipeline descriptor
             func configureTessellation(_ desc: MTLRenderPipelineDescriptor) {
@@ -871,6 +890,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.tessellatedDepthOnlyPipeline = nil
             self.tessellatedPickPipeline = nil
             self.tessellationEnabled = false
+            self.pipelineMaxTessFactor = 0
             #if DEBUG
                 NSLog("[ViewportRenderer] Tessellation disabled")
             #endif
@@ -1255,12 +1275,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             pickContentScale = max(Float(view.drawableSize.width / view.bounds.width), 1)
         }
 
+        let framesPerSecond = view.preferredFramesPerSecond > 0 ? view.preferredFramesPerSecond : 60
         encodeFrame(
             into: FrameRenderTargets(
                 mainPassDescriptor: renderPassDescriptor,
                 finalColorTexture: drawable.texture,
                 size: view.drawableSize,
-                presentable: drawable
+                presentable: drawable,
+                frameBudget: 1.0 / Double(framesPerSecond)
             ))
     }
 
@@ -1469,19 +1491,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Pre-pass: Update tessellation factors (per-frame, camera-dependent)
         // =========================================================
         if useTessellation, let tessMgr = tessellationManager {
-            var tessBufferList: [(TessellationBuffers, simd_float4x4)] = []
-            var tessBodyCount = 0
-            var nonTessBodyCount = 0
-            for body in bodies where body.isVisible {
-                if let buffers = bodyBufferCache[body.id] {
-                    if let tess = buffers.tessellation {
-                        tessBufferList.append((tess, matrix_identity_float4x4))
-                        tessBodyCount += 1
-                    } else if buffers.indexCount > 0 {
-                        nonTessBodyCount += 1
-                    }
-                }
-            }
+            let (tessBufferList, nonTessBodyCount) = tessellationFactorBatch(for: bodies)
             // One-time diagnostic log, guarded so it can't repeat every frame.
             #if DEBUG
                 if tessBufferList.isEmpty, nonTessBodyCount > 0, !didLogMissingTessellationData {
@@ -1495,12 +1505,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 let computeEncoder = commandBuffer.makeComputeCommandEncoder()
             {
                 let config = controller.configuration
+                let maxFactor = Float(
+                    min(
+                        TessellationManager.clampedMaxFactor(config.tessellationMaxFactor),
+                        pipelineMaxTessFactor))
+                var factor = maxFactor
+                if config.adaptiveTessellation {
+                    lastUniformTessellationFactor = nil
+                } else {
+                    factor = uniformTessellationFactor(
+                        config: config, maxFactor: maxFactor, frameBudget: targets.frameBudget,
+                        commandBuffer: commandBuffer)
+                    lastUniformTessellationFactor = factor
+                }
                 tessMgr.updateTessFactors(
                     tessBuffers: tessBufferList,
                     viewProjectionMatrix: viewProjection,
                     viewportSize: SIMD2<Float>(Float(w), Float(h)),
-                    targetEdgePixels: config.adaptiveTessellation ? 4.0 : 1.0,
-                    maxFactor: Float(config.tessellationMaxFactor),
+                    adaptive: config.adaptiveTessellation,
+                    maxFactor: factor,
                     encoder: computeEncoder
                 )
                 computeEncoder.endEncoding()
@@ -2087,12 +2110,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         // 4. Selection outline pass (stencil test: draw only where stencil != 1)
+        // Geometry layer only, like the highlight pass: overlay bodies are drawn later with
+        // always-pass depth and never write the stencil mask, so an outline here would be the
+        // whole expanded silhouette, depth-tested against geometry the overlay itself ignores.
         let allSelectedIDs = selectedIDs.union(hoveredID.map { [$0] } ?? [])
         if !allSelectedIDs.isEmpty {
             mainEncoder.setDepthStencilState(stencilTestState)
             mainEncoder.setStencilReferenceValue(1)
 
-            for body in bodies where body.isVisible && allSelectedIDs.contains(body.id) {
+            for body in bodies
+            where body.isVisible && body.renderLayer == .geometry
+                && allSelectedIDs.contains(body.id)
+            {
                 guard let buffers = bodyBufferCache[body.id],
                     let vb = buffers.vertexBuffer,
                     let ib = buffers.indexBuffer,
@@ -3158,11 +3187,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             #endif
         }
 
-        // Build meshlets if mesh shaders are enabled
+        // Build meshlets if mesh shaders are enabled. The descriptors (bounding sphere, normal
+        // cone) are built from the same data uploaded to `vertexBuffer`, which the mesh shader
+        // reads, so they describe the smoothed normals when autoSmoothNormals ran. Direct-mesh
+        // bodies get none and draw through the direct pipeline.
         var meshletBufs: MeshletBuffers?
-        if meshShadersEnabled, !body.vertexData.isEmpty, !body.indices.isEmpty {
+        if meshShadersEnabled,
+            let meshletVertexData = Self.meshletSourceVertexData(
+                for: body, smoothedVertexData: smoothedVertexData)
+        {
             meshletBufs = MeshletBuilder.build(
-                vertexData: body.vertexData,
+                vertexData: meshletVertexData,
                 indices: body.indices,
                 faceIndices: body.faceIndices,
                 device: device
@@ -3195,6 +3230,72 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         )
         bodyGeneration[body.id] = currentGen
         bodyStyleGeneration[body.id] = body.triangleStylesGeneration
+    }
+
+    /// The interleaved vertex data meshlets are built from, or `nil` when the body gets none.
+    ///
+    /// Returns the auto-smoothed data when smoothing ran (so meshlet descriptors match the vertex
+    /// buffer the mesh shader reads), otherwise `body.vertexData`. Direct-mesh bodies and bodies
+    /// without triangles return `nil`: the meshlet path consumes an interleaved stride-6 buffer.
+    nonisolated static func meshletSourceVertexData(
+        for body: ViewportBody, smoothedVertexData: [Float]?
+    ) -> [Float]? {
+        guard !body.usesDirectMesh, !body.vertexData.isEmpty, !body.indices.isEmpty else {
+            return nil
+        }
+        return smoothedVertexData ?? body.vertexData
+    }
+
+    /// Picks this frame's uniform tessellation factor (`adaptiveTessellation == false`).
+    ///
+    /// For `.loadAdaptive` on a live frame (`frameBudget != nil`), steps the load governor with
+    /// the last measured GPU frame time, thermal state and Low Power Mode, and has this frame's
+    /// command buffer record its own GPU time. Off-screen frames use the configured factor.
+    private func uniformTessellationFactor(
+        config: ViewportConfiguration, maxFactor: Float, frameBudget: Double?,
+        commandBuffer: MTLCommandBuffer
+    ) -> Float {
+        var governed: Float?
+        if case .loadAdaptive(let minimum) = config.uniformTessellationFactor,
+            let frameBudget
+        {
+            let info = ProcessInfo.processInfo
+            tessLoadGovernor = tessLoadGovernor.step(
+                TessellationLoadSample(
+                    gpuFrameTime: gpuFrameTimes.latestFrameTime,
+                    frameBudget: frameBudget,
+                    thermalState: info.thermalState,
+                    isLowPowerModeEnabled: info.isLowPowerModeEnabled,
+                    minFactor: Float(minimum),
+                    maxFactor: maxFactor))
+            governed = tessLoadGovernor.factor
+            let recorder = gpuFrameTimes
+            commandBuffer.addCompletedHandler { @Sendable buffer in
+                recorder.record(gpuStartTime: buffer.gpuStartTime, gpuEndTime: buffer.gpuEndTime)
+            }
+        }
+        return TessellationLoadGovernor.uniformFactor(
+            policy: config.uniformTessellationFactor, maxFactor: maxFactor, governed: governed)
+    }
+
+    /// Collects the visible bodies' tessellation buffers with each body's model matrix, the
+    /// input to the per-frame tessellation-factor kernel.
+    ///
+    /// Also counts visible bodies that have a mesh but no tessellation data (for diagnostics).
+    func tessellationFactorBatch(
+        for bodies: [ViewportBody]
+    ) -> (batch: [(TessellationBuffers, simd_float4x4)], nonTessellatedCount: Int) {
+        var batch: [(TessellationBuffers, simd_float4x4)] = []
+        var nonTessellatedCount = 0
+        for body in bodies where body.isVisible {
+            guard let buffers = bodyBufferCache[body.id] else { continue }
+            if let tess = buffers.tessellation {
+                batch.append((tess, body.transform))
+            } else if buffers.indexCount > 0 {
+                nonTessellatedCount += 1
+            }
+        }
+        return (batch, nonTessellatedCount)
     }
 
     // MARK: - Picking

@@ -125,6 +125,50 @@ final class TessellationManager {
         )
     }
 
+    /// Clamps a requested tessellation factor to what a tessellated pipeline accepts.
+    ///
+    /// Metal caps `MTLRenderPipelineDescriptor.maxTessellationFactor` at 64, and the
+    /// `.fractionalEven` partition mode these pipelines use requires an even value. A value
+    /// outside those rules makes pipeline creation fail, which silently disables tessellation,
+    /// so this clamps to `2...64` and rounds an odd value up to the next even one.
+    nonisolated static func clampedMaxFactor(_ requested: Int) -> Int {
+        let clamped = min(max(requested, 2), 64)
+        return clamped.isMultiple(of: 2) ? clamped : clamped + 1
+    }
+
+    /// Target projected edge length, in pixels, for adaptive tessellation.
+    nonisolated static let adaptiveTargetEdgePixels: Float = 4.0
+
+    /// Builds the factor-kernel parameters for one body.
+    ///
+    /// The patch control points are in the body's local space, so the kernel projects them
+    /// with `viewProjection * modelMatrix`; passing the body's real transform is what makes the
+    /// screen-space factors right for moved or scaled bodies.
+    ///
+    /// - Parameters:
+    ///   - modelMatrix: The body's local-to-world transform (`ViewportBody.transform`)
+    ///   - viewProjection: Current camera view-projection matrix
+    ///   - viewportSize: Viewport dimensions in pixels
+    ///   - adaptive: `true` sizes factors by projected edge length and curvature; `false`
+    ///     tessellates every patch uniformly at `maxFactor`
+    ///   - maxFactor: Maximum (and, when not adaptive, the uniform) tessellation factor
+    /// - Returns: The parameters bound at buffer index 2 of `compute_tess_factors`
+    nonisolated static func factorParams(
+        modelMatrix: simd_float4x4,
+        viewProjection: simd_float4x4,
+        viewportSize: SIMD2<Float>,
+        adaptive: Bool,
+        maxFactor: Float
+    ) -> TessFactorParamsSwift {
+        TessFactorParamsSwift(
+            viewProjectionMatrix: viewProjection * modelMatrix,
+            viewportSize: viewportSize,
+            targetEdgePixels: adaptiveTargetEdgePixels,
+            maxFactor: maxFactor,
+            uniformFactor: adaptive ? 0 : maxFactor
+        )
+    }
+
     /// Recomputes how finely each visible body is subdivided for the current camera.
     ///
     /// Called once per frame, since the factors depend on projected edge length: `maxFactor`
@@ -135,14 +179,14 @@ final class TessellationManager {
     ///   - tessBuffers: Array of (tessellation buffers, model matrix) for visible bodies
     ///   - viewProjectionMatrix: Current camera VP matrix
     ///   - viewportSize: Viewport dimensions in pixels
-    ///   - targetEdgePixels: Target pixels per tessellated edge
+    ///   - adaptive: Adaptive (screen-space) or uniform tessellation, see `factorParams`
     ///   - maxFactor: Maximum tessellation factor
     ///   - encoder: Compute command encoder (caller manages begin/end)
     func updateTessFactors(
         tessBuffers: [(TessellationBuffers, simd_float4x4)],
         viewProjectionMatrix: simd_float4x4,
         viewportSize: SIMD2<Float>,
-        targetEdgePixels: Float,
+        adaptive: Bool,
         maxFactor: Float,
         encoder: MTLComputeCommandEncoder
     ) {
@@ -152,19 +196,17 @@ final class TessellationManager {
         if shouldLog { didLogDiagnostic = true }
 
         for (tess, modelMatrix) in tessBuffers {
-            // Combined MVP for this body (modelMatrix is identity for now)
-            let mvp = viewProjectionMatrix * modelMatrix
-
-            var params = TessFactorParamsSwift(
-                viewProjectionMatrix: mvp,
+            var params = Self.factorParams(
+                modelMatrix: modelMatrix,
+                viewProjection: viewProjectionMatrix,
                 viewportSize: viewportSize,
-                targetEdgePixels: targetEdgePixels,
+                adaptive: adaptive,
                 maxFactor: maxFactor
             )
 
             encoder.setBuffer(tess.patchDataBuffer, offset: 0, index: 0)
             encoder.setBuffer(tess.tessFactorBuffer, offset: 0, index: 1)
-            encoder.setBytes(&params, length: MemoryLayout<TessFactorParamsSwift>.size, index: 2)
+            encoder.setBytes(&params, length: MemoryLayout<TessFactorParamsSwift>.stride, index: 2)
 
             var patchCount = UInt32(tess.patchCount)
             encoder.setBytes(&patchCount, length: MemoryLayout<UInt32>.size, index: 3)
@@ -185,4 +227,9 @@ struct TessFactorParamsSwift {
     var viewportSize: SIMD2<Float>
     var targetEdgePixels: Float
     var maxFactor: Float
+    /// When > 0, every patch is tessellated uniformly at this factor (adaptive off).
+    var uniformFactor: Float
+    var _pad0: Float = 0
+    var _pad1: Float = 0
+    var _pad2: Float = 0
 }

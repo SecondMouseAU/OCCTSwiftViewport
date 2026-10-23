@@ -257,7 +257,7 @@ When `false`, the body is drawn normally but excluded from the GPU pick buffer. 
 
 #### `renderLayer: RenderLayer`
 
-`.geometry` — normal depth test (default). `.overlay` — body is drawn after the selection outline pass with an always-pass depth state, visible even when occluded. Used by manipulator widgets.
+`.geometry` — normal depth test (default). `.overlay` — body is drawn after the selection outline pass with an always-pass depth state, visible even when occluded. Overlay bodies get no selection or hover outline. Used by manipulator widgets.
 
 #### `pickLayer: PickLayer`
 
@@ -779,7 +779,7 @@ Controls when the body is drawn relative to depth testing.
 | Case | Behavior |
 |---|---|
 | `.geometry` | Normal depth test. Default for all bodies. |
-| `.overlay` | Drawn after the selection outline pass with an always-pass depth state. The body is visible even when fully occluded by other geometry. Used by manipulator widgets and similar always-on-top affordances. |
+| `.overlay` | Drawn after the selection outline pass with an always-pass depth state. The body is visible even when fully occluded by other geometry, and gets no selection or hover outline. Used by manipulator widgets and similar always-on-top affordances. |
 
 ---
 

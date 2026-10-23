@@ -1708,8 +1708,12 @@ struct PNPatchData {
 struct TessFactorParams {
     float4x4 viewProjectionMatrix;
     float2 viewportSize;
-    float targetEdgePixels;    // Target pixels per edge (default 16)
-    float maxFactor;           // Max tessellation factor (default 16)
+    float targetEdgePixels;    // Target pixels per edge (adaptive mode)
+    float maxFactor;           // Max tessellation factor (clamped to 2...64 on the Swift side)
+    float uniformFactor;       // > 0: uniform tessellation at this factor (adaptive off)
+    float _pad0;
+    float _pad1;
+    float _pad2;
 };
 
 // --- Compute kernel: Build PN triangle patches from triangle mesh ---
@@ -1862,6 +1866,12 @@ kernel void compute_tess_factors(
 
     // Inside factor: average of edge factors
     half fInside = half(clamp(float(f0 + f1 + f2) / 3.0, 1.0, maxF));
+
+    // Uniform mode (adaptiveTessellation == false): one fixed factor for every patch.
+    if (params.uniformFactor > 0.0) {
+        half fu = half(clamp(params.uniformFactor, 1.0, maxF));
+        f0 = fu; f1 = fu; f2 = fu; fInside = fu;
+    }
 
     // Handle degenerate/behind-camera patches: if any w <= 0, use factor 1
     if (c0.w <= 0.001 || c1.w <= 0.001 || c2.w <= 0.001) {
@@ -2062,7 +2072,16 @@ struct MeshVertex {
 // Mesh output type: triangles, max 64 verts / 64 tris
 using ShadedMeshOutput = mesh<MeshVertex, void, 64, 64, topology::triangle>;
 
-// --- Object shader: per-meshlet frustum + backface culling ---
+// --- Object shader: per-meshlet behind-camera culling ---
+//
+// Reads only the first two matrices of `Uniforms` (viewProjectionMatrix, modelMatrix): the
+// shadow pass binds the 128-byte ShadowUniforms here, whose two fields line up with them.
+//
+// Meshlet bounds are in the body's local space, so they go through modelMatrix first. There is
+// deliberately no normal-cone backface cull: the standard and tessellated paths draw back faces
+// (no cull mode), and the old cone test ran in local space against a world-space camera, so it
+// removed front-facing meshlets of rotated or moved bodies and back faces (open shells, clip
+// sections) that every other path draws.
 
 [[object, max_total_threads_per_threadgroup(1)]]
 void meshlet_object(
@@ -2074,28 +2093,17 @@ void meshlet_object(
 ) {
     MeshletDesc m = meshlets[gid];
 
-    // Frustum culling: project bounding sphere to clip space
-    float4 centerClip = uniforms.viewProjectionMatrix * float4(m.center, 1.0);
+    // World-space bounding sphere: transform the centre and scale the radius by the largest
+    // axis scale, so the sphere stays conservative under non-uniform scale.
+    float4 worldCenter = uniforms.modelMatrix * float4(m.center, 1.0);
+    float maxScale = max(length(uniforms.modelMatrix[0].xyz),
+                         max(length(uniforms.modelMatrix[1].xyz),
+                             length(uniforms.modelMatrix[2].xyz)));
+    float worldRadius = m.radius * maxScale;
 
-    // Simple frustum cull: check if sphere is entirely outside any frustum plane
-    // For now just check near plane and basic clip (could add full 6-plane test)
-    bool visible = true;
-
-    // Behind camera check
-    if (centerClip.w + m.radius < 0.01) {
-        visible = false;
-    }
-
-    // Backface culling via normal cone
-    if (visible && m.coneCutoff > 0.1) {
-        float3 camPos = uniforms.cameraPosition.xyz;
-        float3 viewDir = normalize(m.center - camPos);
-        float d = dot(viewDir, m.coneAxis);
-        // If the entire cone faces away from the camera, cull
-        if (d > m.coneCutoff) {
-            visible = false;
-        }
-    }
+    // Behind-camera check (a full 6-plane frustum test could be added later).
+    float4 centerClip = uniforms.viewProjectionMatrix * worldCenter;
+    bool visible = centerClip.w + worldRadius >= 0.01;
 
     if (visible) {
         payload.meshletIndex = gid;
