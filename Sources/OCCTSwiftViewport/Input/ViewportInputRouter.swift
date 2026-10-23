@@ -83,9 +83,16 @@ extension ViewportController {
             endDrag(velocity: velocity)
 
         case .twoFingerPanChanged(let translation):
-            applyDrag(configuration.gestureConfiguration.twoFingerDrag, delta: translation)
+            if !twoFingerDragActive {
+                twoFingerDragActive = true
+                cameraController.stopInertia()
+            }
+            applyDrag(
+                configuration.gestureConfiguration.twoFingerDrag, delta: translation,
+                pointer: .zero)
 
         case .twoFingerPanEnded(let velocity):
+            twoFingerDragActive = false
             endDrag(configuration.gestureConfiguration.twoFingerDrag, velocity: velocity)
 
         case .pinchChanged(let scale):
@@ -194,7 +201,24 @@ extension ViewportController {
     /// Drag-zoom rate: log zoom per point of vertical drag, before `zoomSensitivity` applies.
     static let dragZoomRate: Float = 0.02
 
+    /// Where the next primary drag starts, in points from the centre of the view (y down).
+    ///
+    /// Optional. The arcball rotation style uses it to place the pointer on its virtual sphere,
+    /// so that a drag that starts near the edge of the view and moves around the centre rolls
+    /// the view. `MetalViewportView` calls it on mouse-down (macOS) and at the start of a
+    /// one-finger drag (iOS); call it yourself before dispatching the first `.dragChanged` of
+    /// a drag from another input source. Without it the drag is taken to start at the centre.
+    public func setDragOrigin(offsetFromCenter: SIMD2<Float>) {
+        pendingDragOrigin = offsetFromCenter
+    }
+
     private func apply(dragDelta delta: SIMD2<Float>, modifiers: ViewportModifierKeys) {
+        if inputDragPointer == nil {
+            // A new drag: stop any momentum still coasting rather than adding to it.
+            cameraController.stopInertia()
+            inputDragPointer = pendingDragOrigin ?? .zero
+            pendingDragOrigin = nil
+        }
         let action = resolvedDragAction(modifiers)
         switch action {
         case .orbit: activeInputDragMode = .orbit
@@ -205,13 +229,25 @@ extension ViewportController {
             // leave activeInputDragMode unchanged (matches the historical handler).
             break
         }
-        applyDrag(action, delta: delta)
+        let pointer = inputDragPointer ?? .zero
+        if action != .orbit, cameraController.isOrbitDragActive {
+            // A modifier changed mid-drag; the orbit part of the drag is over.
+            cameraController.endOrbitDrag()
+        }
+        applyDrag(action, delta: delta, pointer: pointer)
+        inputDragPointer = pointer + delta
     }
 
     /// Applies one drag increment as `action`, for both the primary and the two-finger drag.
-    private func applyDrag(_ action: GestureAction, delta: SIMD2<Float>) {
+    ///
+    /// `pointer` is where the pointer was before this increment, in points from the view
+    /// centre; an orbit that begins here begins there.
+    private func applyDrag(_ action: GestureAction, delta: SIMD2<Float>, pointer: SIMD2<Float>) {
         switch action {
         case .orbit:
+            if !cameraController.isOrbitDragActive {
+                beginOrbitDrag(at: pointer)
+            }
             orbitDrag(delta: delta)
         case .pan:
             handlePan(
@@ -227,11 +263,23 @@ extension ViewportController {
         }
     }
 
+    /// Begins an orbit drag at `pointer` (points from the view centre, y down) with the
+    /// configured `dragRotation` direction, stopping any orbit momentum.
+    ///
+    /// `orbitDrag(delta:)` calls it when no drag is in progress, at the centre.
+    func beginOrbitDrag(at pointer: SIMD2<Float>) {
+        let gestures = configuration.gestureConfiguration
+        let signs = gestures.orbitDragSigns
+        cameraController.beginOrbitDrag(
+            at: pointer, signs: SIMD3(signs.x, signs.y, gestures.orbitRollSign))
+    }
+
     /// Orbits by a screen drag (points, y down) in the configured `dragRotation` direction.
     ///
     /// The one place a drag's orbit signs are applied: the viewport drag and the navigation cube
     /// both come through here, so they always turn the same way.
     func orbitDrag(delta: SIMD2<Float>) {
+        if !cameraController.isOrbitDragActive { beginOrbitDrag(at: .zero) }
         let signed = delta * configuration.gestureConfiguration.orbitDragSigns
         handleOrbit(translation: CGSize(width: CGFloat(signed.x), height: CGFloat(signed.y)))
     }
@@ -246,6 +294,8 @@ extension ViewportController {
     private func endDrag(velocity: SIMD2<Float>) {
         endDrag(mode: activeInputDragMode, velocity: velocity)
         activeInputDragMode = .orbit
+        inputDragPointer = nil
+        pendingDragOrigin = nil
     }
 
     /// Applies release inertia for a two-finger drag interpreted as `action`.
@@ -253,7 +303,7 @@ extension ViewportController {
         switch action {
         case .orbit: endDrag(mode: .orbit, velocity: velocity)
         case .pan: endDrag(mode: .pan, velocity: velocity)
-        default: break
+        default: cameraController.endOrbitDrag()
         }
     }
 
@@ -262,12 +312,13 @@ extension ViewportController {
         case .orbit:
             endOrbitDrag(velocity: velocity)
         case .pan:
+            cameraController.endOrbitDrag()
             endPan(
                 velocity: CGSize(
                     width: CGFloat(velocity.x),
                     height: CGFloat(velocity.y)))
         case .zoom:
-            break
+            cameraController.endOrbitDrag()
         }
     }
 }

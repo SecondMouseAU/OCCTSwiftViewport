@@ -195,10 +195,14 @@ These calls go through `ViewportController`'s gesture-forwarding API, which in t
 // Orbit (drag translation in points, y down). handleOrbit is the raw call: it always turns
 // the model with the drag. MetalViewportView's own drags also apply
 // GestureConfiguration.dragRotation (default .rotateObject); to honour that in a custom
-// gesture, multiply by configuration.gestureConfiguration.orbitDragSigns first.
+// gesture, multiply by configuration.gestureConfiguration.orbitDragSigns first, or
+// dispatch .dragChanged / .dragEnded events instead.
 viewport.handleOrbit(translation: gesture.translation)
 
-// Release with inertia — auto-snaps to a nearby axis view if velocity < 200 pt/s
+// Release with inertia (velocity in pt/s; momentum starts at
+// GestureConfiguration.momentumScale of it). Auto-snaps to a nearby axis view's orientation
+// (keeping the projection) if velocity < 200 pt/s. Also ends the drag, so the next
+// handleOrbit begins a new one.
 viewport.endOrbit(velocity: gesture.velocity)
 
 // Pan
@@ -252,9 +256,9 @@ cam.dampingFactor         = 0.1     // velocity lost per 1/60 s: 0 = no damping,
 
 ```swift
 public enum RotationStyle: String, CaseIterable, Sendable {
-    case arcball      // Ken Shoemake free-rotation; unrestricted axes
-    case turntable    // Z-up locked; horizontal = yaw, vertical = tilt
-    case firstPerson  // Yaw + pitch; camera-centric walk-through
+    case arcball      // Ken Shoemake arcball; tumble inside the sphere, roll outside it
+    case turntable    // Z-up locked; horizontal = yaw, vertical = tilt (over the pole too)
+    case firstPerson  // Look-around: the camera turns in place, the pivot moves with it
 }
 ```
 
@@ -287,6 +291,19 @@ var custom = ViewportConfiguration.cad
 | `.turntable` | CAD, architecture — "up is always up". Default. |
 | `.arcball` | Freeform 3D modeling, inspecting objects from any angle. |
 | `.firstPerson` | Walk-through, VR-style navigation. |
+
+How each style feels under a drag:
+
+- **Turntable.** Tilt is unlimited, so you can tilt over the pole and see the model upside down. Each drag decides at its start which way a horizontal drag turns, so the model keeps following the finger past the pole, and a drag that crosses the pole keeps its direction to the end, as in Blender.
+- **Arcball.** The pointer moves over a virtual sphere centred on the view, with a radius of `2 / orbitSensitivity` points (400 pt by default). Drag across the middle to tumble the model. Start near the edge of the view and drag around the centre to roll it about the line of sight. The turn depends only on where the drag started and where the pointer is, so dragging back to the start undoes it.
+- **First-person.** The camera turns in place to look around, and the pivot moves with the view. With the default `dragRotation = .rotateObject` the scene follows the finger, as in a touch panorama viewer. Set `.orbitCamera` for desktop mouse-look: drag right, look right. The dynamic pivot and the snap to standard views on a gentle release are off in this style, since both would move the camera.
+
+```swift
+var config = ViewportConfiguration()
+config.rotationStyle = .firstPerson
+config.gestureConfiguration.dragRotation = .orbitCamera  // mouse-look
+let viewport = ViewportController(configuration: config)
+```
 
 ---
 

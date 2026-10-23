@@ -274,7 +274,7 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 
 | Property | Type | Default | Purpose |
 |---|---|---|---|
-| `rotationStyle` | `RotationStyle` | `.turntable` | Drag rotation model |
+| `rotationStyle` | `RotationStyle` | `.turntable` | Drag rotation model. Changing it ends any orbit drag and re-reads the turntable angles from the current rotation |
 | `orbitSensitivity` | `Float` | `0.005` | Radians per point of drag |
 | `panSensitivity` | `Float` | `0.005` | World units per point (scaled by distance) |
 | `zoomSensitivity` | `Float` | `1.0` | Exponent applied to pinch / drag-zoom magnification by `pinchZoom` |
@@ -292,7 +292,7 @@ The current camera state. Subscribe via Combine or use SwiftUI's `@ObservedObjec
 
 The sensitivity, inertia and damping defaults are read from `GestureConfiguration.default`, so a standalone controller feels the same as one that `ViewportController` configured. Previously a standalone controller used `panSensitivity` 0.002 and `scrollZoomSensitivity` 0.1, while `ViewportController` always overwrote them with 0.005 and 0.25.
 
-The turntable tilt is deliberately unclamped: the camera can tilt over the pole for a full 360° vertical orbit. `minPhi` and `maxPhi` were documented as clamps but never read, and are now deprecated.
+The turntable tilt is deliberately unclamped: the camera can tilt over the pole for a full 360° vertical orbit. `minPhi` and `maxPhi` were documented as clamps but never read, and are now deprecated. Past the pole the camera is upside down, and a turn about world Z looks reversed from there, so each drag decides at its start which way a horizontal drag turns (see [`beginOrbitDrag(at:signs:)`](#func-beginorbitdragatsigns)). A drag that begins upside down still carries the model with the pointer; a drag that crosses the pole keeps the direction it began with rather than flipping partway, as in Blender.
 
 ---
 
@@ -305,6 +305,51 @@ public func orbit(deltaX: Float, deltaY: Float)
 Rotates the camera by the given drag delta in points (y down), dispatching to the algorithm selected by `rotationStyle` (arcball, turntable, or first-person).
 
 In every style the model turns with the delta: a positive `deltaX` carries the model's near side right on screen, and a negative `deltaY` (an upward drag) carries it up. `ViewportController` multiplies drag deltas by `GestureConfiguration.orbitDragSigns` before calling this, which is how `DragRotationConvention.orbitCamera` and the invert flags reverse it. Arcball turns about an axis in screen space, so a horizontal drag from any view turns the model about the screen's vertical axis; before this was fixed, it turned about a world axis, and from the front view a horizontal drag rolled the picture instead.
+
+Successive calls are one drag until `endOrbitDrag()`. If `beginOrbitDrag(at:signs:)` was not called, the first call begins a drag at the centre of the view with every sign `1`. Code that drives the camera with `orbit` directly should call `endOrbitDrag()` (or `ViewportController.endOrbit(velocity:)`) when its gesture ends, so the next gesture begins a new drag.
+
+---
+
+### `func beginOrbitDrag(at:signs:)`
+
+```swift
+public func beginOrbitDrag(at pointer: SIMD2<Float> = .zero, signs: SIMD3<Float> = SIMD3(1, 1, 1))
+```
+
+Begins an orbit drag and stops any orbit momentum still coasting. `pointer` is where the drag starts, in points from the centre of the view (y down). `signs` is the drag direction as (horizontal, vertical, roll), each `1` or `-1`; `ViewportController` passes `GestureConfiguration.orbitDragSigns` and `orbitRollSign`.
+
+A drag fixes two things at its start:
+
+- **Turntable and first-person:** whether the camera is upside down. If its up vector points below the horizon, a horizontal drag turns the other way for the whole drag, so the model still follows the pointer. Deciding once avoids a jump when a drag crosses the top view. Before this, a turntable tilted over the pole turned against the pointer on every later drag.
+- **Arcball:** where the pointer is on the virtual sphere. See [`case arcball`](#case-arcball).
+
+The deltas passed to `orbit(deltaX:deltaY:)` already carry the horizontal and vertical signs. The arcball uses `signs` to recover where the pointer really is, and the roll sign to set which way a drag outside the sphere rolls.
+
+---
+
+### `func endOrbitDrag()`
+
+```swift
+public func endOrbitDrag()
+```
+
+Ends the orbit drag in progress. Momentum set by `setAngularVelocity(_:)` keeps coasting the way the drag was turning (past the pole, the momentum keeps the drag's direction too). The drag is forgotten once the momentum dies out or the next drag begins.
+
+---
+
+### `var isOrbitDragActive: Bool` *(read-only)*
+
+`true` between `beginOrbitDrag(at:signs:)` (or the first `orbit` call) and `endOrbitDrag()`.
+
+---
+
+### `func stopInertia()`
+
+```swift
+public func stopInertia()
+```
+
+Stops orbit and pan momentum and forgets any orbit drag. `ViewportController` calls it when a new drag or two-finger gesture begins, so touching the view stops a coasting model instead of adding the new drag to its momentum.
 
 ---
 
@@ -362,7 +407,7 @@ Applies a scroll-wheel delta using an exponential mapping (`factor = exp(delta *
 public func zoomToward(factor: Float, cursorNormalized: SIMD2<Float>?, aspectRatio: Float = 1.0)
 ```
 
-Zoom-at-cursor / pinch-at-fingers. Adjusts the pivot so the world point under `cursorNormalized` stays stationary during the zoom. Works in both perspective and orthographic modes. `nil` cursor = plain centre zoom.
+Zoom-at-cursor / pinch-at-fingers. Adjusts the pivot so the world point under `cursorNormalized` stays stationary during the zoom. Works in both perspective and orthographic modes. `nil` cursor = plain centre zoom. The pivot moves by the zoom actually applied, so once the distance reaches `minDistance` or `maxDistance` the view stops; previously it kept sliding toward the cursor.
 
 The pivot shift is gated on `zoomTowardShiftsPivot`. When that is `false` the zoom still changes distance (or orthographic scale) and the pivot holds still, so zoom-at-cursor no longer drifts the orbit centre for apps that have turned dynamic pivoting off. `ViewportController` keeps the flag in step with `ViewportConfiguration.dynamicPivotConfiguration.isEnabled` (issue #117).
 
@@ -374,7 +419,7 @@ The pivot shift is gated on `zoomTowardShiftsPivot`. When that is `false` the zo
 public func roll(deltaAngle: Float)
 ```
 
-Rolls the camera around its forward axis by `deltaAngle` radians. In turntable mode the roll is stored separately so it survives subsequent orbit moves; in arcball/first-person modes it is baked directly into the rotation quaternion.
+Rolls the camera around its forward axis by `deltaAngle` radians. A positive angle turns the picture clockwise on screen, matching the `.rotateChanged` event (positive is a clockwise twist), in every rotation style; previously arcball and first-person rolled the other way from turntable. In turntable mode the roll is stored separately so it survives subsequent orbit moves; in arcball/first-person modes it is baked directly into the rotation quaternion.
 
 ---
 
@@ -384,7 +429,7 @@ Rolls the camera around its forward axis by `deltaAngle` radians. In turntable m
 public func animateTo(_ target: CameraState, duration: Float = 0.3)
 ```
 
-Animates smoothly to `target` using SLERP for rotation and an ease-out (1 − (1 − t)³) curve over `duration` seconds. Passing `duration: 0` snaps immediately.
+Animates smoothly to `target` using SLERP for rotation and an ease-out (1 − (1 − t)³) curve over `duration` seconds. Passing `duration: 0` snaps immediately and cancels any animation in progress (previously a running animation overwrote the snap on its next tick). Stops orbit and pan momentum, which would otherwise fight the animation, and ends any orbit drag.
 
 ---
 
@@ -404,7 +449,7 @@ Convenience overload that preserves the current `pivot`, `distance`, `fieldOfVie
 public func cancelAnimation()
 ```
 
-Stops any running animation immediately, leaving `cameraState` at its current interpolated position.
+Stops any running animation immediately, leaving `cameraState` at its current interpolated position. Momentum keeps coasting; previously cancelling also stopped the shared timer, which froze any momentum until the next gesture.
 
 ---
 
@@ -424,7 +469,7 @@ Moves the pivot to `point`. Optionally sets a new `distance` (clamped to `[minDi
 public func reset(animated: Bool = true)
 ```
 
-Resets to `homeCameraState`, which defaults to the controller's initial state; for a `ViewportController` that is `ViewportConfiguration.initialCameraState`. Animated by default (0.5 s). Also clears any accumulated roll. Previously this always went to `CameraState()`, whatever the configuration said.
+Resets to `homeCameraState`, which defaults to the controller's initial state; for a `ViewportController` that is `ViewportConfiguration.initialCameraState`. Animated by default (0.5 s). Also clears any accumulated roll and, animated or not, stops any momentum. Previously this always went to `CameraState()`, whatever the configuration said.
 
 ---
 
@@ -434,7 +479,7 @@ Resets to `homeCameraState`, which defaults to the controller's initial state; f
 public func adjustPivot(to newPivot: SIMD3<Float>, duration: Float = 0.15)
 ```
 
-Silently shifts the orbit pivot if the new position differs by more than 0.001 world units and no animation is already running. Used by `PivotStrategy` to auto-adjust the orbit center.
+Silently shifts the orbit pivot if the new position differs by more than 0.001 world units and no animation is already running. Used by `PivotStrategy` to auto-adjust the orbit center. Only the pivot is animated, so orbit and pan momentum keep coasting while it moves. Previously the animation replayed the rotation it started from on every tick and, when it finished, threw away whatever the momentum had turned in the meantime, so the model jumped back. `ViewportController` skips the dynamic pivot in `.firstPerson`, where moving the pivot would move the camera.
 
 ---
 
@@ -444,7 +489,7 @@ Silently shifts the orbit pivot if the new position differs by more than 0.001 w
 public func setAngularVelocity(_ velocity: SIMD2<Float>)
 ```
 
-Seeds inertia with an angular velocity, in drag points per 1/60 s (X = horizontal, Y = vertical); each tick orbits by `velocity × elapsed × 60` points. No-op when `enableInertia` is `false`. Call at gesture end to enable coasting.
+Seeds inertia with an angular velocity, in drag points per 1/60 s (X = horizontal, Y = vertical); each tick orbits by `velocity × elapsed × 60` points. No-op when `enableInertia` is `false`. Call at gesture end to enable coasting, before `endOrbitDrag()`. To convert a release velocity in points per second, divide by 60; `ViewportController.endOrbit(velocity:)` does that and scales by `GestureConfiguration.momentumScale`.
 
 ---
 
@@ -568,15 +613,28 @@ public enum RotationStyle: String, CaseIterable, Sendable
 
 #### `case arcball`
 
-Unrestricted 3D rotation using Ken Shoemake's virtual-sphere algorithm. Drag on the sphere surface rotates around axes perpendicular to the drag direction; drag outside the sphere rolls around the view axis. Best for freeform 3D modelling.
+Unrestricted 3D rotation using Ken Shoemake's arcball. The pointer is placed on a virtual sphere centred on the view, and the rotation is measured from where the drag began to where the pointer is now. Inside the sphere a drag tumbles the model about an axis perpendicular to the drag. Outside it the pointer is held to the sphere's rim, so moving around the centre rolls the view about the line of sight. Because the rotation depends only on the two pointer positions, a pointer that returns to where it began leaves the model as it found it. Best for freeform 3D modelling.
+
+The sphere's radius is `2 / orbitSensitivity` points (400 pt at the default 0.005), so a short drag near the centre turns the model `orbitSensitivity` radians per point, as in the other styles. A drag from the centre to the rim turns it 180°. `MetalViewportView` tells the viewport where each drag starts (`ViewportController.setDragOrigin(offsetFromCenter:)`), so a drag that starts near the edge of the view and moves around the centre rolls it. A drag with no known start, such as one from the navigation cube or a direct `orbit` call, starts at the centre.
+
+The direction follows `GestureConfiguration.dragRotation`: with `.rotateObject` the model turns and rolls with the pointer, as if the pointer held the sphere; `.orbitCamera` reverses both. The invert flags reverse only the horizontal or vertical turn, not the roll.
+
+Before this, each drag step was projected from the sphere's centre with a 300 pt radius, so a step would have needed about 850 pt to leave the sphere and the arcball never rolled.
 
 #### `case turntable`
 
-Z-axis–locked rotation ("pottery wheel"). Horizontal drag rotates around world Z; vertical drag tilts the camera up and down. Best for CAD, architecture, and any domain where "up is up".
+Z-axis–locked rotation ("pottery wheel"). Horizontal drag rotates around world Z; vertical drag tilts the camera up and down, without a limit, so it can tilt over the pole. A drag that begins upside down reverses the horizontal turn so the model still follows the pointer. Best for CAD, architecture, and any domain where "up is up".
 
 #### `case firstPerson`
 
-Yaw/pitch without stored spherical angles. Horizontal drag yaws around world Z; vertical drag pitches around the camera right vector. The camera position is still derived as `pivot + distance` along the back vector, so this turns about the pivot like the other styles rather than turning the camera in place; it differs from `.turntable` in composing the rotation incrementally. The drag direction follows `GestureConfiguration.dragRotation` as for the other styles: `.orbitCamera` gives a mouse-look feel (drag right, look right).
+Look-around: the camera turns in place. Horizontal drag yaws around world Z; vertical drag pitches around the camera's right vector. The camera position stays where it is and the pivot moves with the view, kept `distance` in front of the camera, so zoom still dollies toward what is in the middle of the view. Before this, the camera position was derived from a fixed pivot, so first-person turned about the pivot like the other styles and could not look around in place.
+
+How it interacts with `GestureConfiguration.dragRotation`:
+
+- `.rotateObject` (default) drags the scene with the pointer, as in a touch panorama viewer: drag right and the view turns left, so what is in front of the camera moves right with the finger.
+- `.orbitCamera` is desktop mouse-look: drag right, look right.
+
+The invert flags flip one axis on top of either. As with turntable, a drag that begins with the camera upside down reverses the horizontal turn, so the scene still follows the convention. In `.firstPerson`, `ViewportController` does not move the pivot to the geometry under the view centre after a drag (the dynamic pivot), and a gentle release does not snap to a nearby standard view, since both would move the camera.
 
 ---
 

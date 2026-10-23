@@ -42,7 +42,17 @@ public final class CameraController: ObservableObject {
     // MARK: - Configuration
 
     /// Rotation behavior style.
-    public var rotationStyle: RotationStyle = .turntable
+    ///
+    /// Changing it ends any orbit drag in progress and re-reads the turntable angles from the
+    /// current rotation, so the first turntable orbit after arcball or first-person moves does
+    /// not snap back to the last turntable orientation.
+    public var rotationStyle: RotationStyle = .turntable {
+        didSet {
+            guard rotationStyle != oldValue else { return }
+            orbitDrag = nil
+            updateSphericalFromRotation()
+        }
+    }
 
     // The sensitivity, inertia and damping defaults below come from `GestureConfiguration.default`, so
     // a standalone controller feels the same as one that `ViewportController` configured.
@@ -122,8 +132,8 @@ public final class CameraController: ObservableObject {
     /// Pan velocity for inertia (drag points per 1/60 s).
     private(set) var panVelocity: SIMD2<Float> = .zero
 
-    /// Arcball virtual sphere radius (in screen coordinates).
-    private var arcballRadius: Float = 300
+    /// The orbit drag in progress, or still coasting after release.
+    private var orbitDrag: OrbitDrag?
 
     /// Animation target state.
     private var animationTarget: CameraState?
@@ -136,6 +146,10 @@ public final class CameraController: ObservableObject {
 
     /// Animation duration.
     private var animationDuration: Float = 0
+
+    /// Whether the running animation moves only the pivot (`adjustPivot`), leaving rotation and
+    /// distance to the user and to momentum.
+    private var animatesPivotOnly = false
 
     /// Timer for animations and inertia.
     private var animationTimer: Timer?
@@ -175,6 +189,98 @@ public final class CameraController: ObservableObject {
 
     // MARK: - Orbit
 
+    /// What an orbit drag fixes when it begins.
+    private struct OrbitDrag {
+        /// `-1` when the drag began with the camera upside down (its up vector below the
+        /// horizon), else `1`.
+        ///
+        /// Turntable and first-person turn about world Z, which looks reversed from upside
+        /// down, so a horizontal drag is flipped for the whole drag, as Blender does. Deciding
+        /// once at the start avoids a jump when the drag crosses the top view.
+        var turnSign: Float
+
+        /// Drag direction as (horizontal, vertical, roll), each `1` or `-1`.
+        var signs: SIMD3<Float>
+
+        /// Arcball: the pointer at the start of the drag, in points from the arcball centre
+        /// (y down), before `signs` apply.
+        var startPointer: SIMD2<Float>
+
+        /// Arcball: the pointer now, in the same frame as `startPointer`.
+        var pointer: SIMD2<Float>
+
+        /// Arcball: the camera-space rotation applied so far in this drag.
+        var applied = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+
+        /// Whether the pointer has been released; the drag then lives on only while its
+        /// momentum coasts.
+        var released = false
+    }
+
+    /// Whether an orbit drag is in progress: begun and not yet ended.
+    public var isOrbitDragActive: Bool {
+        guard let drag = orbitDrag else { return false }
+        return !drag.released
+    }
+
+    /// Begins an orbit drag, stopping any orbit momentum still coasting.
+    ///
+    /// A drag fixes two things when it begins. For `.turntable` and `.firstPerson` it fixes which
+    /// way a horizontal drag turns: if the camera is upside down (tilted over the pole), the turn
+    /// is reversed for the whole drag, so the model still follows the pointer. For `.arcball` it
+    /// fixes where the pointer is on the virtual sphere, which is what lets a drag outside the
+    /// sphere roll the view.
+    ///
+    /// `orbit(deltaX:deltaY:)` begins a drag itself when none is in progress, at the arcball
+    /// centre with every sign `1`. `ViewportController` calls this with the pointer's position
+    /// and `GestureConfiguration.orbitDragSigns` plus `orbitRollSign`.
+    ///
+    /// - Parameters:
+    ///   - pointer: Where the drag starts, in points from the centre of the view (y down).
+    ///   - signs: Drag direction as (horizontal, vertical, roll), each `1` or `-1`. The deltas
+    ///     passed to `orbit(deltaX:deltaY:)` already carry the horizontal and vertical signs.
+    ///     The arcball uses them to recover where the pointer really is, and the roll sign to
+    ///     set which way a drag outside the sphere rolls.
+    public func beginOrbitDrag(
+        at pointer: SIMD2<Float> = .zero, signs: SIMD3<Float> = SIMD3(1, 1, 1)
+    ) {
+        angularVelocity = .zero
+        orbitDrag = makeOrbitDrag(at: pointer, signs: signs)
+    }
+
+    private func makeOrbitDrag(at pointer: SIMD2<Float>, signs: SIMD3<Float>) -> OrbitDrag {
+        if rotationStyle == .turntable { syncSphericalIfStale() }
+        let upsideDown = cameraState.upVector.z < -1e-4
+        return OrbitDrag(
+            turnSign: upsideDown ? -1 : 1,
+            signs: SIMD3(signs.x < 0 ? -1 : 1, signs.y < 0 ? -1 : 1, signs.z < 0 ? -1 : 1),
+            startPointer: pointer,
+            pointer: pointer)
+    }
+
+    /// Ends the orbit drag in progress.
+    ///
+    /// Momentum from `setAngularVelocity(_:)` still coasts the way the drag was turning. The drag
+    /// is forgotten once the momentum dies out or the next drag begins.
+    public func endOrbitDrag() {
+        guard orbitDrag != nil else { return }
+        if simd_length(angularVelocity) > 0.001 {
+            orbitDrag?.released = true
+        } else {
+            orbitDrag = nil
+        }
+    }
+
+    /// Stops orbit and pan momentum and forgets any orbit drag.
+    ///
+    /// The viewport calls this when a new drag begins, so touching the view stops a coasting
+    /// model instead of adding the new drag to its momentum.
+    public func stopInertia() {
+        angularVelocity = .zero
+        panVelocity = .zero
+        orbitDrag = nil
+    }
+
     /// Performs orbit rotation based on drag delta.
     ///
     /// The deltas are screen points with y down, and the model turns with them in every
@@ -183,61 +289,104 @@ public final class CameraController: ObservableObject {
     /// `GestureConfiguration.orbitDragSigns` before calling this, which is how
     /// `DragRotationConvention.orbitCamera` reverses it.
     ///
+    /// Successive calls are one drag until `endOrbitDrag()`. The first call begins one if
+    /// `beginOrbitDrag(at:signs:)` was not called; see it for what a drag fixes at its start.
+    ///
     /// - Parameters:
     ///   - deltaX: Horizontal drag in points
     ///   - deltaY: Vertical drag in points
     public func orbit(deltaX: Float, deltaY: Float) {
-        switch rotationStyle {
-        case .arcball:
-            orbitArcball(deltaX: deltaX, deltaY: deltaY)
-        case .turntable:
-            orbitTurntable(deltaX: deltaX, deltaY: deltaY)
-        case .firstPerson:
-            orbitFirstPerson(deltaX: deltaX, deltaY: deltaY)
-        }
+        if !isOrbitDragActive { beginOrbitDrag() }
+        orbitStep(deltaX: deltaX, deltaY: deltaY)
     }
 
-    /// Arcball rotation using Shoemake's algorithm.
-    private func orbitArcball(deltaX: Float, deltaY: Float) {
-        // Project points onto virtual sphere
-        let p1 = projectOntoArcball(x: 0, y: 0)
-        let p2 = projectOntoArcball(
-            x: -deltaX * orbitSensitivity * 100, y: deltaY * orbitSensitivity * 100)
+    /// One step of the current orbit drag, from the pointer or from its momentum.
+    private func orbitStep(deltaX: Float, deltaY: Float) {
+        // Only momentum set without a drag gets here with none; it is a released drag at once.
+        var drag =
+            orbitDrag
+            ?? {
+                var momentum = makeOrbitDrag(at: .zero, signs: SIMD3(1, 1, 1))
+                momentum.released = true
+                return momentum
+            }()
+        switch rotationStyle {
+        case .arcball:
+            orbitArcball(deltaX: deltaX, deltaY: deltaY, drag: &drag)
+        case .turntable:
+            orbitTurntable(deltaX: deltaX * drag.turnSign, deltaY: deltaY)
+        case .firstPerson:
+            orbitFirstPerson(deltaX: deltaX * drag.turnSign, deltaY: deltaY)
+        }
+        orbitDrag = drag
+    }
 
-        // Calculate rotation quaternion from p1 to p2
-        let axis = simd_cross(p1, p2)
-        let axisLength = simd_length(axis)
+    /// Radius of the arcball's virtual sphere, in points.
+    ///
+    /// Shoemake's arcball turns the model through twice the arc the pointer covers on the
+    /// sphere, so this radius makes a short drag near the centre turn it `orbitSensitivity`
+    /// radians per point, as in the other styles: 400 pt at the default 0.005.
+    var arcballRadius: Float {
+        2 / max(orbitSensitivity, 1e-6)
+    }
 
-        guard axisLength > 0.0001 else { return }
-
-        let angle = 2.0 * asin(min(1.0, axisLength))
-        let normalizedAxis = axis / axisLength
-
-        let deltaRotation = simd_quatf(angle: angle, axis: normalizedAxis)
-
-        // The axis is in camera (screen) space, so compose on the right. Composing on the left
-        // treated it as a world axis: correct only from the top view, and from the front view a
-        // horizontal drag rolled the picture instead of turning the model.
+    /// Arcball rotation (Shoemake), from where the drag began to where the pointer is now.
+    ///
+    /// The pointer is placed on a virtual sphere centred on the view. Inside it a drag tumbles
+    /// the model; outside it the pointer is held to the rim, so moving around the centre rolls
+    /// the view about the line of sight. Each step is measured from the drag's start, so a
+    /// pointer that returns to where it began leaves the model as it found it.
+    private func orbitArcball(deltaX: Float, deltaY: Float, drag: inout OrbitDrag) {
+        // The deltas carry the drag's signs; undo them to follow the real pointer.
+        drag.pointer += SIMD2(deltaX * drag.signs.x, deltaY * drag.signs.y)
+        let target = Self.arcballRotation(
+            from: drag.startPointer, to: drag.pointer, radius: arcballRadius, signs: drag.signs)
+        // Apply only the change since the last step, so a roll or anything else that turned the
+        // camera during the drag is kept. The rotation is in camera space: compose on the right.
+        let step = drag.applied.inverse * target
+        drag.applied = target
         var newState = cameraState
-        newState.rotation = simd_normalize(cameraState.rotation * deltaRotation)
+        newState.rotation = simd_normalize(cameraState.rotation * step)
         cameraState = newState
     }
 
-    /// Projects a 2D point onto the arcball sphere.
-    private func projectOntoArcball(x: Float, y: Float) -> SIMD3<Float> {
-        let r = arcballRadius
-        let d = x * x + y * y
-        let rSquared = r * r
+    /// The camera-space rotation an arcball drag from `start` to `end` applies to the camera.
+    ///
+    /// - Parameters:
+    ///   - start: Pointer at the start of the drag, in points from the arcball centre (y down).
+    ///   - end: Pointer now, in the same frame.
+    ///   - radius: Sphere radius in points.
+    ///   - signs: (horizontal, vertical, roll) signs. With all three `1` the model turns as if
+    ///     the pointer held the sphere; each `-1` reverses that part of the turn.
+    /// - Returns: The rotation to compose on the right of the drag's starting camera rotation.
+    static func arcballRotation(
+        from start: SIMD2<Float>, to end: SIMD2<Float>, radius: Float, signs: SIMD3<Float>
+    ) -> simd_quatf {
+        let a = arcballPoint(start, radius: radius)
+        let b = arcballPoint(end, radius: radius)
+        // Shoemake's quaternion from a to b turns through twice the arc between them, about
+        // a × b. That is the turn the model appears to make; the camera turns the other way.
+        let c = simd_cross(a, b)
+        // A horizontal drag turns about the screen's y axis, a vertical one about its x axis,
+        // and a drag around the rim about z, the line of sight.
+        let axis = SIMD3(c.x * signs.y, c.y * signs.x, c.z * signs.z)
+        let model = simd_quatf(ix: axis.x, iy: axis.y, iz: axis.z, r: simd_dot(a, b))
+        return simd_normalize(model.inverse)
+    }
 
-        if d < rSquared / 2 {
-            // Inside sphere - project onto sphere surface
-            let z = sqrt(rSquared - d)
-            return simd_normalize(SIMD3<Float>(x, y, z))
-        } else {
-            // Outside sphere - use hyperbolic sheet
-            let z = rSquared / (2 * sqrt(d))
-            return simd_normalize(SIMD3<Float>(x, y, z))
+    /// Projects a pointer offset (points from the centre, y down) onto the unit arcball.
+    ///
+    /// The result is in camera space: x right, y up, z toward the viewer. A point outside the
+    /// sphere lands on its rim, as in Shoemake's arcball, so moving around outside it is a pure
+    /// roll.
+    static func arcballPoint(_ pointer: SIMD2<Float>, radius: Float) -> SIMD3<Float> {
+        let p = SIMD2(pointer.x, -pointer.y) / max(radius, 1e-6)
+        let d2 = simd_length_squared(p)
+        if d2 <= 1 {
+            return SIMD3(p.x, p.y, sqrt(1 - d2))
         }
+        let rim = p / sqrt(d2)
+        return SIMD3(rim.x, rim.y, 0)
     }
 
     /// Turntable rotation (Z-up constrained).
@@ -256,17 +405,22 @@ public final class CameraController: ObservableObject {
         updateRotationFromSpherical()
     }
 
-    /// First-person rotation.
+    /// First-person look-around: the camera turns in place and the pivot moves with it.
+    ///
+    /// Horizontal drag yaws about world Z; vertical drag pitches about the camera's right vector.
+    /// The camera position is held and the pivot is put back `distance` in front of it, so the
+    /// view turns about the eye rather than about a point in the scene. With the deltas
+    /// `orbit(deltaX:deltaY:)` documents, the scene follows the drag (a drag right turns the
+    /// view to the left); `DragRotationConvention.orbitCamera` reverses that to mouse-look.
     private func orbitFirstPerson(deltaX: Float, deltaY: Float) {
-        // Yaw around world up
-        let yaw = simd_quatf(angle: -deltaX * orbitSensitivity, axis: SIMD3<Float>(0, 0, 1))
+        let yaw = simd_quatf(angle: deltaX * orbitSensitivity, axis: SIMD3<Float>(0, 0, 1))
+        let pitch = simd_quatf(angle: deltaY * orbitSensitivity, axis: cameraState.rightVector)
 
-        // Pitch around camera right
-        let right = cameraState.rightVector
-        let pitch = simd_quatf(angle: -deltaY * orbitSensitivity, axis: right)
-
+        let eye = cameraState.position
         var newState = cameraState
         newState.rotation = simd_normalize(yaw * pitch * cameraState.rotation)
+        // position = pivot + back × distance, so keep the eye and move the pivot.
+        newState.pivot = eye - newState.rotation.act(SIMD3<Float>(0, 0, 1)) * newState.distance
         cameraState = newState
     }
 
@@ -373,7 +527,14 @@ public final class CameraController: ObservableObject {
             cursorOffset = right * cursor.x * halfW + up * cursor.y * halfH
         }
 
-        let zoomRatio = 1.0 - 1.0 / factor
+        // Use the zoom actually applied: at minDistance or maxDistance the distance stops
+        // changing, and shifting by the requested factor kept sliding the view sideways.
+        let applied =
+            cameraState.isOrthographic
+            ? oldOrthoScale / max(cameraState.orthographicScale, .leastNormalMagnitude)
+            : oldDistance / max(cameraState.distance, .leastNormalMagnitude)
+        let zoomRatio = 1.0 - 1.0 / applied
+        guard abs(zoomRatio) > 0 else { return }
         var newState = cameraState
         newState.pivot += cursorOffset * zoomRatio
         cameraState = newState
@@ -383,6 +544,9 @@ public final class CameraController: ObservableObject {
 
     /// Rolls the camera around its forward axis.
     ///
+    /// A positive angle turns the picture clockwise on screen, as a clockwise twist does, in
+    /// every `rotationStyle`. Arcball and first-person used to roll the other way from turntable.
+    ///
     /// - Parameter deltaAngle: Rotation delta in radians
     public func roll(deltaAngle: Float) {
         switch rotationStyle {
@@ -390,10 +554,10 @@ public final class CameraController: ObservableObject {
             rollAngle += deltaAngle
             updateRotationFromSpherical()
         case .arcball, .firstPerson:
-            let forward = cameraState.viewDirection
-            let rollQuat = simd_quatf(angle: deltaAngle, axis: forward)
+            // About the camera's own z (back) axis, composed on the right as turntable does.
+            let rollQuat = simd_quatf(angle: deltaAngle, axis: SIMD3<Float>(0, 0, 1))
             var newState = cameraState
-            newState.rotation = simd_normalize(rollQuat * cameraState.rotation)
+            newState.rotation = simd_normalize(cameraState.rotation * rollQuat)
             cameraState = newState
         }
     }
@@ -402,16 +566,25 @@ public final class CameraController: ObservableObject {
 
     /// Animates to a target camera state.
     ///
+    /// Stops any orbit or pan momentum, which would otherwise fight the animation, and ends any
+    /// orbit drag in progress.
+    ///
     /// - Parameters:
     ///   - target: Target camera state
     ///   - duration: Animation duration in seconds
     public func animateTo(_ target: CameraState, duration: Float = 0.3) {
+        stopInertia()
+        animatesPivotOnly = false
         guard duration > 0 else {
+            cancelAnimation()
             cameraState = target
             updateSphericalFromRotation()
             return
         }
+        startAnimation(to: target, duration: duration)
+    }
 
+    private func startAnimation(to target: CameraState, duration: Float) {
         animationStart = cameraState
         animationTarget = target
         animationDuration = duration
@@ -438,10 +611,15 @@ public final class CameraController: ObservableObject {
     }
 
     /// Cancels any in-progress animation.
+    ///
+    /// Momentum keeps coasting: the shared timer stops only when nothing else is moving.
     public func cancelAnimation() {
         isAnimating = false
         animationTarget = nil
-        stopAnimationTimer()
+        animatesPivotOnly = false
+        if simd_length(angularVelocity) <= 0.001 && simd_length(panVelocity) <= 0.001 {
+            stopAnimationTimer()
+        }
     }
 
     // MARK: - Focus
@@ -474,8 +652,7 @@ public final class CameraController: ObservableObject {
         if animated {
             animateTo(target, duration: 0.5)
         } else {
-            cameraState = target
-            updateSphericalFromRotation()
+            animateTo(target, duration: 0)
         }
     }
 
@@ -483,7 +660,10 @@ public final class CameraController: ObservableObject {
 
     /// Animates only the pivot to a new position.
     ///
-    /// Skips if the delta is negligible or an animation is already running.
+    /// Skips if the delta is negligible or an animation is already running. Only the pivot is
+    /// animated, so orbit momentum still coasting keeps turning the view; previously the
+    /// animation replayed the rotation it started from on every tick and, when it finished,
+    /// threw away whatever the momentum had turned in the meantime.
     ///
     /// - Parameters:
     ///   - newPivot: Target pivot position.
@@ -493,7 +673,12 @@ public final class CameraController: ObservableObject {
         guard delta > 0.001, !isAnimating else { return }
         var target = cameraState
         target.pivot = newPivot
-        animateTo(target, duration: duration)
+        guard duration > 0 else {
+            cameraState = target
+            return
+        }
+        animatesPivotOnly = true
+        startAnimation(to: target, duration: duration)
     }
 
     // MARK: - Inertia
@@ -547,10 +732,19 @@ public final class CameraController: ObservableObject {
         // reset or any animation snapped the camera to a different orientation.
         let m = simd_float3x3(simd_normalize(cameraState.rotation))
         // m.columns.c[r] is R[r][c].
-        let beta = acos(simd_clamp(m.columns.2.z, -1, 1))
+        var beta = acos(simd_clamp(m.columns.2.z, -1, 1))
         if sin(beta) > 1e-5 {
             theta = atan2(m.columns.2.x, -m.columns.2.y)
             rollAngle = atan2(m.columns.0.z, m.columns.1.z)
+            // Every rotation has a second decomposition, Rz(θ + π) · Rx(−β) · Rz(roll − π).
+            // Prefer the one with the smaller roll: an upside-down camera is then a tilt over
+            // the pole, as a vertical drag leaves it, rather than a half roll, under which the
+            // next vertical drag would tilt the wrong way.
+            if abs(rollAngle) > .pi / 2 {
+                theta += .pi
+                beta = -beta
+                rollAngle += rollAngle > 0 ? -.pi : .pi
+            }
         } else {
             // Looking straight along ±Z: theta and roll turn about the same axis, so fold it all
             // into theta.
@@ -558,6 +752,20 @@ public final class CameraController: ObservableObject {
             rollAngle = 0
         }
         phi = beta + .pi / 2
+        if phi < 0 { phi += 2 * .pi }
+    }
+
+    /// Re-reads the turntable angles if the rotation was changed by something other than the
+    /// turntable (an arcball or first-person drag, a roll in those styles), so the next
+    /// turntable orbit continues from the current view instead of snapping.
+    private func syncSphericalIfStale() {
+        let rotZ = simd_quatf(angle: theta, axis: SIMD3<Float>(0, 0, 1))
+        let rotX = simd_quatf(angle: phi - .pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        let rotRoll = simd_quatf(angle: rollAngle, axis: SIMD3<Float>(0, 0, 1))
+        let stored = simd_normalize(rotZ * rotX * rotRoll)
+        if abs(simd_dot(stored.vector, simd_normalize(cameraState.rotation).vector)) < 0.99999 {
+            updateSphericalFromRotation()
+        }
     }
 
     /// Updates rotation quaternion from spherical coordinates.
@@ -618,30 +826,45 @@ public final class CameraController: ObservableObject {
 
         // Animation update
         if isAnimating, let start = animationStart, let target = animationTarget {
+            // Ease-out curve.
+            let previousT = 1.0 - pow(1.0 - min(animationProgress, 1), 3)
             animationProgress += deltaTime / animationDuration
+            let finished = animationProgress >= 1.0
+            let t: Float = finished ? 1 : 1.0 - pow(1.0 - animationProgress, 3)
 
-            if animationProgress >= 1.0 {
+            if animatesPivotOnly {
+                // Move the pivot by this tick's share of the way, so pan momentum that moves it
+                // too is kept, and leave the rotation and distance alone.
+                var newState = cameraState
+                newState.pivot += (target.pivot - start.pivot) * (t - previousT)
+                cameraState = newState
+            } else if finished {
                 cameraState = target
                 updateSphericalFromRotation()
+            } else {
+                cameraState = start.interpolated(to: target, t: t)
+            }
+
+            if finished {
                 isAnimating = false
                 animationTarget = nil
+                animatesPivotOnly = false
             } else {
-                // Use ease-out curve
-                let t = 1.0 - pow(1.0 - animationProgress, 3)
-                cameraState = start.interpolated(to: target, t: t)
                 needsContinue = true
             }
         }
 
         // Inertia update
         if simd_length(angularVelocity) > 0.001 {
-            orbit(
+            orbitStep(
                 deltaX: angularVelocity.x * frames,
                 deltaY: angularVelocity.y * frames)
             angularVelocity *= decay
             needsContinue = true
         } else {
             angularVelocity = .zero
+            // The momentum has died out, so a released drag is over.
+            if orbitDrag?.released == true { orbitDrag = nil }
         }
 
         if simd_length(panVelocity) > 0.001 {

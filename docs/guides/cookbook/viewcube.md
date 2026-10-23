@@ -107,7 +107,7 @@ if let region = cube.region(at: tapPoint) {
 
 ## Drag-to-orbit
 
-Dragging the cube more than 4 pt triggers orbit mode. The delta goes through the same path as a viewport drag, ending in `controller.handleOrbit(translation:)`, so `GestureConfiguration.dragRotation`, inertia and rotation style apply identically: with the default `.rotateObject`, the cube face under the finger turns with it.
+Dragging the cube more than 4 pt triggers orbit mode. The delta goes through the same path as a viewport drag, ending in `controller.handleOrbit(translation:)`, so `GestureConfiguration.dragRotation`, inertia and rotation style apply identically: with the default `.rotateObject`, the cube face under the finger turns with it. The cube does not report where on it the drag started, so in `.arcball` a cube drag starts at the centre of the virtual sphere and tumbles; roll from the viewport instead.
 
 The sign is inverted relative to viewport drags: dragging the cube clockwise rotates the camera clockwise around the model (grab-the-camera, not grab-the-model).
 

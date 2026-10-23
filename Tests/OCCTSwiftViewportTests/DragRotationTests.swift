@@ -40,14 +40,19 @@ struct DragRotationTests {
     ///
     /// The point on the model's near side, straight toward the camera, except for a horizontal
     /// drag from the top view in the Z-up styles. That spins the view about the line of sight, so
-    /// the point below the centre (the near edge of the turntable) is the one that shows it.
+    /// a point off the centre is the one that shows it: below the centre (the near edge of the
+    /// turntable) for turntable, which spins about the pivot. First-person turns in place, so it
+    /// spins about the point straight below the camera; from a view tilted a little short of
+    /// straight down, that point sits below the screen centre and everything above it, the
+    /// centre included, follows the drag. The point above the centre is the one that does.
     private func probePoint(
         _ state: CameraState, style: RotationStyle, view: StandardView, axis: Int
     )
         -> SIMD3<Float>
     {
         if axis == 0, view == .top, style != .arcball {
-            return state.pivot - state.upVector * (state.distance * 0.3)
+            let side: Float = style == .firstPerson ? 1 : -1
+            return state.pivot + state.upVector * (side * state.distance * 0.3)
         }
         return state.pivot + (state.position - state.pivot) * 0.3
     }

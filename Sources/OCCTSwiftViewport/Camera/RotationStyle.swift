@@ -13,30 +13,32 @@ public enum RotationStyle: String, CaseIterable, Sendable {
 
     /// Arcball (trackball) rotation - unrestricted 3D rotation.
     ///
-    /// Uses Ken Shoemake's arcball algorithm for intuitive 3D rotation.
-    /// Dragging on the sphere rotates around axes perpendicular to drag.
-    /// Dragging outside the sphere rotates around the view axis.
+    /// Uses Ken Shoemake's arcball: the pointer is placed on a virtual sphere centred on the
+    /// view, and the rotation runs from where the drag began to where the pointer is now.
+    /// Dragging on the sphere rotates around axes perpendicular to the drag; dragging around the
+    /// centre outside the sphere rolls the view about the line of sight.
     ///
     /// Best for: Freeform 3D modeling, inspecting objects from any angle.
     case arcball
 
     /// Turntable rotation - Z-axis locked, like a pottery wheel.
     ///
-    /// Horizontal drag rotates around the world Z (up) axis.
-    /// Vertical drag tilts the camera up/down with limits to prevent
-    /// going below the horizon.
+    /// Horizontal drag rotates around the world Z (up) axis. Vertical drag tilts the camera up
+    /// and down without a limit, so it can tilt over the pole; a drag that begins upside down
+    /// reverses the horizontal turn so the model still follows the pointer.
     ///
     /// Best for: Architectural visualization, map-like views, CAD where
     /// "up" should always be up.
     case turntable
 
-    /// First-person style rotation: yaw and pitch.
+    /// First-person look-around: the camera turns in place.
     ///
     /// Horizontal drag yaws about world Z; vertical drag pitches about the camera's right vector.
-    /// The camera position is still `pivot + distance` along its back vector, so this turns about
-    /// the pivot like the other styles rather than in place. The drag direction follows
-    /// `GestureConfiguration.dragRotation`; `.orbitCamera` gives the mouse-look feel of
-    /// first-person game controls (drag right, look right).
+    /// The camera stays where it is and the pivot moves with the view, `distance` in front of it.
+    /// With `GestureConfiguration.dragRotation` at `.rotateObject` (the default) the scene
+    /// follows the drag, as in a touch panorama viewer (drag right, the view turns left);
+    /// `.orbitCamera` gives the mouse-look feel of first-person game controls (drag right, look
+    /// right).
     ///
     /// Best for: Walk-through visualizations, VR-style navigation.
     case firstPerson
