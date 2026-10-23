@@ -19,7 +19,9 @@ struct OffscreenTransformTests {
             return
         }
         let opts = OffscreenRenderOptions(
-            width: 200, height: 200, backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
+            width: 200, height: 200, cameraState: CameraState(),
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false,
+            showAxes: false)
 
         // Box at the origin (identity transform) — fills the centre of the frame.
         let centered = ViewportBody.box(id: "b", width: 1.5, height: 1.5, depth: 1.5,
@@ -58,7 +60,8 @@ struct OffscreenTransformTests {
                                  distance: 10, pivot: .zero)
         let opts = OffscreenRenderOptions(
             width: 200, height: 200, cameraState: camera,
-            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light)
+            backgroundColor: SIMD4<Float>(0, 0, 0, 1), appearance: .light, showGrid: false,
+            showAxes: false)
 
         var right = ViewportBody.box(id: "r", width: 1, height: 1, depth: 1,
                                      color: SIMD4<Float>(0.9, 0.9, 0.9, 1))

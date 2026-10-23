@@ -35,6 +35,11 @@ func render(
     opts.height = height
     opts.backgroundColor = SIMD4<Float>(0.93, 0.94, 0.96, 1)
     opts.cameraState = .isometric
+    // Figures were made with these; the option defaults now follow a live viewport (grid, axes,
+    // `.shaded`), so pin them.
+    opts.displayMode = .shadedWithEdges
+    opts.showGrid = false
+    opts.showAxes = false
     configure(&opts)
     if let cam = opts.cameraState.fit(
         to: visible,

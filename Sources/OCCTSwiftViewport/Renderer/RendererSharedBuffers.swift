@@ -76,6 +76,64 @@ enum RendererSharedBuffers {
         return buffers
     }
 
+    /// Crease-aware smoothed copy of an interleaved body's `vertexData` (issue #48), or `nil`.
+    ///
+    /// Returns `nil` when smoothing is off or doesn't apply: direct-mesh bodies (the producer
+    /// supplies normals) and bodies without a triangle mesh. Pass the result to
+    /// `makeMeshBuffers(device:body:interleavedVertexData:)`.
+    static func smoothedVertexData(
+        for body: ViewportBody,
+        autoSmoothNormals: Bool,
+        creaseAngle: Float
+    ) -> [Float]? {
+        guard autoSmoothNormals, !body.usesDirectMesh, !body.vertexData.isEmpty,
+            !body.indices.isEmpty
+        else { return nil }
+        var vertexData = body.vertexData
+        NormalSmoothing.smoothNormals(
+            vertexData: &vertexData, indices: body.indices, creaseAngle: creaseAngle)
+        return vertexData
+    }
+
+    /// Uploads `body.triangleStyles` as one RGBA per triangle, indexed by `[[primitive_id]]`.
+    ///
+    /// Returns `nil` when the body has no styles, or when their count doesn't match
+    /// `triangleCount` (the highlight shader would otherwise read out of bounds; #136 L9, logged in
+    /// debug builds).
+    static func makeTriangleStyleBuffer(
+        device: MTLDevice,
+        body: ViewportBody,
+        triangleCount: Int
+    ) -> MTLBuffer? {
+        guard
+            triangleStylesMatch(styleCount: body.triangleStyles.count, triangleCount: triangleCount)
+        else {
+            #if DEBUG
+                if !body.triangleStyles.isEmpty {
+                    NSLog(
+                        "[Renderer] body %@: triangleStyles.count %ld != triangle count %ld; "
+                            + "highlights ignored", body.id, body.triangleStyles.count,
+                        triangleCount)
+                }
+            #endif
+            return nil
+        }
+        let packed = body.triangleStyles.map(\.color)
+        return packed.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return nil }
+            return device.makeBuffer(bytes: base, length: raw.count, options: .storageModeShared)
+        }
+    }
+
+    /// Whether a `triangleStyles` array of `styleCount` entries is drawn for a body with
+    /// `triangleCount` triangles.
+    ///
+    /// Only a non-empty array with exactly one entry per triangle is used; any other count
+    /// skips the highlight pass for the body (and logs in debug builds).
+    static func triangleStylesMatch(styleCount: Int, triangleCount: Int) -> Bool {
+        styleCount > 0 && styleCount == triangleCount
+    }
+
     /// Flattens edge polylines into screen-expandable line-segment quads.
     ///
     /// Format per vertex: [x, y, z, arcLength, cornerX, cornerY, directionX, directionY, directionZ].

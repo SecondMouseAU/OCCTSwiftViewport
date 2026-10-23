@@ -27,7 +27,7 @@ Controls how geometry is drawn in the viewport or an offscreen render.
 |------|-------------|
 | `.wireframe` | Edges only — no surface fill. |
 | `.shaded` | Lit surface shading (Cook-Torrance GGX + hemisphere ambient + Fresnel rim). No edge overlay. |
-| `.shadedWithEdges` | Shaded surfaces with a contrast-adaptive wireframe overlay. Default for `OffscreenRenderOptions`. |
+| `.shadedWithEdges` | Shaded surfaces with a contrast-adaptive wireframe overlay. |
 | `.flat` | Surface fill without smooth normal interpolation. |
 | `.unlit` | Flat-colour shading — each body drawn in its constant `color` with no lighting, ambient, shadows, Fresnel, or tone-mapping. Faithful per-body colour for diagnostic renders (v1.1.21+). |
 | `.xray` | Transparent surface with visible internal edges. |
@@ -85,7 +85,7 @@ opts.explicitOrthoBounds = bounds
 public struct OffscreenRenderOptions: Sendable
 ```
 
-Full configuration for a single offscreen render pass. All fields have defaults; the no-argument init is valid.
+Full configuration for a single offscreen render pass. All fields have defaults; the no-argument init is valid. Every scene default is read from `ViewportController.defaultConfiguration` (`.cad`, what `ViewportController()` uses) and `ViewportController.defaultEdgeIntensity`, so a default offscreen render shows what a default live viewport shows. The defaults below are those values.
 
 ### Stored properties
 
@@ -93,15 +93,15 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 |----------|------|---------|-------|
 | `width` | `Int` | `1024` | Output image width in pixels. |
 | `height` | `Int` | `768` | Output image height in pixels. |
-| `cameraState` | `CameraState` | `CameraState()` | Camera pose, projection, and FOV. |
-| `displayMode` | `DisplayMode` | `.shadedWithEdges` | Visual representation style. |
-| `xrayOpacity` | `Float` | `DisplayMode.defaultXRayOpacity` (0.4) | Surface opacity ceiling in `.xray`; same default as `ViewportConfiguration.xrayOpacity`. Clamped to `0...1`. |
-| `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, IBL. |
+| `cameraState` | `CameraState` | `.isometric` | Camera pose, projection, and FOV. |
+| `displayMode` | `DisplayMode` | `.shaded` | Visual representation style. |
+| `xrayOpacity` | `Float` | `DisplayMode.defaultXRayOpacity` (0.4) | Surface opacity ceiling in `.xray`; mirrors `ViewportConfiguration.xrayOpacity`. Clamped to `0...1`. |
+| `lightingConfiguration` | `LightingConfiguration` | `.threePoint` | Key/fill/back lights, shadows, SSAO (`enableSSAO`, on in `.threePoint`), and the composite's tone mapping (`exposure`, `whitePoint`). Image-based lighting and the skybox (`drawBackground`) use the map named by `environmentMapURL` / `environmentMapData`; see [Parity with the live viewport](#parity-with-the-live-viewport). |
 | `backgroundColor` | `SIMD4<Float>` | `(0.95, 0.95, 0.95, 1.0)` | RGBA background colour in the light appearance, linear space. |
 | `darkModeBackgroundColor` | `SIMD4<Float>?` | `ViewportConfiguration.defaultDarkModeBackgroundColor` | Background in the dark appearance; `nil` uses `backgroundColor` for both. Matches `ViewportConfiguration.darkModeBackgroundColor`. |
 | `appearance` | `RenderAppearance` | `.system` | Which background the render uses: `.system` (the system appearance at render time, like the onscreen view), `.light` or `.dark`. Pin one for reproducible output. See below. |
-| `showGrid` | `Bool` | `false` | Draw the ground grid (XY plane). |
-| `showAxes` | `Bool` | `false` | Draw the RGB world-space axes. |
+| `showGrid` | `Bool` | `true` | Draw the ground grid (XY plane). |
+| `showAxes` | `Bool` | `true` | Draw the RGB world-space axes. |
 | `gridStyle` | `GridStyle` | `.plane` | Grid style; matches `ViewportConfiguration.gridStyle`. |
 | `gridSize` | `Float` | `100` | Side of the square grid around the origin; matches `ViewportConfiguration.gridSize`. |
 | `axisLength` | `Float?` | `nil` | Axis length; `nil` sizes the axes to the rendered bodies, as `ViewportConfiguration.axisLength` does. |
@@ -115,6 +115,20 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge in pixels. `+x` = right, `+y` = down. Lightweight alternative to adjusting the camera for small registration corrections. |
 | `measurements` | `[ViewportMeasurement]` | `[]` | Measurement annotations composited over the Metal pass via Core Graphics. World-space anchors must already be resolved on the input values. |
 | `edgeIntensity` | `Float` | `1.0` | Edge intensity, mirroring `ViewportController.edgeIntensity`: `1` is fully opaque, lower values fade edges linearly with view distance between the near and far clip planes, `0` hides them. |
+| `clipPlanes` | `[ClipPlane]` | `[]` | Section planes, mirroring `ViewportController.clipPlanes`. The first `ClipPlane.maxActivePlanes` (4) enabled planes clip every pass, the shadow map included. |
+| `selectedBodyIDs` | `Set<String>` | `[]` | Bodies drawn selected (tint and outline ring), mirroring `ViewportController.selectedBodyIDs`. Meshed bodies get the ring in every display mode, translucent ones included; edge-only and point bodies get none. |
+| `hoveredBodyID` | `String?` | `nil` | Body drawn hovered (lighter tint and outline), mirroring `ViewportController.hoveredBodyID`. |
+| `selectionOutline` | `SelectionOutlineStyle` | `.selection` | Outline colour and pixel width for selected bodies, mirroring `ViewportConfiguration.selectionOutline`. |
+| `hoverOutline` | `SelectionOutlineStyle` | `.hover` | Outline colour and pixel width for the hovered body, mirroring `ViewportConfiguration.hoverOutline`. |
+| `autoSmoothNormals` | `Bool` | `false` | Crease-aware normal smoothing of interleaved meshes, mirroring `ViewportConfiguration.autoSmoothNormals` (on in `.cadHighQuality`). |
+| `normalSmoothingCreaseAngle` | `Float` | `0.524` | Crease angle in radians for `autoSmoothNormals`. |
+| `enableSilhouettes` | `Bool` | `true` | Screen-space depth silhouettes, mirroring `ViewportConfiguration.enableSilhouettes`. Shares one composite pass with SSAO, which also applies ACES tone mapping; the pass is skipped in `.wireframe` and `.unlit`. |
+| `silhouetteThickness` | `Float` | `1.0` | Mirrors `ViewportConfiguration.silhouetteThickness`. |
+| `silhouetteIntensity` | `Float` | `0.7` | Mirrors `ViewportConfiguration.silhouetteIntensity`. |
+
+> **Behaviour change (issue #136):** the default options now run the SSAO / silhouette composite (as the live viewport's defaults do), so a lit render is ambient-occluded, silhouetted and ACES tone-mapped. Set `enableSilhouettes = false` and `lightingConfiguration.enableSSAO = false` for the previous look.
+>
+> The scene-content defaults changed too, to match a default `ViewportController`: `displayMode` is now `.shaded` (was `.shadedWithEdges`), `showGrid` and `showAxes` are now `true` (were `false`), and `cameraState` is now `.isometric` (was `CameraState()`). Pass the old values explicitly to keep the previous framing and content.
 
 ### Initializer
 
@@ -122,15 +136,16 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 public init(
     width: Int = 1024,
     height: Int = 768,
-    cameraState: CameraState = CameraState(),
-    displayMode: DisplayMode = .shadedWithEdges,
+    // Scene defaults come from ViewportController.defaultConfiguration (.cad).
+    cameraState: CameraState = .isometric,
+    displayMode: DisplayMode = .shaded,
     xrayOpacity: Float = DisplayMode.defaultXRayOpacity,
     lightingConfiguration: LightingConfiguration = .threePoint,
     backgroundColor: SIMD4<Float> = SIMD4<Float>(0.95, 0.95, 0.95, 1.0),
     darkModeBackgroundColor: SIMD4<Float>? = ViewportConfiguration.defaultDarkModeBackgroundColor,
     appearance: RenderAppearance = .system,
-    showGrid: Bool = false,
-    showAxes: Bool = false,
+    showGrid: Bool = true,
+    showAxes: Bool = true,
     msaaSampleCount: Int = 4,
     gridBaseSpacing: Float = 1.0,
     gridSubdivisions: Int = 10,
@@ -143,8 +158,30 @@ public init(
     explicitOrthoBounds: OrthoBounds? = nil,
     pixelPan: SIMD2<Float>? = nil,
     measurements: [ViewportMeasurement] = [],
-    edgeIntensity: Float = 1.0
+    edgeIntensity: Float = 1.0,
+    clipPlanes: [ClipPlane] = [],
+    selectedBodyIDs: Set<String> = [],
+    hoveredBodyID: String? = nil,
+    selectionOutline: SelectionOutlineStyle = .selection,
+    hoverOutline: SelectionOutlineStyle = .hover,
+    autoSmoothNormals: Bool = false,
+    normalSmoothingCreaseAngle: Float = 0.524,
+    enableSilhouettes: Bool = true,
+    silhouetteThickness: Float = 1.0,
+    silhouetteIntensity: Float = 0.7
 )
+
+@MainActor
+public init(matching controller: ViewportController, width: Int, height: Int)
+```
+
+`init(matching:width:height:)` copies everything the offscreen path honours from a live controller: camera, display mode, lighting, grid and axes, edge intensity, clip planes, selection and hover, and the relevant `ViewportConfiguration` fields (background colour, MSAA, grid spacing, edge lines, selection and hover outline styles, silhouettes, normal smoothing). Measurements are not copied.
+
+**Example — thumbnail of what the viewport currently shows:**
+
+```swift
+let opts = OffscreenRenderOptions(matching: controller, width: 512, height: 384)
+let image = renderer.render(bodies: bodies, options: opts)
 ```
 
 ### How a headless render picks its appearance
@@ -204,8 +241,24 @@ Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 
-> **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass. Per-body `isPickable` flags and stencil-based selection outlines are not available in the headless path.
+> **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass, so per-body `isPickable` flags have no effect in the headless path. Selection and hover are drawn (tint and stencil outline) from `OffscreenRenderOptions.selectedBodyIDs` / `hoveredBodyID`.
 
+### Parity with the live viewport
+
+For the same bodies and settings, `OffscreenRenderer` produces the same image as a headless frame of `ViewportRenderer` (pinned per scene by `OffscreenParityTests`). `OffscreenRenderOptions(matching:width:height:)` copies those settings from a live `ViewportController`.
+
+Reproduced offscreen: the shadow map, grid, axes, opaque and transparent surfaces (interleaved and direct-mesh), edges (native and quad-expanded), analytic arcs, point clouds, per-triangle highlights (`triangleStyles`), the selection/hover tint and outline, the overlay render layer (drawn last on top of all geometry, casting no shadows), clip planes (first four enabled, shadow map included), `edgeIntensity`, crease-aware normal smoothing, the SSAO / silhouette composite with its ACES tone mapping (`exposure`, `whitePoint`), and image-based lighting plus the HDR skybox (`drawBackground`) from the environment map named by `LightingConfiguration.environmentMapURL` / `environmentMapData`.
+
+Not reproduced offscreen:
+
+| Live feature | Offscreen behaviour |
+|---|---|
+| An environment map loaded imperatively with `ViewportRenderer.loadEnvironmentMap(...)` | Lives on that renderer and is not seen offscreen. Name the map in `LightingConfiguration` instead. |
+| PN-triangle tessellation and mesh shaders (`RenderingQuality.enhanced` / `.maximum`, `tessellationMaxFactor`, `adaptiveTessellation`) | Every body renders through the standard vertex pipeline, as at `.standard` (the `ViewportConfiguration` default). Under `.cadHighQuality` the live view rounds curved silhouettes further than an offscreen render does; `autoSmoothNormals`, which that preset also turns on, is honoured. |
+| TAA and progressive accumulation | Not run; MSAA (`msaaSampleCount`) is the only anti-aliasing. |
+| Depth of field | Never applied by the composite pass. |
+| Frustum culling | Not run; it only affects performance. |
+| GPU picking | Not run. |
 ### Initializer
 
 ```swift
@@ -430,7 +483,7 @@ func renderHeadless(
 
 `draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the R32Uint pick pass, the TAA resolve, and the SSAO/silhouette/tone-map composite. `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
 
-This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate, deliberately smaller pipeline (no SSAO, silhouettes, TAA, or pick pass) whose output can drift from the live renderer's, whereas this path *is* the live renderer.
+This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA, depth of field, tessellation, mesh shaders or pick pass, whereas this path *is* the live renderer.
 
 Notes:
 

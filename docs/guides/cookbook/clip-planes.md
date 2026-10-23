@@ -236,10 +236,10 @@ pixel only partly covered by a wall the plane removes does not keep that wall's
 samples. Before this, walls seen nearly edge-on left a faint one-pixel ghost of
 the removed part along their silhouette.
 
-Not covered:
-
-- **`OffscreenRenderer`.** `OffscreenRenderOptions` has no clip planes, so headless
-  renders are never sectioned.
+`OffscreenRenderer` sections headless renders the same way, shadows included: set
+`OffscreenRenderOptions.clipPlanes`, or build the options with
+`OffscreenRenderOptions(matching: controller, width:height:)` to copy the
+controller's planes.
 
 CPU raycasting follows the planes too. The dynamic pivot passes
 `ViewportController.clipPlanes` to `SceneRaycast`, so orbiting a sectioned model

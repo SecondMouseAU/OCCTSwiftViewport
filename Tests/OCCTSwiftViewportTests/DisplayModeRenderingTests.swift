@@ -239,7 +239,7 @@ struct OffscreenDisplayModeTests {
             width: size, height: size, cameraState: camera, displayMode: mode,
             xrayOpacity: xrayOpacity,
             lightingConfiguration: DisplayModeScenes.noShadowLighting(), backgroundColor: bg,
-            appearance: .light, msaaSampleCount: 1)
+            appearance: .light, showGrid: false, showAxes: false, msaaSampleCount: 1)
         return renderer.render(bodies: bodies, options: options).map(DisplayModeScenes.bgra)
     }
 

@@ -363,6 +363,177 @@ enum RendererSharedSetup {
         )
     }
 
+    /// Selection-outline pipeline, drawing the body expanded along its normals.
+    ///
+    /// Paired with `makeStencilTestState(device:)` it lands only where stencil is not 1. Pass `directMeshVertexDescriptor()` for direct-mesh bodies; the shader reads position and
+    /// normal through `[[stage_in]]` either way.
+    static func makeSelectionOutlinePipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        sampleCount: Int,
+        depthFormat: MTLPixelFormat,
+        vertexDescriptor: MTLVertexDescriptor,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "selection_outline_vertex",
+            fragmentFunction: "selection_outline_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat,
+            stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount,
+            blending: .sourceAlphaColorOnly,
+            vertexDescriptor: vertexDescriptor
+        )
+    }
+
+    /// Per-triangle highlight pipeline (issue #25): composites `ViewportBody.triangleStyles` over
+    /// the shaded surface.
+    ///
+    /// Pass `directMeshVertexDescriptor()` for direct-mesh bodies.
+    static func makeHighlightPipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        sampleCount: Int,
+        depthFormat: MTLPixelFormat,
+        vertexDescriptor: MTLVertexDescriptor,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "highlight_vertex",
+            fragmentFunction: "highlight_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat,
+            stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount,
+            blending: .sourceAlpha,
+            vertexDescriptor: vertexDescriptor
+        )
+    }
+
+    /// Stencil-only mask pipeline: rasterises a body into the main pass without writing colour.
+    ///
+    /// Paired with `makeStencilMarkState(device:)` it marks a selected body the opaque surface
+    /// pass did not mark (translucent bodies, and every body in a display mode without surfaces),
+    /// so the selection outline can ring it. Honours section planes; bind `Uniforms` at vertex and
+    /// fragment buffer 1. Pass `directMeshVertexDescriptor()` for direct-mesh bodies.
+    static func makeStencilMaskPipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        sampleCount: Int,
+        depthFormat: MTLPixelFormat,
+        vertexDescriptor: MTLVertexDescriptor,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        let descriptor = renderPipelineDescriptor(
+            label: label,
+            library: library,
+            vertexFunction: "depth_only_vertex",
+            fragmentFunction: "depth_only_clip_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat,
+            stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount,
+            vertexDescriptor: vertexDescriptor
+        )
+        descriptor.colorAttachments[0].writeMask = []
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// HDR skybox background pipeline (full-screen triangle sampling the environment cube map).
+    static func makeSkyboxPipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        sampleCount: Int,
+        depthFormat: MTLPixelFormat,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "skybox_vertex",
+            fragmentFunction: "skybox_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat,
+            stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount
+        )
+    }
+
+    /// Encodes the skybox background; the caller restores its own depth state afterwards.
+    ///
+    /// `depthState` should be always-pass with no depth writes, so later geometry overwrites it.
+    static func encodeSkybox(
+        encoder: MTLRenderCommandEncoder,
+        pipeline: MTLRenderPipelineState,
+        depthState: MTLDepthStencilState,
+        viewProjection: simd_float4x4,
+        lighting: LightingConfiguration,
+        cubeMap: MTLTexture
+    ) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setDepthStencilState(depthState)
+        var skyUniforms = SkyboxUniformsSwift(
+            inverseViewProjection: simd_inverse(viewProjection),
+            // z = mip level: 0 for a sharp background.
+            params: SIMD4<Float>(lighting.environmentRotationY, lighting.backgroundExposure, 0, 0)
+        )
+        encoder.setVertexBytes(
+            &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
+        encoder.setFragmentBytes(
+            &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
+        encoder.setFragmentTexture(cubeMap, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    }
+
+    /// Single-sample depth-only pipeline for the SSAO / silhouette depth prepass.
+    ///
+    /// Pass `directMeshVertexDescriptor()` for the direct-mesh sibling.
+    static func makeDepthOnlyPipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        vertexDescriptor: MTLVertexDescriptor,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "depth_only_vertex",
+            // Discards fragments behind section planes; bind `Uniforms` at fragment buffer 1.
+            fragmentFunction: "depth_only_clip_fragment",
+            depthPixelFormat: .depth32Float,
+            vertexDescriptor: vertexDescriptor
+        )
+    }
+
+    /// Full-screen SSAO + silhouette composite pipeline (single sample, no depth attachment).
+    ///
+    /// `ssao_fragment` also applies depth of field and ACES tone mapping, so whatever this pass
+    /// writes is the frame's final colour.
+    static func makeSSAOCompositePipelineState(
+        device: MTLDevice,
+        library: MTLLibrary,
+        label: String? = nil
+    ) -> MTLRenderPipelineState? {
+        makePipelineState(
+            device: device,
+            label: label,
+            library: library,
+            vertexFunction: "fullscreen_vertex",
+            fragmentFunction: "ssao_fragment",
+            colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: .invalid
+        )
+    }
+
     // MARK: - Depth States
 
     /// Builds a depth-stencil state with no stencil operations.
@@ -375,6 +546,69 @@ enum RendererSharedSetup {
         descriptor.depthCompareFunction = compareFunction
         descriptor.isDepthWriteEnabled = isDepthWriteEnabled
         return device.makeDepthStencilState(descriptor: descriptor)
+    }
+
+    /// Depth test `.less` with writes, and stencil set to the reference value wherever a fragment
+    /// passes: marks selected bodies for the outline pass.
+    static func makeStencilWriteState(device: MTLDevice) -> MTLDepthStencilState? {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.depthCompareFunction = .less
+        descriptor.isDepthWriteEnabled = true
+        let stencil = MTLStencilDescriptor()
+        stencil.stencilCompareFunction = .always
+        stencil.depthStencilPassOperation = .replace
+        stencil.stencilFailureOperation = .keep
+        stencil.depthFailureOperation = .keep
+        descriptor.frontFaceStencil = stencil
+        descriptor.backFaceStencil = stencil
+        return device.makeDepthStencilState(descriptor: descriptor)
+    }
+
+    /// Depth always-pass without writes, drawing only where stencil differs from the reference.
+    ///
+    /// That is the ring the selection outline occupies around a stencil-marked body.
+    static func makeStencilTestState(device: MTLDevice) -> MTLDepthStencilState? {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.depthCompareFunction = .always
+        descriptor.isDepthWriteEnabled = false
+        let stencil = MTLStencilDescriptor()
+        stencil.stencilCompareFunction = .notEqual
+        stencil.stencilFailureOperation = .keep
+        stencil.depthStencilPassOperation = .keep
+        stencil.depthFailureOperation = .keep
+        descriptor.frontFaceStencil = stencil
+        descriptor.backFaceStencil = stencil
+        return device.makeDepthStencilState(descriptor: descriptor)
+    }
+
+    /// Depth test `.less` without depth writes, setting stencil to the reference value wherever a
+    /// fragment passes: marks a body's visible area for the outline without occluding anything.
+    static func makeStencilMarkState(device: MTLDevice) -> MTLDepthStencilState? {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.depthCompareFunction = .less
+        descriptor.isDepthWriteEnabled = false
+        let stencil = MTLStencilDescriptor()
+        stencil.stencilCompareFunction = .always
+        stencil.depthStencilPassOperation = .replace
+        stencil.stencilFailureOperation = .keep
+        stencil.depthFailureOperation = .keep
+        descriptor.frontFaceStencil = stencil
+        descriptor.backFaceStencil = stencil
+        return device.makeDepthStencilState(descriptor: descriptor)
+    }
+
+    // MARK: - Clip Planes
+
+    /// Packs the planes `ClipPlane.activePlanes(in:)` applies into the shader's four uniform slots.
+    ///
+    /// - Returns: The four plane slots (unused ones zero) and how many are active.
+    static func packClipPlanes(
+        _ planes: [ClipPlane]
+    ) -> (planes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>), count: UInt32) {
+        var active = ClipPlane.activePlanes(in: planes).applied.map(\.asFloat4)
+        let count = UInt32(active.count)
+        while active.count < 4 { active.append(.zero) }
+        return ((active[0], active[1], active[2], active[3]), count)
     }
 
     // MARK: - Shared Resources

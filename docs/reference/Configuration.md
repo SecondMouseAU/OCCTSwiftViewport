@@ -787,7 +787,7 @@ gizmo.renderLayer = .overlay  // always visible, never occluded
 public struct SelectionOutlineStyle: Sendable, Hashable
 ```
 
-Colour and width of the outline ring the live renderer draws around a selected or hovered body. Used by `ViewportConfiguration.selectionOutline` and `.hoverOutline`. The ring is drawn by pushing the body's vertices outward along their screen-space normals by `width` pixels, outside the body's stencil footprint, so it stays the same thickness at any zoom and model scale.
+Colour and width of the outline ring the live renderer draws around a selected or hovered body. Used by `ViewportConfiguration.selectionOutline` and `.hoverOutline`. The ring is drawn by pushing the body's vertices outward along their screen-space normals by `width` pixels, outside the body's stencil footprint, so it stays the same thickness at any zoom and model scale. Every meshed body gets the ring in every display mode: translucent bodies, and all bodies in `.wireframe`, are stencil-marked by a colourless pass first, so they get a ring rather than a filled shape. Edge-only and point bodies get no ring. `OffscreenRenderer` draws the same ring from `OffscreenRenderOptions.selectionOutline` / `hoverOutline`.
 
 | Property | Type | Default | Description |
 |---|---|---|---|
@@ -809,7 +809,7 @@ The faint blue tint the shaded pass mixes into selected (15 %) and hovered (8 %)
 public struct EdgeLineConfiguration: Sendable
 ```
 
-Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled each frame, with the dash pattern running continuously round the arc) and the edges of `RenderLayer.overlay` bodies. With `useQuadExpansion` on (the default), each edge segment is expanded into a screen-aligned quad, which is what makes widths other than 1 px and dash patterns possible. Width is constant in screen space regardless of camera distance. Both `ViewportRenderer` (via `ViewportConfiguration.edgeLineConfiguration`) and `OffscreenRenderer` (via `OffscreenRenderOptions.edgeLineConfiguration`) honour it. `OffscreenRenderer` does not draw `arcs`.
+Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled each frame, with the dash pattern running continuously round the arc) and the edges of `RenderLayer.overlay` bodies. With `useQuadExpansion` on (the default), each edge segment is expanded into a screen-aligned quad, which is what makes widths other than 1 px and dash patterns possible. Width is constant in screen space regardless of camera distance. Both `ViewportRenderer` (via `ViewportConfiguration.edgeLineConfiguration`) and `OffscreenRenderer` (via `OffscreenRenderOptions.edgeLineConfiguration`) honour it.
 
 Quad edges are shaded like native ones: `ViewportController.edgeIntensity` (or `OffscreenRenderOptions.edgeIntensity`) dims and depth-fades them (the fade is linear in view distance from the near to the far clip plane), and they are depth-biased toward the viewer so an edge lying on a face is not lost to it. The bias grows with the line width: each edge vertex is pulled toward the viewer by twice (half the width + 1 px), measured as world distance per pixel at its depth, so a wide edge keeps its full width on faces tilted up to about 63° from the view plane. Only a face less than that distance in front of an edge can let it show through.
 
@@ -1006,7 +1006,7 @@ config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 
 
 `ClipPlane` defines a half-space clipping plane for section views. It is a `Sendable`, `Equatable` value type. Fragments where `dot(normal, point) + distance < 0` are discarded by the Metal shader. Pass clip planes to `ViewportController.clipPlanes` to activate them.
 
-Every pass that draws scene geometry honours the planes: shaded surfaces, edges, arcs, highlights, point clouds, the selection outline, the SSAO/silhouette depth prepass, the shadow map and the GPU pick pass, so clipped geometry is neither visible nor pickable and casts no shadow. Under MSAA the clip test uses a centroid-sampled world position, so partly covered pixels at a cut do not keep samples of the removed part. CPU `SceneRaycast` skips clipped hits when given the planes (`clipPlanes:`), which the dynamic pivot does. `OffscreenRenderer` does not apply clip planes.
+Every pass that draws scene geometry honours the planes: shaded surfaces, edges, arcs, highlights, point clouds, the selection outline, the SSAO/silhouette depth prepass, the shadow map and the GPU pick pass, so clipped geometry is neither visible nor pickable and casts no shadow. Under MSAA the clip test uses a centroid-sampled world position, so partly covered pixels at a cut do not keep samples of the removed part. CPU `SceneRaycast` skips clipped hits when given the planes (`clipPlanes:`), which the dynamic pivot does. `OffscreenRenderer` applies them too, shadow map included (`OffscreenRenderOptions.clipPlanes`).
 
 **Limit:** the renderer applies at most `ClipPlane.maxActivePlanes` (4) enabled planes at once, taken in array order. Enabled planes past the fourth are not applied, and debug builds log a warning when `ViewportController.clipPlanes` is set with more. Disabled planes don't count.
 

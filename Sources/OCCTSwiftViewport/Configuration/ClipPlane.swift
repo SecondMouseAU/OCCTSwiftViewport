@@ -13,7 +13,7 @@ import simd
 /// Every pass that draws scene geometry applies the test, the GPU pick pass and the shadow map
 /// included, so clipped geometry is neither visible nor pickable and casts no shadow. CPU
 /// `SceneRaycast` skips clipped hits when passed the planes, which the dynamic pivot does.
-/// `OffscreenRenderer` does not apply clip planes.
+/// `OffscreenRenderer` applies them too, via `OffscreenRenderOptions.clipPlanes`.
 ///
 /// ## Example
 ///

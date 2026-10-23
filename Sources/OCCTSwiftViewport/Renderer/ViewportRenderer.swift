@@ -366,6 +366,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// `selection_outline_vertex` with the two-buffer descriptor (position@0 / normal@2). The
     /// outline expands along the normal, so the normal binding is read, not just satisfied.
     private let outlineDirectPipeline: MTLRenderPipelineState
+    /// Colourless stencil masks for selected bodies no surface pass marked.
+    ///
+    /// That is every body in a display mode without surfaces; marking them lets the outline ring
+    /// them. Drawn with `transparentStencilWriteState`.
+    private let stencilMaskPipeline: MTLRenderPipelineState
+    private let stencilMaskDirectPipeline: MTLRenderPipelineState
 
     // Per-triangle highlight overlay (issue #25).
     // Drawn with the same vertex pipeline as shaded — so identical positions —
@@ -611,11 +617,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.axisPipeline = axisPipeline
 
         // Skybox pipeline (MSAA, no vertex buffer — fullscreen triangle from vertex_id)
-        self.skyboxPipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "skybox", library: library,
-            vertexFunction: "skybox_vertex", fragmentFunction: "skybox_fragment",
-            colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
-            stencilPixelFormat: depthFormat, sampleCount: sampleCount)
+        self.skyboxPipeline = RendererSharedSetup.makeSkyboxPipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, label: "skybox")
 
         // Skybox depth state: depth test always, no depth write.
         // Drawn first; subsequent geometry overwrites via normal depth test.
@@ -684,10 +688,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Depth-only pipeline (for SSAO depth pass — no color attachments)
         guard
-            let depthOnlyPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "depth_only", library: library,
-                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_clip_fragment",
-                depthPixelFormat: .depth32Float, vertexDescriptor: vertexDesc)
+            let depthOnlyPipeline = RendererSharedSetup.makeDepthOnlyPipelineState(
+                device: device, library: library, vertexDescriptor: vertexDesc,
+                label: "depth_only")
         else {
             return nil
         }
@@ -695,10 +698,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Direct-mesh depth-only pipeline (Option A): same depth shaders, two-buffer descriptor.
         guard
-            let depthOnlyDirectPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "depth_only_direct", library: library,
-                vertexFunction: "depth_only_vertex", fragmentFunction: "depth_only_clip_fragment",
-                depthPixelFormat: .depth32Float, vertexDescriptor: directVertexDesc)
+            let depthOnlyDirectPipeline = RendererSharedSetup.makeDepthOnlyPipelineState(
+                device: device, library: library, vertexDescriptor: directVertexDesc,
+                label: "depth_only_direct")
         else {
             return nil
         }
@@ -727,51 +729,56 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Selection outline pipeline (MSAA, renders expanded geometry where stencil != 1)
         guard
-            let outlinePipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "selection_outline", library: library,
-                vertexFunction: "selection_outline_vertex",
-                fragmentFunction: "selection_outline_fragment",
-                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
-                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
-                blending: .sourceAlphaColorOnly, vertexDescriptor: vertexDesc)
+            let outlinePipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+                label: "selection_outline")
         else {
             return nil
         }
         self.outlinePipeline = outlinePipeline
 
         guard
-            let outlineDirectPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "selection_outline_direct", library: library,
-                vertexFunction: "selection_outline_vertex",
-                fragmentFunction: "selection_outline_fragment",
-                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
-                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
-                blending: .sourceAlphaColorOnly, vertexDescriptor: directVertexDesc)
+            let outlineDirectPipeline = RendererSharedSetup.makeSelectionOutlinePipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: directVertexDesc,
+                label: "selection_outline_direct")
         else {
             return nil
         }
         self.outlineDirectPipeline = outlineDirectPipeline
 
+        guard
+            let stencilMaskPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+                label: "selection_stencil_mask"),
+            let stencilMaskDirectPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: directVertexDesc,
+                label: "selection_stencil_mask_direct")
+        else {
+            return nil
+        }
+        self.stencilMaskPipeline = stencilMaskPipeline
+        self.stencilMaskDirectPipeline = stencilMaskDirectPipeline
+
         // Highlight pipeline (per-triangle style buffer; alpha-composite over base shading)
         guard
-            let highlightPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "triangle_highlight", library: library,
-                vertexFunction: "highlight_vertex", fragmentFunction: "highlight_fragment",
-                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
-                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
-                blending: .sourceAlpha, vertexDescriptor: vertexDesc)
+            let highlightPipeline = RendererSharedSetup.makeHighlightPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+                label: "triangle_highlight")
         else {
             return nil
         }
         self.highlightPipeline = highlightPipeline
 
         guard
-            let highlightDirectPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "triangle_highlight_direct", library: library,
-                vertexFunction: "highlight_vertex", fragmentFunction: "highlight_fragment",
-                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
-                stencilPixelFormat: depthFormat, sampleCount: sampleCount,
-                blending: .sourceAlpha, vertexDescriptor: directVertexDesc)
+            let highlightDirectPipeline = RendererSharedSetup.makeHighlightPipelineState(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat, vertexDescriptor: directVertexDesc,
+                label: "triangle_highlight_direct")
         else {
             return nil
         }
@@ -1004,10 +1011,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // SSAO post-process pipeline (1x, renders to drawable).
         // Output goes directly to the MSAA resolve target (drawable), so sampleCount = 1,
         // and the fullscreen pass needs no depth attachment.
-        self.ssaoPipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "ssao_postprocess", library: library,
-            vertexFunction: "fullscreen_vertex", fragmentFunction: "ssao_fragment",
-            colorPixelFormat: .bgra8Unorm, depthPixelFormat: .invalid)
+        self.ssaoPipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
+            device: device, library: library, label: "ssao_postprocess")
 
         // TAA resolve pipeline (1x fullscreen pass)
         self.taaPipeline = RendererSharedSetup.makePipelineState(
@@ -1025,36 +1030,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.depthState = depthState
 
         // Stencil write state: write reference value to stencil for selected bodies
-        let stencilWriteDesc = MTLDepthStencilDescriptor()
-        stencilWriteDesc.depthCompareFunction = .less
-        stencilWriteDesc.isDepthWriteEnabled = true
-        let writeStencil = MTLStencilDescriptor()
-        writeStencil.stencilCompareFunction = .always
-        writeStencil.depthStencilPassOperation = .replace
-        writeStencil.stencilFailureOperation = .keep
-        writeStencil.depthFailureOperation = .keep
-        stencilWriteDesc.frontFaceStencil = writeStencil
-        stencilWriteDesc.backFaceStencil = writeStencil
-
-        guard let stencilWriteState = device.makeDepthStencilState(descriptor: stencilWriteDesc)
+        guard let stencilWriteState = RendererSharedSetup.makeStencilWriteState(device: device)
         else {
             return nil
         }
         self.stencilWriteState = stencilWriteState
 
         // Stencil test state: only draw where stencil != reference (the outline ring)
-        let stencilTestDesc = MTLDepthStencilDescriptor()
-        stencilTestDesc.depthCompareFunction = .always
-        stencilTestDesc.isDepthWriteEnabled = false
-        let testStencil = MTLStencilDescriptor()
-        testStencil.stencilCompareFunction = .notEqual
-        testStencil.stencilFailureOperation = .keep
-        testStencil.depthStencilPassOperation = .keep
-        testStencil.depthFailureOperation = .keep
-        stencilTestDesc.frontFaceStencil = testStencil
-        stencilTestDesc.backFaceStencil = testStencil
-
-        guard let stencilTestState = device.makeDepthStencilState(descriptor: stencilTestDesc)
+        guard let stencilTestState = RendererSharedSetup.makeStencilTestState(device: device)
         else {
             return nil
         }
@@ -1105,14 +1088,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Same, but writing the stencil reference for selected translucent bodies (as
         // `stencilWriteState` does for opaque ones) so the selection outline stays a ring.
-        let transparentStencilWriteDesc = MTLDepthStencilDescriptor()
-        transparentStencilWriteDesc.depthCompareFunction = .less
-        transparentStencilWriteDesc.isDepthWriteEnabled = false
-        transparentStencilWriteDesc.frontFaceStencil = writeStencil
-        transparentStencilWriteDesc.backFaceStencil = writeStencil
         guard
-            let transparentStencilWriteState = device.makeDepthStencilState(
-                descriptor: transparentStencilWriteDesc)
+            let transparentStencilWriteState = RendererSharedSetup.makeStencilMarkState(
+                device: device)
         else {
             return nil
         }
@@ -1422,14 +1400,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             edgeIntensity
         )
 
-        // Collect active clip planes (up to ClipPlane.maxActivePlanes; the controller logs extras)
-        let activeClipPlanes = ClipPlane.activePlanes(in: controller.clipPlanes).applied
-        let clipPlaneVecs: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = {
-            var planes: [SIMD4<Float>] = activeClipPlanes.map { $0.asFloat4 }
-            while planes.count < 4 { planes.append(.zero) }
-            return (planes[0], planes[1], planes[2], planes[3])
-        }()
-        let clipPlaneCount = UInt32(activeClipPlanes.count)
+        // Collect active clip planes (up to 4)
+        let (clipPlaneVecs, clipPlaneCount) = RendererSharedSetup.packClipPlanes(
+            controller.clipPlanes)
 
         let shadowParams2 = SIMD4<Float>(
             lighting.shadowLightSize,
@@ -1725,23 +1698,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let skyPipeline = skyboxPipeline,
             let skyDepth = skyboxDepthState
         {
-            mainEncoder.setRenderPipelineState(skyPipeline)
-            mainEncoder.setDepthStencilState(skyDepth)
-            var skyUniforms = SkyboxUniformsSwift(
-                inverseViewProjection: simd_inverse(viewProjection),
-                params: SIMD4<Float>(
-                    lighting.environmentRotationY,
-                    lighting.backgroundExposure,
-                    0,  // mip level — sharp background
-                    0
-                )
-            )
-            mainEncoder.setVertexBytes(
-                &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
-            mainEncoder.setFragmentBytes(
-                &skyUniforms, length: MemoryLayout<SkyboxUniformsSwift>.size, index: 0)
-            mainEncoder.setFragmentTexture(cubeMap, index: 0)
-            mainEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            RendererSharedSetup.encodeSkybox(
+                encoder: mainEncoder, pipeline: skyPipeline, depthState: skyDepth,
+                viewProjection: viewProjection, lighting: lighting, cubeMap: cubeMap)
             mainEncoder.setDepthStencilState(depthState)
         }
 
@@ -1779,6 +1738,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Transparent surfaces (issue #53) are deferred to a sorted back-to-front
         // pass after the opaque bodies, so they composite correctly.
         var transparentDraws: [(body: ViewportBody, buffers: BodyBuffers, objectIndex: UInt32)] = []
+        // Bodies whose opaque surface marked the stencil buffer, so the outline pass can ring
+        // them. Translucent, overlay, edge-only and wireframe-mode bodies never mark it, and an
+        // outline drawn for them covered the whole expanded body instead of a ring.
+        var outlinedBodyIDs: Set<String> = []
 
         for (body, buffers, bodyObjectIndex) in frameVisibleBodies {
             // Frustum-cull off-screen geometry inline using the cached local AABB.
@@ -1832,6 +1795,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 if selState > 0 {
                     mainEncoder.setDepthStencilState(stencilWriteState)
                     mainEncoder.setStencilReferenceValue(1)
+                    outlinedBodyIDs.insert(body.id)
                 } else {
                     mainEncoder.setDepthStencilState(depthState)
                 }
@@ -1958,6 +1922,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 if selState > 0 {
                     mainEncoder.setDepthStencilState(transparentStencilWriteState)
                     mainEncoder.setStencilReferenceValue(1)
+                    outlinedBodyIDs.insert(d.body.id)
                 } else {
                     mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
                 }
@@ -2187,19 +2152,45 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             mainEncoder.setDepthStencilState(stencilTestState)
         }
 
-        // 4. Selection outline pass (stencil test: draw only where stencil != 1)
-        // Geometry layer only, like the highlight pass: overlay bodies are drawn later with
-        // always-pass depth and never write the stencil mask, so an outline here would be the
-        // whole expanded silhouette, depth-tested against geometry the overlay itself ignores.
-        let allSelectedIDs = selectedIDs.union(hoveredID.map { [$0] } ?? [])
-        if !allSelectedIDs.isEmpty {
+        // 3.9 Stencil-mark selected meshed bodies no surface pass marked (every body when the
+        // display mode draws no surfaces) without drawing colour, so the outline below rings
+        // them too.
+        for body in bodies
+        where body.isVisible && body.renderLayer == .geometry && body.primitiveKind != .point
+            && (selectedIDs.contains(body.id) || hoveredID == body.id)
+            && !outlinedBodyIDs.contains(body.id)
+        {
+            guard let buffers = bodyBufferCache[body.id],
+                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
+                buffers.indexCount > 0
+            else { continue }
+            var uniforms = makeUniforms()
+            uniforms.modelMatrix = body.transform
+            mainEncoder.setDepthStencilState(transparentStencilWriteState)
+            mainEncoder.setStencilReferenceValue(1)
+            mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
+            if let nb = buffers.normalBuffer {
+                mainEncoder.setRenderPipelineState(stencilMaskDirectPipeline)
+                mainEncoder.setVertexBuffer(nb, offset: 0, index: 2)
+            } else {
+                mainEncoder.setRenderPipelineState(stencilMaskPipeline)
+            }
+            mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            mainEncoder.drawIndexedPrimitives(
+                type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
+                indexBuffer: ib, indexBufferOffset: 0)
+            outlinedBodyIDs.insert(body.id)
+        }
+
+        // 4. Selection outline pass (stencil test: draw only where stencil != 1). Only bodies
+        // marked in the stencil above, all of them geometry-layer: overlay bodies are drawn later
+        // with always-pass depth and never mark the stencil, so they get no outline.
+        if !outlinedBodyIDs.isEmpty {
             mainEncoder.setDepthStencilState(stencilTestState)
             mainEncoder.setStencilReferenceValue(1)
 
-            for body in bodies
-            where body.isVisible && body.renderLayer == .geometry
-                && allSelectedIDs.contains(body.id)
-            {
+            for body in bodies where body.isVisible && outlinedBodyIDs.contains(body.id) {
                 guard let buffers = bodyBufferCache[body.id],
                     let vb = buffers.vertexBuffer,
                     let ib = buffers.indexBuffer,
@@ -2342,6 +2333,40 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder.drawPrimitives(
                             type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
                     }
+                }
+            }
+
+            // Overlay point bodies (snap markers and the like): the geometry point pass above
+            // only takes `.geometry` bodies, so without this they were never drawn at all.
+            if let pointPipeline = visiblePointPipeline {
+                let pxPerWorldFactor = Float(drawableSize.height) * projMatrix.columns.1.y * 0.5
+                for body in bodies
+                where body.isVisible && body.renderLayer == .overlay && body.primitiveKind == .point
+                {
+                    guard let buffers = bodyBufferCache[body.id],
+                        let positionBuf = buffers.pointPositionBuffer,
+                        buffers.pointVertexCount > 0
+                    else { continue }
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = body.transform
+                    var params = PointParamsSwift(
+                        baseColor: body.color,
+                        worldRadius: body.pointRadius,
+                        pxPerWorldFactor: pxPerWorldFactor,
+                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                    )
+                    mainEncoder.setRenderPipelineState(pointPipeline)
+                    mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
+                    mainEncoder.setVertexBuffer(
+                        buffers.pointColorBuffer ?? positionBuf, offset: 0, index: 1)
+                    mainEncoder.setVertexBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                    mainEncoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 2)
+                    mainEncoder.setVertexBytes(
+                        &params, length: MemoryLayout<PointParamsSwift>.size, index: 3)
+                    mainEncoder.drawPrimitives(
+                        type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
                 }
             }
         }
@@ -2948,7 +2973,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 var ssaoParams = SSAOParamsSwift(
                     texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
                     radius: lighting.ssaoRadius,
-                    intensity: lighting.ssaoIntensity,
+                    // The composite also runs for silhouettes alone; keep AO off unless enabled.
+                    intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
                     nearPlane: nearPlane,
                     farPlane: farPlane,
                     silhouetteThickness: silhouetteConfig.enableSilhouettes
@@ -2988,39 +3014,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Per-triangle styles
 
-    /// Uploads `body.triangleStyles` as a raw SIMD4<Float> array the highlight fragment shader
-    /// indexes by `[[primitive_id]]`, or returns nil when the array is empty or its count
-    /// doesn't match `triangleCount` (#136 L9; logged in debug builds).
+    /// The body's per-triangle style buffer (see `RendererSharedBuffers.makeTriangleStyleBuffer`).
     private func makeTriangleStyleBuffer(for body: ViewportBody, triangleCount: Int) -> MTLBuffer? {
-        guard
-            Self.triangleStylesMatch(
-                styleCount: body.triangleStyles.count, triangleCount: triangleCount)
-        else {
-            #if DEBUG
-                if !body.triangleStyles.isEmpty {
-                    NSLog(
-                        "[ViewportRenderer] body %@: triangleStyles.count %ld != triangle count %ld; "
-                            + "highlights ignored", body.id, body.triangleStyles.count,
-                        triangleCount)
-                }
-            #endif
-            return nil
-        }
-        var packed = body.triangleStyles.map { $0.color }
-        return device.makeBuffer(
-            bytes: &packed,
-            length: packed.count * MemoryLayout<SIMD4<Float>>.stride,
-            options: .storageModeShared
-        )
-    }
-
-    /// Whether a `triangleStyles` array of `styleCount` entries is drawn for a body with
-    /// `triangleCount` triangles.
-    ///
-    /// Only a non-empty array with exactly one entry per triangle is used; any other count
-    /// skips the highlight pass for the body (and logs in debug builds).
-    nonisolated static func triangleStylesMatch(styleCount: Int, triangleCount: Int) -> Bool {
-        styleCount > 0 && styleCount == triangleCount
+        RendererSharedBuffers.makeTriangleStyleBuffer(
+            device: device, body: body, triangleCount: triangleCount)
     }
 
     // MARK: - Depth-of-field autofocus
@@ -3160,18 +3157,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // into the PN-triangle control points automatically. Direct-mesh bodies skip smoothing
         // (the producer supplies normals) and skip the tessellation / mesh-shader paths, which
         // consume the interleaved buffer + faceIndices.
-        var smoothedVertexData: [Float]?
-        if !body.usesDirectMesh, !body.vertexData.isEmpty, !body.indices.isEmpty,
-            controller?.configuration.autoSmoothNormals == true
-        {
-            var meshVertexData = body.vertexData
-            NormalSmoothing.smoothNormals(
-                vertexData: &meshVertexData,
-                indices: body.indices,
-                creaseAngle: controller?.configuration.normalSmoothingCreaseAngle ?? 0.524
-            )
-            smoothedVertexData = meshVertexData
-        }
+        let smoothedVertexData = RendererSharedBuffers.smoothedVertexData(
+            for: body,
+            autoSmoothNormals: controller?.configuration.autoSmoothNormals == true,
+            creaseAngle: controller?.configuration.normalSmoothingCreaseAngle ?? 0.524
+        )
 
         let mesh = RendererSharedBuffers.makeMeshBuffers(
             device: device, body: body, interleavedVertexData: smoothedVertexData)
