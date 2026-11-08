@@ -9,14 +9,13 @@ struct PickResultFilterTests {
                              objectIndex: UInt32 = 0,
                              primitiveID: UInt32 = 0,
                              layer: PickLayer = .userGeometry) -> PickResult {
-        let raw: UInt32 = (UInt32(kind.rawValue) << 30)
-            | ((primitiveID & 0x3FFF) << 16)
-            | (objectIndex & 0xFFFF)
+        let raw = PickEncoding.encode(
+            objectIndex: objectIndex, primitiveIndex: primitiveID, kind: kind)
         let indexMap: [Int: String] = [0: "a", 1: "b", 2: "c"]
         let layerMap: [String: PickLayer] = layer == .widget
             ? [indexMap[Int(objectIndex)] ?? "a": .widget]
             : [:]
-        return PickResult(rawValue: raw, indexMap: indexMap, layerMap: layerMap)!
+        return PickResult(pickValue: raw, indexMap: indexMap, layerMap: layerMap)!
     }
 
     // MARK: - Built-ins

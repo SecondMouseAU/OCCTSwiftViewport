@@ -27,7 +27,7 @@ private let overlayColor = SIMD4<Float>(1.0, 0.55, 0.15, 1)
 
 /// A config that turns on every per-frame pass Phase 4 needs to validate on a
 /// direct-mesh body: SSAO + shadows (lighting), screen-space silhouettes, and the
-/// R32Uint pick texture. Silhouettes + SSAO exercise the depth-only direct prepass;
+/// RG32Uint pick texture. Silhouettes + SSAO exercise the depth-only direct prepass;
 /// picking exercises the pick-shaded direct pipeline (draw every frame + readback).
 private func phase4Config() -> ViewportConfiguration {
     var lighting = LightingConfiguration.studio

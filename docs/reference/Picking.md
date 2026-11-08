@@ -5,7 +5,7 @@ parent: API Reference
 
 # Picking & Selection
 
-OCCTSwiftViewport provides two complementary picking paths. The **GPU pick path** resolves a single primitive per pixel from a dedicated R32Uint pick-ID texture rendered each frame; it is fast and automatic, delivering a `PickResult` to `ViewportController.pickResult`. The **CPU raycast path** (`SceneRaycast`) performs broadphase AABB culling followed by Möller–Trumbore triangle intersection; it is distance-aware and useful when you need the world-space hit point independently of the GPU readback.
+OCCTSwiftViewport provides two complementary picking paths. The **GPU pick path** resolves a single primitive per pixel from a dedicated RG32Uint pick-ID texture rendered each frame; it is fast and automatic, delivering a `PickResult` to `ViewportController.pickResult`. The **CPU raycast path** (`SceneRaycast`) performs broadphase AABB culling followed by Möller–Trumbore triangle intersection; it is distance-aware and useful when you need the world-space hit point independently of the GPU readback.
 
 `PickResultFilter` sits on top of the GPU path as a composable predicate that accepts or rejects a decoded `PickResult` before it reaches your code. `Ray` and `ProjectionUtility` are shared utilities used by both paths and by measurement code.
 
@@ -21,7 +21,7 @@ OCCTSwiftViewport provides two complementary picking paths. The **GPU pick path*
 public enum PrimitiveKind: UInt8, Sendable, Hashable
 ```
 
-The sub-shape kind that a GPU pick resolves to. Encoded into bits 30–31 of the R32Uint pick-texture value so that a single texture readback disambiguates the kind without a second pass.
+The sub-shape kind that a GPU pick resolves to. Encoded into bits 30–31 of the G channel of the RG32Uint pick texture so that a single texture readback disambiguates the kind without a second pass.
 
 | Case | Raw value | Meaning |
 |------|-----------|---------|
@@ -72,40 +72,57 @@ The decoded result of a single GPU pick operation. Produced by `ViewportControll
 
 ### Bit layout
 
-The raw R32Uint value from the pick texture encodes three fields:
+The pick texture is **RG32Uint**: one texel per pixel, two 32-bit channels. The renderer clears it to `0xFFFF_FFFF` in both channels (no hit) and each pick fragment writes:
 
 ```
-bits  0–15 : objectIndex  (16 bits: draw-order body index)
-bits 16–29 : primitiveID  (14 bits: triangle/segment/point index within body)
-bits 30–31 : kind         ( 2 bits: 0=face, 1=edge, 2=vertex)
+R (bits  0–31 of pickValue) : objectIndex  (32 bits: draw-order body index; 0xFFFF_FFFF = no object)
+G (bits 32–63 of pickValue) : bits  0–29 primitiveID (30 bits: triangle/segment/point index within body)
+                              bits 30–31 kind        ( 2 bits: 0=face, 1=edge, 2=vertex)
 ```
+
+The CPU keeps the texel as one `UInt64`, `pickValue = G << 32 | R` (Metal lays the texel out R then G, so a little-endian `UInt64` load of it is exactly that). `PickResult.pickValue` is that value, and `init?(pickValue:indexMap:layerMap:)` decodes it.
 
 For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data. Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
 
 ### Limits
 
-The 32-bit format caps two things:
+| Limit | Value |
+|-------|-------|
+| `maxPickableBodies` | 4,294,967,295 visible bodies per frame, counted in draw order (object index `0xFFFF_FFFF` is reserved for "no object"). |
+| `maxPrimitivesPerKind` | 1,073,741,824 (2³⁰) triangles, edge segments (or arcs), or points per body. |
 
-| Limit | Value | What happens past it |
-|-------|-------|----------------------|
-| `maxPickableBodies` | 65,536 visible bodies per frame, counted in draw order | Later bodies are drawn into the pick pass with the sentinel. They still hide what is behind them, but picking them returns `nil`. They never corrupt another body's pick. |
-| `maxPrimitivesPerKind` | 16,384 triangles, edge segments (or arcs), or points per body | The GPU reports `index % 16_384`. The decoded result has `isPrimitiveIndexAmbiguous == true`. |
+Both are far beyond what the renderer can hold, so `triangleIndex` is always the exact primitive index: map it through `faceIndices`, `edgeIndices` or `vertexIndices` directly, on any body, from a tap, a `performPick` call or a region pick.
 
-The built-in tap path resolves ambiguous **face** picks before publishing `pickResult` and before tap-to-measure. It tests the congruent candidates (`i`, `i + 16_384`, …) against the tap ray on the CPU and keeps the nearest hit (`ViewportBody.resolveWrappedTriangleIndex(_:ray:)`). If no candidate is hit, which can happen at silhouettes under tessellation, the result stays flagged. Ambiguous edge and vertex picks, and region-pick results, are not resolved: check the flag before mapping `triangleIndex` through `faceIndices`, `edgeIndices` or `vertexIndices`.
+**History.** Through v1.3.x the target was R32Uint (`objectIndex (16) | primitiveID (14) << 16 | kind (2) << 30`), which capped a frame at 65,536 pickable bodies and a body at 16,384 primitives per kind. A body past the primitive limit reported `index % 16_384` with `isPrimitiveIndexAmbiguous == true`, and only tapped faces were resolved (by a CPU ray test). Edge, vertex and region picks stayed ambiguous, and bodies past 65,535 could not be picked at all. Issue #160 removed all of that. `isPrimitiveIndexAmbiguous`, `resolveWrappedTriangleIndex(_:ray:)` and the 32-bit `rawValue` API remain as deprecated shims; see below.
+
+### Cost
+
+The pick target is twice as wide as it was:
+
+| Drawable | R32Uint (before) | RG32Uint (now) |
+|----------|------------------|----------------|
+| 1920 × 1080 | 8.3 MB | 16.6 MB |
+| 3840 × 2160 | 33.2 MB | 66.4 MB |
+
+It is a `.private` texture rendered in its own 1× pass (no MSAA), next to a `depth32Float` attachment of the same size, so the pick pass's tile (imageblock) footprint is 8 bytes per pixel for its single color attachment (4 before), well inside the per-pixel render-target budget of every Apple GPU family. Writing it costs one extra 4-byte store per pixel of pick-pass overdraw, and a single-pixel pick reads back 8 bytes instead of 4. Region and neighborhood readbacks double the same way (rows are padded to 256 bytes, so a 64-pixel-wide row is 512 bytes, not 256). Picking is off by default, and none of this is allocated or drawn until `PickingConfiguration.isEnabled` is set. Measured on an Apple Silicon Mac at 2048 × 2048 with 40 spheres, the whole pick pass adds roughly 2–4 ms per frame, and the move from R32Uint to RG32Uint changed it by about 1 ms, within run-to-run noise.
 
 ### Properties
 
-#### `static let sentinel: UInt32`
+#### `static let noHit: UInt64`
 
-The sentinel value (`0xFFFF_FFFF`) written to pixels that have no geometry or hit a non-pickable body, or a body past `maxPickableBodies`. `init?(rawValue:indexMap:layerMap:ambiguousKinds:)` returns `nil` for this value.
+The texel (`0xFFFF_FFFF_FFFF_FFFF`) the pick pass clears to: pixels with no geometry, non-pickable bodies, or a body whose object index is the reserved `0xFFFF_FFFF`. `init?(pickValue:indexMap:layerMap:)` returns `nil` for it, and for any texel whose R channel is `0xFFFF_FFFF`.
+
+#### `static let sentinel: UInt32` *(deprecated)*
+
+The pre-#160 R32Uint no-hit value, `0xFFFF_FFFF`. Use `noHit`.
 
 #### `static let maxPickableBodies: Int`
 
-`65_536`. Number of visible bodies, in draw order, that receive a pick ID each frame. See [Limits](#limits).
+`4_294_967_295`. Number of visible bodies, in draw order, that receive a pick ID each frame. See [Limits](#limits).
 
 #### `static let maxPrimitivesPerKind: Int`
 
-`16_384`. Number of distinct primitive indices per kind that the 14-bit primitive field can carry. See [Limits](#limits).
+`1_073_741_824`. Number of distinct primitive indices per kind that the 30-bit primitive field can carry. See [Limits](#limits).
 
 #### `let bodyID: String`
 
@@ -113,7 +130,7 @@ The `id` string of the picked `ViewportBody`.
 
 #### `let bodyIndex: Int`
 
-Zero-based index of the body in draw order. Corresponds to `objectIndex` in the bit layout.
+Zero-based index of the body in draw order. Corresponds to `objectIndex` (the R channel) in the bit layout.
 
 #### `let triangleIndex: Int`
 
@@ -122,29 +139,42 @@ The primitive index within the body, interpreted by `kind`:
 - `.edge`: line-segment index into `edges` (or `arcs`)
 - `.vertex`: point index into `vertices`
 
-The name is preserved for historical compatibility; it is semantically a *primitive* index.
+The name is preserved for historical compatibility; it is semantically a *primitive* index. It is always the exact index, however many primitives the body has.
 
-When `isPrimitiveIndexAmbiguous` is `true`, this is the true index modulo 16,384.
+#### `var isPrimitiveIndexAmbiguous: Bool` *(deprecated)*
 
-#### `let isPrimitiveIndexAmbiguous: Bool`
-
-`true` when the body has more than `maxPrimitivesPerKind` primitives of the picked kind, so `triangleIndex` may have wrapped. The built-in tap path clears it for face picks it can resolve; see [Limits](#limits).
+Always `false` for a result decoded from the RG32Uint pick texture. Before #160 it flagged an index that had wrapped modulo 16,384. It can be `true` only for a result built by the deprecated `init(rawValue:...)` with an `ambiguousKinds` map.
 
 #### `let kind: PrimitiveKind`
 
 The sub-shape kind of the picked primitive.
 
-#### `let rawValue: UInt32`
+#### `let pickValue: UInt64`
 
-The raw value read from the GPU pick buffer.
+The raw texel read from the GPU pick texture: `G << 32 | R`. See [Bit layout](#bit-layout).
+
+#### `var rawValue: UInt32` *(deprecated)*
+
+What the pre-#160 R32Uint target would have held for this pick, packed as `objectIndex (16) | primitiveID (14) << 16 | kind (2) << 30`. Lossy past 65,535 bodies or 16,383 primitives, where it wraps. Use `pickValue`.
 
 #### `let pickLayer: PickLayer`
 
 The pick layer the body belongs to, as recorded in the layer map at the time of the pick.
 
-### Initializer
+### Initializers
 
 ```swift
+public init?(
+    pickValue: UInt64,
+    indexMap: [Int: String],
+    layerMap: [String: PickLayer] = [:]
+)
+```
+
+Decodes a pick texel. Returns `nil` when the object index (R) is `0xFFFF_FFFF` (the `noHit` texel), when it is absent from `indexMap`, or when the encoded kind bits do not match a valid `PrimitiveKind` case. Bodies absent from `layerMap` default to `.userGeometry`.
+
+```swift
+@available(*, deprecated)
 public init?(
     rawValue: UInt32,
     indexMap: [Int: String],
@@ -153,7 +183,7 @@ public init?(
 )
 ```
 
-Decodes a raw pick-buffer value. Returns `nil` when `rawValue` equals `sentinel`, when the `objectIndex` is absent from `indexMap`, or when the encoded kind bits do not match a valid `PrimitiveKind` case. Bodies absent from `layerMap` default to `.userGeometry`. A pick whose kind is listed for its body in `ambiguousKinds` gets `isPrimitiveIndexAmbiguous == true`; the renderer builds this map each frame.
+Decodes a value in the pre-#160 R32Uint layout. The renderer no longer produces that layout, but the initializer keeps working for code that builds legacy values: the result carries the equivalent wide `pickValue`, and a pick of a kind listed for its body in `ambiguousKinds` still reports `isPrimitiveIndexAmbiguous == true`.
 
 **Example: subscribing to face picks**
 
