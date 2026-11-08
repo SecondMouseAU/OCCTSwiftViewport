@@ -458,11 +458,10 @@ enum RendererSharedSetup {
     ///
     /// Only the ray's direction matters, so this is `(projection * view)`'s inverse with the eye
     /// moved to the origin and the depth range squeezed to 1...2, inverted in `Double`. The
-    /// frame's own near and far planes are fitted to the scene and can be ten million times apart;
-    /// at that ratio a `Float` inverse and the shader's near/far unprojection lose the direction
-    /// on any tilted view (the far point comes from cancelling terms the size of `far / near`).
-    /// Both projections keep their x and y rows, so a TAA jitter or a pan still shifts the sky
-    /// with the scene.
+    /// frame's own near and far planes are fitted to the scene and can be a million times apart,
+    /// which makes the matrix ill-conditioned: a plain `Float` inverse of it, unprojected in the
+    /// shader, put the ray a degree or two off on a tilted view. The projection keeps its x and
+    /// y terms, so a TAA jitter or a pan still shifts the sky with the scene.
     static func skyboxRayMatrix(view: simd_float4x4, projection: simd_float4x4) -> simd_float4x4 {
         var rotation = view
         rotation.columns.3 = SIMD4<Float>(0, 0, 0, 1)
@@ -480,13 +479,15 @@ enum RendererSharedSetup {
             simd_double4x4(
                 columns: (
                     SIMD4<Double>(m.columns.0), SIMD4<Double>(m.columns.1),
-                    SIMD4<Double>(m.columns.2), SIMD4<Double>(m.columns.3)))
+                    SIMD4<Double>(m.columns.2), SIMD4<Double>(m.columns.3)
+                ))
         }
         let inverse = simd_inverse(widen(squeezed) * widen(rotation))
         return simd_float4x4(
             columns: (
                 SIMD4<Float>(inverse.columns.0), SIMD4<Float>(inverse.columns.1),
-                SIMD4<Float>(inverse.columns.2), SIMD4<Float>(inverse.columns.3)))
+                SIMD4<Float>(inverse.columns.2), SIMD4<Float>(inverse.columns.3)
+            ))
     }
 
     /// Encodes the skybox background; the caller restores its own depth state afterwards.

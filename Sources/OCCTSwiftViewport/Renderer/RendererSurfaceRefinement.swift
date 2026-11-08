@@ -151,13 +151,17 @@ extension RendererSharedSetup {
         var description: String { "\(label): \(reason)" }
     }
 
-    /// Builds a mesh-shader pipeline with the `meshlet_object` object function.
+    /// Builds a mesh-shader pipeline around the object function `objectFunction`, which is
+    /// `meshlet_object` unless the pass binds something other than `Uniforms` there.
     ///
     /// Throws a `MeshPipelineError` when a function is missing or the device rejects the
     /// descriptor, so the caller can report it rather than fall back silently (#161).
+    /// `reflected` receives the pipeline's binding reflection when given, which is how the tests
+    /// read the buffer sizes the functions declare (#229).
     static func makeMeshShaderPipelineState(
         device: MTLDevice,
         library: MTLLibrary,
+        objectFunction: String = "meshlet_object",
         meshFunction: String,
         fragmentFunction: String,
         colorPixelFormat: MTLPixelFormat = .invalid,
@@ -165,9 +169,10 @@ extension RendererSharedSetup {
         stencilPixelFormat: MTLPixelFormat = .invalid,
         sampleCount: Int = 1,
         blending: Bool = false,
-        label: String
+        label: String,
+        reflected: ((MTLRenderPipelineReflection) -> Void)? = nil
     ) throws -> MTLRenderPipelineState {
-        guard let objectFn = library.makeFunction(name: "meshlet_object"),
+        guard let objectFn = library.makeFunction(name: objectFunction),
             let meshFn = library.makeFunction(name: meshFunction),
             let fragmentFn = library.makeFunction(name: fragmentFunction)
         else { throw MeshPipelineError(label: label, reason: "shader function not found") }
@@ -191,7 +196,10 @@ extension RendererSharedSetup {
         descriptor.maxTotalThreadsPerObjectThreadgroup = 1
         descriptor.maxTotalThreadsPerMeshThreadgroup = kMeshletMaxTriangles
         do {
-            return try device.makeRenderPipelineState(descriptor: descriptor, options: []).0
+            let (state, reflection) = try device.makeRenderPipelineState(
+                descriptor: descriptor, options: reflected == nil ? [] : [.bindingInfo])
+            if let reflected, let reflection { reflected(reflection) }
+            return state
         } catch {
             throw MeshPipelineError(label: label, reason: error.localizedDescription)
         }
@@ -200,33 +208,39 @@ extension RendererSharedSetup {
     /// The mesh-shader shaded pipeline: `meshlet_mesh` + `shaded_fragment`, alpha-blended.
     static func makeMeshShaderShadedPipelineState(
         device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
-        label: String = "mesh_shaded"
+        label: String = "mesh_shaded", reflected: ((MTLRenderPipelineReflection) -> Void)? = nil
     ) throws -> MTLRenderPipelineState {
         try makeMeshShaderPipelineState(
             device: device, library: library, meshFunction: "meshlet_mesh",
             fragmentFunction: "shaded_fragment", colorPixelFormat: .bgra8Unorm,
             depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
-            sampleCount: sampleCount, blending: true, label: label)
+            sampleCount: sampleCount, blending: true, label: label, reflected: reflected)
     }
 
     /// The mesh-shader shadow-map pipeline, honouring the section clip planes (#162).
+    ///
+    /// Its object function is `meshlet_shadow_object`, not `meshlet_object`: the pass binds the
+    /// 128-byte `ShadowUniformsSwift` at the object and mesh uniform slots, and Metal rejects a
+    /// buffer smaller than the struct the function declares there (#229).
     static func makeMeshShaderShadowPipelineState(
-        device: MTLDevice, library: MTLLibrary, label: String = "mesh_shadow"
+        device: MTLDevice, library: MTLLibrary, label: String = "mesh_shadow",
+        reflected: ((MTLRenderPipelineReflection) -> Void)? = nil
     ) throws -> MTLRenderPipelineState {
         try makeMeshShaderPipelineState(
-            device: device, library: library, meshFunction: "meshlet_shadow_mesh",
-            fragmentFunction: "shadow_clip_fragment", depthPixelFormat: .depth32Float,
-            label: label)
+            device: device, library: library, objectFunction: "meshlet_shadow_object",
+            meshFunction: "meshlet_shadow_mesh", fragmentFunction: "shadow_clip_fragment",
+            depthPixelFormat: .depth32Float, label: label, reflected: reflected)
     }
 
     /// The mesh-shader SSAO / silhouette depth-prepass pipeline, honouring the clip planes.
     static func makeMeshShaderDepthOnlyPipelineState(
-        device: MTLDevice, library: MTLLibrary, label: String = "mesh_depth_only"
+        device: MTLDevice, library: MTLLibrary, label: String = "mesh_depth_only",
+        reflected: ((MTLRenderPipelineReflection) -> Void)? = nil
     ) throws -> MTLRenderPipelineState {
         try makeMeshShaderPipelineState(
             device: device, library: library, meshFunction: "meshlet_depth_mesh",
             fragmentFunction: "depth_only_clip_fragment", depthPixelFormat: .depth32Float,
-            label: label)
+            label: label, reflected: reflected)
     }
 
     // MARK: - Draws

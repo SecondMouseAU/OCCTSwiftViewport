@@ -287,8 +287,9 @@ struct SkyboxDirectionTests {
             view: camera.viewMatrix, projection: projection)
 
         let tanHalf = tan(camera.fieldOfView * .pi / 360)
-        for ndc in [SIMD2<Float>(0, 0), SIMD2(0.9, 0.7), SIMD2(-0.8, 0.6), SIMD2(3, -1), SIMD2(-1, 3)]
-        {
+        for ndc in [
+            SIMD2<Float>(0, 0), SIMD2(0.9, 0.7), SIMD2(-0.8, 0.6), SIMD2(3, -1), SIMD2(-1, 3),
+        ] {
             // What skybox_vertex computes, in Float as the shader does.
             func unproject(_ z: Float) -> SIMD3<Float> {
                 let p = matrix * SIMD4(ndc.x, ndc.y, z, 1)

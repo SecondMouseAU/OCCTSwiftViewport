@@ -263,7 +263,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `environmentIntensity` | `Float` | `1.0` | IBL contribution multiplier |
 | `environmentRotationY` | `Float` | `0` | Rotation of the environment about the world up axis (Z) in radians (0…2π). The panorama's horizon lies in the XY plane |
 | `backgroundExposure` | `Float` | `1.0` | Exposure for the visible skybox background; independent of `environmentIntensity` |
-| `drawBackground` | `Bool` | `false` | Render the environment map as a skybox; `false` uses a solid clear colour |
+| `drawBackground` | `Bool` | `false` | Render the environment map as a skybox; `false` uses a solid clear colour. Every pixel samples the map along its own view ray, so a feature of the panorama sits where its world direction projects at any aspect ratio, camera orientation or depth range |
 
 ### Initializer
 
