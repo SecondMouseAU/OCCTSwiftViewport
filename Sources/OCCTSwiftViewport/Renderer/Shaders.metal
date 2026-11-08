@@ -1449,29 +1449,26 @@ inline float linearizeDepth(float depth, float near, float far, float orthograph
     return near * far / (far - depth * (far - near));
 }
 
-// SSAO-lite + Edge Silhouettes combined post-process
-fragment float4 ssao_fragment(
+// SSAO occlusion term (#188). Runs on its own full-screen pass into an R32Float texture, so
+// `ssao_blur_fragment` can smooth the ordered-dither pattern out of it before `ssao_fragment`
+// multiplies it into the scene. The result is `1 - occlusion * intensity` in [0, 1], 1 = open.
+fragment float4 ssao_occlusion_fragment(
     FullscreenVertexOut in [[stage_in]],
     texture2d<float> depthTexture [[texture(0)]],
-    texture2d<float> colorTexture [[texture(1)]],
     constant SSAOParams &params [[buffer(0)]]
 ) {
-    constexpr sampler texSampler(filter::linear, address::clamp_to_edge);
     constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
 
-    float4 sceneColor = colorTexture.sample(texSampler, in.texCoord);
     float depth = depthTexture.sample(pointSampler, in.texCoord).r;
 
-    // Skip background (depth at or near 1.0)
+    // Background (depth at or near 1.0) is never occluded.
     if (depth > 0.9999) {
-        return sceneColor;
+        return float4(1.0, 0.0, 0.0, 1.0);
     }
 
     float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
     float result_ao = 1.0;
-    float result_edge = 0.0;
 
-    // --- SSAO ---
     if (params.intensity > 0.001) {
         // Two-ring sample pattern: inner ring (tight creases) + outer ring (broader AO)
         const float2 offsets[16] = {
@@ -1545,6 +1542,96 @@ fragment float4 ssao_fragment(
 
         result_ao = 1.0 - (occlusion / 16.0) * params.intensity;
         result_ao = clamp(result_ao, 0.0, 1.0);
+    }
+
+    return float4(result_ao, 0.0, 0.0, 1.0);
+}
+
+// Depth-aware blur of the SSAO term (#188). The occlusion pass rotates its kernel per pixel from
+// a 4x4 ordered (Bayer) pattern; averaging a 4x4 window covers every cell of that pattern exactly
+// once, so on a continuous surface the dither cancels. Taps are weighted by how well their depth
+// matches the plane through the centre pixel (the same depth-gradient prediction the occlusion
+// pass uses, so sloped and curved faces blur like flat ones), which keeps the blur from crossing
+// a depth discontinuity: occlusion neither bleeds onto a nearer silhouette nor lightens the far
+// side of it. Works on linearised depth, so it is the same in perspective and orthographic.
+fragment float4 ssao_blur_fragment(
+    FullscreenVertexOut in [[stage_in]],
+    texture2d<float> aoTexture [[texture(0)]],
+    texture2d<float> depthTexture [[texture(1)]],
+    constant SSAOParams &params [[buffer(0)]]
+) {
+    constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
+
+    float centreAO = aoTexture.sample(pointSampler, in.texCoord).r;
+    float depth = depthTexture.sample(pointSampler, in.texCoord).r;
+    if (depth > 0.9999) {
+        return float4(centreAO, 0.0, 0.0, 1.0);
+    }
+
+    float2 ts = params.texelSize;
+    float dL = depthTexture.sample(pointSampler, in.texCoord - float2(ts.x, 0.0)).r;
+    float dR = depthTexture.sample(pointSampler, in.texCoord + float2(ts.x, 0.0)).r;
+    float dD = depthTexture.sample(pointSampler, in.texCoord - float2(0.0, ts.y)).r;
+    float dU = depthTexture.sample(pointSampler, in.texCoord + float2(0.0, ts.y)).r;
+    float gradX = (abs(depth - dL) < abs(dR - depth)) ? (depth - dL) : (dR - depth);
+    float gradY = (abs(depth - dD) < abs(dU - depth)) ? (depth - dD) : (dU - depth);
+
+    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
+    // Same relative depth tolerance as the occlusion pass's plane bias: a tap further than twice
+    // this from the centre's plane belongs to another surface and gets no weight.
+    float tolerance = 0.005 * linearDepth;
+
+    float sum = 0.0;
+    float weightSum = 0.0;
+    // Offsets -2...1 on both axes: exactly one period of the 4x4 pattern.
+    for (int j = -2; j <= 1; j++) {
+        for (int i = -2; i <= 1; i++) {
+            float2 sampleUV = in.texCoord + float2(float(i), float(j)) * ts;
+            // Off-screen taps would read the clamped border texel, which is not this surface.
+            if (any(sampleUV < 0.0) || any(sampleUV > 1.0)) continue;
+            float sampleDepth = depthTexture.sample(pointSampler, sampleUV).r;
+            if (sampleDepth > 0.9999) continue;
+            float planeDepth = saturate(depth + gradX * float(i) + gradY * float(j));
+            float diff = abs(
+                linearizeDepth(sampleDepth, params.nearPlane, params.farPlane, params.orthographic)
+                - linearizeDepth(planeDepth, params.nearPlane, params.farPlane, params.orthographic));
+            float weight = 1.0 - smoothstep(tolerance, 2.0 * tolerance, diff);
+            sum += aoTexture.sample(pointSampler, sampleUV).r * weight;
+            weightSum += weight;
+        }
+    }
+    // The centre tap always has weight 1, so the sum is never empty.
+    return float4(sum / max(weightSum, 1e-4), 0.0, 0.0, 1.0);
+}
+
+// SSAO-lite + Edge Silhouettes combined post-process
+fragment float4 ssao_fragment(
+    FullscreenVertexOut in [[stage_in]],
+    texture2d<float> depthTexture [[texture(0)]],
+    texture2d<float> colorTexture [[texture(1)]],
+    texture2d<float> aoTexture [[texture(2)]],  // blurred SSAO term; read only when intensity > 0
+    constant SSAOParams &params [[buffer(0)]]
+) {
+    constexpr sampler texSampler(filter::linear, address::clamp_to_edge);
+    constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
+
+    float4 sceneColor = colorTexture.sample(texSampler, in.texCoord);
+    float depth = depthTexture.sample(pointSampler, in.texCoord).r;
+
+    // Skip background (depth at or near 1.0)
+    if (depth > 0.9999) {
+        return sceneColor;
+    }
+
+    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
+    float result_ao = 1.0;
+    float result_edge = 0.0;
+
+    // --- SSAO ---
+    // Read from the blurred occlusion texture (`ssao_occlusion_fragment` + `ssao_blur_fragment`,
+    // #188). The renderers bind a placeholder when SSAO is off, and this branch is not taken.
+    if (params.intensity > 0.001) {
+        result_ao = aoTexture.sample(pointSampler, in.texCoord).r;
     }
 
     // --- Edge Silhouettes (Sobel on depth) ---
