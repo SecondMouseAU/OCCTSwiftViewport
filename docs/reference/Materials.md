@@ -201,7 +201,7 @@ public static var glass:             PBRMaterial { get }
 
 ```swift
 // Assign a preset directly
-var body = ViewportBody(vertices: pts, normals: nrm, edges: [])
+var body = ViewportBody.box(id: "part")
 body.material = .chromedSteel
 
 // Start from a preset and tweak

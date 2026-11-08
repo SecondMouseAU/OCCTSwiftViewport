@@ -68,7 +68,9 @@ public init(
     isPickable: Bool = true,
     renderLayer: RenderLayer = .geometry,
     pickLayer: PickLayer = .userGeometry,
-    transform: simd_float4x4 = matrix_identity_float4x4
+    transform: simd_float4x4 = matrix_identity_float4x4,
+    meshPositions: [Float] = [],
+    meshNormals: [Float] = []
 )
 ```
 
@@ -118,7 +120,7 @@ let body = ViewportBody(
     roughness: 0.4,
     metallic: 0.8
 )
-viewportController.bodies["bracket"] = body
+bodies.append(body)   // `bodies` is the app's @State [ViewportBody], passed to MetalViewportView
 ```
 
 ---
@@ -183,7 +185,7 @@ All render passes support direct bodies: shaded (opaque + transparent), shadow c
 
 #### `id: String`
 
-Unique identifier for this body. Used as the dictionary key in `ViewportController.bodies`.
+Unique identifier for this body. Keys the renderer's per-body buffer cache, selection (`selectedBodyIDs`), and pick results (`PickResult.bodyID`); keep it stable across updates.
 
 #### `generation: UInt64`
 
@@ -805,7 +807,8 @@ Pre-built no-highlight style (`color = .zero`). Use to clear individual entries 
 **Example — highlight triangles belonging to a selected face:**
 
 ```swift
-guard var body = viewportController.bodies["bracket"] else { return }
+guard let index = bodies.firstIndex(where: { $0.id == "bracket" }) else { return }
+var body = bodies[index]
 let triangleCount = body.indices.count / 3
 var styles = Array(repeating: TriangleStyle.none, count: triangleCount)
 // faceIndices maps triangle → face ID; highlight face 3
@@ -813,7 +816,7 @@ for i in 0..<triangleCount where body.faceIndices[i] == 3 {
     styles[i] = TriangleStyle(color: SIMD4<Float>(0.2, 0.6, 1.0, 0.5))
 }
 body.triangleStyles = styles
-viewportController.bodies["bracket"] = body
+bodies[index] = body   // `bodies` is the app's @State [ViewportBody]
 ```
 
 ---

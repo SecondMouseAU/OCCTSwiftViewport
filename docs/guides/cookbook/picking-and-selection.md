@@ -277,7 +277,8 @@ let ray = Ray(
 Use `ProjectionUtility` to go the other direction, world position to screen coordinates, for annotation placement or custom overlays:
 
 ```swift
-let vpMatrix = controller.cameraState.viewProjectionMatrix(aspectRatio: aspectRatio)
+let state = controller.cameraState
+let vpMatrix = state.projectionMatrix(aspectRatio: aspectRatio) * state.viewMatrix
 
 if let screenPt = ProjectionUtility.worldToScreen(
     point: hit.point,

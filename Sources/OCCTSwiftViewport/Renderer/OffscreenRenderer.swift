@@ -596,6 +596,13 @@ public final class OffscreenRenderer: Sendable {
     private let depthOnlyPipeline: MTLRenderPipelineState?
     private let depthOnlyDirectPipeline: MTLRenderPipelineState?
     private let ssaoCompositePipeline: MTLRenderPipelineState?
+    /// The SSAO occlusion pass and its depth-aware blur (#188), run between the prepass and the
+    /// composite.
+    private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
+    /// The occlusion textures, allocated only by renders that run SSAO.
+    ///
+    /// Internal so tests can check that SSAO off allocates and encodes nothing.
+    private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
     /// Single-sample colour the main pass resolves into when the composite runs.
     private var postColorTexture: MTLTexture?
     /// Single-sample depth written by the SSAO / silhouette depth prepass.
@@ -699,6 +706,8 @@ public final class OffscreenRenderer: Sendable {
             label: "offscreen_depth_only_direct")
         self.ssaoCompositePipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
             device: device, library: library, label: "offscreen_ssao_composite")
+        self.ssaoOcclusionPipelines = RendererSharedSetup.makeSSAOOcclusionPipelines(
+            device: device, library: library, labelPrefix: "offscreen")
 
         guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
@@ -1505,6 +1514,10 @@ public final class OffscreenRenderer: Sendable {
 
         mainEncoder.endEncoding()
 
+        if compositeTargets == nil {
+            // No composite this render (SSAO off, unlit or wireframe): hold no occlusion memory.
+            ssaoOcclusionTargets.release()
+        }
         if let compositeTargets {
             encodeSSAOComposite(
                 commandBuffer: commandBuffer,
@@ -1628,7 +1641,8 @@ public final class OffscreenRenderer: Sendable {
     }
 
     /// Encodes the live renderer's SSAO / silhouette post-process: a single-sample depth prepass,
-    /// then the `ssao_fragment` composite from `targets.color` into `output`.
+    /// the SSAO occlusion pass and its depth-aware blur when SSAO is on (#188), then the
+    /// `ssao_fragment` composite from `targets.color` into `output`.
     ///
     /// Tone mapping is not part of the composite: `shaded_fragment` applies it to every lit
     /// surface. Depth of field is never applied offscreen.
@@ -1689,12 +1703,6 @@ public final class OffscreenRenderer: Sendable {
             encoder.endEncoding()
         }
 
-        let compositePass = MTLRenderPassDescriptor()
-        compositePass.colorAttachments[0].texture = output
-        compositePass.colorAttachments[0].loadAction = .dontCare
-        compositePass.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
-        else { return }
         let lighting = options.lightingConfiguration
         var params = SSAOParamsSwift(
             texelSize: SIMD2<Float>(
@@ -1712,9 +1720,36 @@ public final class OffscreenRenderer: Sendable {
             dofMaxBlurRadius: 0,
             dofEnabled: 0
         )
+
+        // SSAO occlusion + depth-aware blur (#188), as the live renderer runs them. Skipped (and
+        // its textures released) unless SSAO is on: the composite also runs for silhouettes
+        // alone, and then multiplies in no occlusion.
+        var occlusionTexture: MTLTexture?
+        if RendererSharedSetup.ssaoOcclusionActive(lighting),
+            let occlusionPipelines = ssaoOcclusionPipelines
+        {
+            occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
+                commandBuffer: commandBuffer, pipelines: occlusionPipelines,
+                targets: &ssaoOcclusionTargets, device: device, depth: targets.depth,
+                params: params, blur: lighting.ssaoBlur)
+        }
+        if occlusionTexture == nil {
+            ssaoOcclusionTargets.release()
+            params.intensity = 0
+        }
+
+        let compositePass = MTLRenderPassDescriptor()
+        compositePass.colorAttachments[0].texture = output
+        compositePass.colorAttachments[0].loadAction = .dontCare
+        compositePass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
+        else { return }
         encoder.setRenderPipelineState(compositePipeline)
         encoder.setFragmentTexture(targets.depth, index: 0)
         encoder.setFragmentTexture(targets.color, index: 1)
+        // With no occlusion the shader never reads this slot; bind the depth as a same-shaped
+        // placeholder.
+        encoder.setFragmentTexture(occlusionTexture ?? targets.depth, index: 2)
         encoder.setFragmentBytes(&params, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()

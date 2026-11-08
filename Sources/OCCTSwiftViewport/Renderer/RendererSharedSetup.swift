@@ -512,7 +512,8 @@ enum RendererSharedSetup {
     /// Full-screen SSAO + silhouette composite pipeline (single sample, no depth attachment).
     ///
     /// `ssao_fragment` also applies depth of field and ACES tone mapping, so whatever this pass
-    /// writes is the frame's final colour.
+    /// writes is the frame's final colour. It multiplies in the blurred occlusion term bound at
+    /// fragment texture 2 (see `encodeSSAOOcclusion`) when its `intensity` is above 0.
     static func makeSSAOCompositePipelineState(
         device: MTLDevice,
         library: MTLLibrary,
