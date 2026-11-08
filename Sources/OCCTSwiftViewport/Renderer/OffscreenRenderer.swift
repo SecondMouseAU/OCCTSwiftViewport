@@ -459,6 +459,10 @@ private struct SampledPipelines {
     let wireframePipeline: MTLRenderPipelineState
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     let quadEdgePipeline: MTLRenderPipelineState?
+    /// The two edge pipelines with the per-segment colour fragment shaders
+    /// (`ViewportBody.edgeColors`, #140).
+    let wireframeSegmentPipeline: MTLRenderPipelineState?
+    let quadEdgeSegmentPipeline: MTLRenderPipelineState?
     let gridPipeline: MTLRenderPipelineState
     let axisPipeline: MTLRenderPipelineState
     /// Visible point-cloud pipeline (issue #28).
@@ -513,6 +517,15 @@ private struct SampledPipelines {
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat,
             vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
+        wireframeSegmentPipeline = RendererSharedSetup.makeWireframePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+            fragmentFunction: "wireframe_segment_fragment", label: "offscreen_wireframe_segment")
+        quadEdgeSegmentPipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor(),
+            fragmentFunction: "quad_edge_segment_fragment", label: "offscreen_quad_edge_segment")
         visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat, label: "offscreen_visible_point")
@@ -1106,17 +1119,26 @@ public final class OffscreenRenderer: Sendable {
         /// Draws a body's edge polylines when the display mode shows edges, or the body has no
         /// mesh, through the quad-expanded or native line pipeline.
         func encodeEdges(
+            _ body: ViewportBody,
             _ buffers: BodyBuffersOffscreen,
             hasMesh: Bool,
             uniforms: inout Uniforms,
             bodyUniforms: BodyUniforms
         ) {
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
-            guard hasEdges, displayMode.showsEdges || !hasMesh,
+            // The slice of edge segments to draw (`edgeDrawRange`, #140); empty draws none.
+            let segmentCount = buffers.edgeVertexCount / EdgeSegmentStyle.nativeVerticesPerSegment
+            let edgeSegments = EdgeSegmentStyle.drawnRange(
+                body.edgeDrawRange, segmentCount: segmentCount)
+            guard hasEdges, displayMode.showsEdges || !hasMesh, !edgeSegments.isEmpty,
                 let edgeVB = buffers.edgeVertexBuffer
             else { return }
             var edgeBodyUniforms = bodyUniforms
             if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
+            // Per-segment colours (`edgeColors`) are built per render, like `triangleStyles`, so
+            // reassigning them on an existing body (same `generation`) is always picked up.
+            let segmentColors = EdgeSegmentStyle.makeColorBuffer(
+                device: device, colors: body.edgeColors, segmentCount: segmentCount)
 
             let edgeConfig = options.edgeLineConfiguration
             var edgeUniforms = EdgeUniforms(
@@ -1128,7 +1150,11 @@ public final class OffscreenRenderer: Sendable {
                 let quadEdgeVB = buffers.quadEdgeVertexBuffer,
                 buffers.quadEdgeVertexCount > 0
             {
-                mainEncoder.setRenderPipelineState(quadPipeline)
+                EdgeSegmentStyle.setPipeline(
+                    mainEncoder, plain: quadPipeline,
+                    segmentVariant: pipelines.quadEdgeSegmentPipeline,
+                    colors: segmentColors, firstSegment: edgeSegments.lowerBound,
+                    colorSpace: body.edgeColorSpace)
                 mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(
                     &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
@@ -1136,12 +1162,16 @@ public final class OffscreenRenderer: Sendable {
                     &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
                     &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                 mainEncoder.drawPrimitives(
-                    type: .triangleStrip, vertexStart: 0,
-                    vertexCount: buffers.quadEdgeVertexCount)
+                    type: .triangleStrip, vertexStart: slice.start, vertexCount: slice.count)
             } else {
                 // Native Metal line pipeline (backward compatible)
-                mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
+                EdgeSegmentStyle.setPipeline(
+                    mainEncoder, plain: pipelines.wireframePipeline,
+                    segmentVariant: pipelines.wireframeSegmentPipeline,
+                    colors: segmentColors, firstSegment: edgeSegments.lowerBound,
+                    colorSpace: body.edgeColorSpace)
                 mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -1149,8 +1179,9 @@ public final class OffscreenRenderer: Sendable {
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
                     &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                 mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    type: .line, vertexStart: slice.start, vertexCount: slice.count)
             }
         }
 
@@ -1260,7 +1291,8 @@ public final class OffscreenRenderer: Sendable {
                 encodeHighlight(body, buffers, uniforms: &uniforms)
                 mainEncoder.setDepthStencilState(depthState)
             }
-            encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
+            encodeEdges(
+                body, buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
         // Transparent surface pass (issue #53): deferred translucent bodies,
@@ -1472,7 +1504,8 @@ public final class OffscreenRenderer: Sendable {
                         buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms, refine: false)
                 }
                 encodeEdges(
-                    buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
+                    body, buffers, hasMesh: hasMesh, uniforms: &uniforms,
+                    bodyUniforms: bodyUniforms)
             }
             for draw in arcDraws where draw.body.id == body.id {
                 encodeArcs(draw)

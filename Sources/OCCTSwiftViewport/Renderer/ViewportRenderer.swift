@@ -259,6 +259,11 @@ private struct BodyBuffers {
     /// Nil when `body.triangleStyles` is empty. RGBA per triangle, indexed by
     /// `[[primitive_id]]` in the highlight fragment shader.
     var triangleStyleBuffer: MTLBuffer?
+    /// Per-segment edge colours (`ViewportBody.edgeColors`, #140): RGBA per flattened edge segment.
+    ///
+    /// Nil when the body has none, or their count does not match its segment count, in which case
+    /// the edge pass draws in the body colour. Re-uploaded on its own when the colours change.
+    var edgeColorBuffer: MTLBuffer?
     /// The body's local-space AABB, computed once when buffers are built.
     ///
     /// Cached here so per-frame frustum culling (issue #42) doesn't rescan vertices.
@@ -319,6 +324,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let wireframePipeline: MTLRenderPipelineState
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     private let quadEdgePipeline: MTLRenderPipelineState?
+    /// `wireframePipeline` / `quadEdgePipeline` with the per-segment colour fragment shaders
+    /// (`ViewportBody.edgeColors`, #140).
+    private let wireframeSegmentPipeline: MTLRenderPipelineState?
+    private let quadEdgeSegmentPipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
@@ -496,6 +505,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private var bodyGeneration: [String: UInt64] = [:]
     /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
     private var bodyStyleGeneration: [String: UInt64] = [:]
+    /// `ViewportBody.edgeColorsGeneration` each cached `edgeColorBuffer` was built from.
+    private var bodyEdgeColorGeneration: [String: UInt64] = [:]
 
     /// Axis cylinders and the cached `.plane` grid-line buffer.
     private let gridAxisBuffers: GridAxisBuffers
@@ -609,6 +620,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat,
             vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
+        self.wireframeSegmentPipeline = RendererSharedSetup.makeWireframePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+            fragmentFunction: "wireframe_segment_fragment", label: "wireframe_segment")
+        self.quadEdgeSegmentPipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor(),
+            fragmentFunction: "quad_edge_segment_fragment", label: "quad_edge_segment")
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -1107,6 +1127,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Clears the current environment map.
     public func clearEnvironmentMap() {
         environmentMapManager?.clear()
+    }
+
+    /// The cached edge buffers for a body, or `nil` when it has none cached; for tests.
+    ///
+    /// Object identity shows what a mutation re-uploaded: `edgeColors` replaces only `colors`,
+    /// and `edgeDrawRange` replaces nothing (#140).
+    func cachedEdgeBuffers(for bodyID: String) -> (
+        native: MTLBuffer?, quad: MTLBuffer?, colors: MTLBuffer?
+    )? {
+        guard let buffers = bodyBufferCache[bodyID] else { return nil }
+        return (buffers.edgeVertexBuffer, buffers.quadEdgeVertexBuffer, buffers.edgeColorBuffer)
     }
 
     /// Invalidates cached buffers so they are rebuilt on next draw.
@@ -1799,7 +1830,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             // Wireframe/edge pass
             let shouldDrawEdges = hasEdges && (displayMode.showsEdges || !hasMesh)
-            if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
+            // The slice of edge segments to draw (`edgeDrawRange`, #140); empty draws none.
+            let edgeSegments = EdgeSegmentStyle.drawnRange(
+                body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+            if shouldDrawEdges, !edgeSegments.isEmpty, let edgeVB = buffers.edgeVertexBuffer {
                 // For edge-only bodies, signal the shader to use the body color directly
                 // instead of contrast-adaptive edge color (metallic = -1 sentinel)
                 var edgeBodyUniforms = bodyUniforms
@@ -1818,7 +1852,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var edgeUniforms = EdgeUniforms(
                         uniforms: uniforms, configuration: edgeConfig,
                         viewportSize: edgeViewportSize)
-                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    EdgeSegmentStyle.setPipeline(
+                        mainEncoder, plain: quadPipeline, segmentVariant: quadEdgeSegmentPipeline,
+                        colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                        colorSpace: body.edgeColorSpace)
                     mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
                         &edgeUniforms,
@@ -1831,13 +1868,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     // The CPU buffer already contains the six-vertex triangle strip per segment.
+                    let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                     mainEncoder.drawPrimitives(
                         type: .triangleStrip,
-                        vertexStart: 0,
-                        vertexCount: buffers.quadEdgeVertexCount)
+                        vertexStart: slice.start,
+                        vertexCount: slice.count)
                 } else {
                     // Native Metal line pipeline (backward compatible)
-                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    EdgeSegmentStyle.setPipeline(
+                        mainEncoder, plain: wireframePipeline,
+                        segmentVariant: wireframeSegmentPipeline,
+                        colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                        colorSpace: body.edgeColorSpace)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
                         &uniforms,
@@ -1847,8 +1889,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                     mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                        type: .line, vertexStart: slice.start, vertexCount: slice.count)
                 }
             }
         }
@@ -2207,7 +2250,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 let shouldDrawEdges = hasEdges && displayMode.drawsEdges(bodyHasMesh: hasMesh)
-                if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
+                let edgeSegments = EdgeSegmentStyle.drawnRange(
+                    body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+                if shouldDrawEdges, !edgeSegments.isEmpty, let edgeVB = buffers.edgeVertexBuffer {
                     var edgeBodyUniforms = bodyUniforms
                     if !hasMesh {
                         edgeBodyUniforms.metallic = -1.0
@@ -2222,24 +2267,34 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         var edgeUniforms = EdgeUniforms(
                             uniforms: uniforms, configuration: frameEdgeConfig,
                             viewportSize: edgeViewportSize)
-                        mainEncoder.setRenderPipelineState(quadPipeline)
+                        EdgeSegmentStyle.setPipeline(
+                            mainEncoder, plain: quadPipeline,
+                            segmentVariant: quadEdgeSegmentPipeline,
+                            colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                            colorSpace: body.edgeColorSpace)
                         mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                         mainEncoder.setVertexBytes(
                             &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
                         mainEncoder.setFragmentBytes(
                             &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                         mainEncoder.drawPrimitives(
-                            type: .triangleStrip, vertexStart: 0,
-                            vertexCount: buffers.quadEdgeVertexCount)
+                            type: .triangleStrip, vertexStart: slice.start,
+                            vertexCount: slice.count)
                     } else {
-                        mainEncoder.setRenderPipelineState(wireframePipeline)
+                        EdgeSegmentStyle.setPipeline(
+                            mainEncoder, plain: wireframePipeline,
+                            segmentVariant: wireframeSegmentPipeline,
+                            colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                            colorSpace: body.edgeColorSpace)
                         mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                         mainEncoder.setVertexBytes(
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                         mainEncoder.setFragmentBytes(
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                         mainEncoder.drawPrimitives(
-                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                            type: .line, vertexStart: slice.start, vertexCount: slice.count)
                     }
                 }
 
@@ -2417,6 +2472,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     ) {
                         guard let edgeVB = buffers.edgeVertexBuffer, buffers.edgePrimitiveCount > 0
                         else { return }
+                        // Only the segments `edgeDrawRange` shows can be picked (#140).
+                        let edgeSegments = EdgeSegmentStyle.drawnRange(
+                            body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+                        guard !edgeSegments.isEmpty else { return }
                         var uniforms = makeUniforms()
                         uniforms.modelMatrix = body.transform
                         var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
@@ -2426,7 +2485,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             var edgeUniforms = EdgeUniforms(
                                 uniforms: uniforms, configuration: frameEdgeConfig,
                                 viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                            var primSource = SIMD2<UInt32>(0, 0)  // segment = triangle / 6
+                            // Segment = the slice's first segment + triangle / 6.
+                            var primSource = SIMD2<UInt32>(UInt32(edgeSegments.lowerBound), 0)
                             pickEncoder.setRenderPipelineState(quadPickPipeline)
                             pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                             pickEncoder.setVertexBytes(
@@ -2437,9 +2497,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                             pickEncoder.setFragmentBytes(
                                 &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+                            let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                             pickEncoder.drawPrimitives(
-                                type: .triangleStrip, vertexStart: 0,
-                                vertexCount: buffers.quadEdgeVertexCount)
+                                type: .triangleStrip, vertexStart: slice.start,
+                                vertexCount: slice.count)
                             return
                         }
                         guard let pickLinePipeline else { return }
@@ -2451,8 +2512,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                         pickEncoder.setFragmentBytes(
                             &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                        var firstSegment = UInt32(edgeSegments.lowerBound)
+                        pickEncoder.setFragmentBytes(
+                            &firstSegment, length: MemoryLayout<UInt32>.size, index: 3)
+                        let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                         pickEncoder.drawPrimitives(
-                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                            type: .line, vertexStart: slice.start, vertexCount: slice.count)
                     }
 
                     /// Re-draws one of this frame's sampled arcs (from `frameArcQuadBuffer` or
@@ -2847,6 +2912,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodyBufferCache.removeValue(forKey: id)
             bodyGeneration.removeValue(forKey: id)
             bodyStyleGeneration.removeValue(forKey: id)
+            bodyEdgeColorGeneration.removeValue(forKey: id)
         }
 
         if let presentable = targets.presentable {
@@ -3113,6 +3179,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 bodyBufferCache[body.id] = cached
             }
             bodyStyleGeneration[body.id] = body.triangleStylesGeneration
+            // Likewise `edgeColors` (#140): re-upload only the colour buffer, never the edges.
+            if bodyEdgeColorGeneration[body.id] != body.edgeColorsGeneration,
+                var cached = bodyBufferCache[body.id]
+            {
+                cached.edgeColorBuffer = EdgeSegmentStyle.makeColorBuffer(
+                    device: device, colors: body.edgeColors,
+                    segmentCount: cached.edgePrimitiveCount)
+                bodyBufferCache[body.id] = cached
+            }
+            bodyEdgeColorGeneration[body.id] = body.edgeColorsGeneration
             return  // buffer still valid
         }
 
@@ -3246,10 +3322,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tessellation: tessBuffers,
             meshlets: meshletBufs,
             triangleStyleBuffer: triStyleBuf,
+            edgeColorBuffer: EdgeSegmentStyle.makeColorBuffer(
+                device: device, colors: body.edgeColors, segmentCount: nativeEdgePrimitiveCount),
             localBoundingBox: body.boundingBox
         )
         bodyGeneration[body.id] = currentGen
         bodyStyleGeneration[body.id] = body.triangleStylesGeneration
+        bodyEdgeColorGeneration[body.id] = body.edgeColorsGeneration
     }
 
     /// The interleaved vertex data meshlets are built from, or `nil` when the body gets none.
