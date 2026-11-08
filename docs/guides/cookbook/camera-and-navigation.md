@@ -346,8 +346,8 @@ A pivot change never moves the view. Every pivot the strategy returns is on the 
 To focus on a specific world point programmatically (bypassing the strategy):
 
 ```swift
-// Animate pivot to a pick result's world position
-viewport.focusOn(point: pickResult.worldPosition, distance: 5.0, animated: true)
+// Animate the pivot to a world point, such as a SceneRaycast hit's `point`
+viewport.focusOn(point: hit.point, distance: 5.0, animated: true)
 ```
 
 `focusOn` stops any momentum, animated or not, so the camera stays on the point. Under an orthographic camera `distance` sets the zoom: the scale becomes the height a perspective camera 5 units away would show.

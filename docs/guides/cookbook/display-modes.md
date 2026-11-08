@@ -98,10 +98,8 @@ interactive picking and highlighting work normally.
 
 ```swift
 // Colour-code bodies for a diagnostic render
-for (index, body) in bodies.enumerated() {
-    var coded = body
-    coded.color = diagnosticColor(for: index)
-    controller.viewportBodies.append(coded)
+for index in bodies.indices {          // `bodies` is the app's @State [ViewportBody]
+    bodies[index].color = diagnosticColor(for: index)
 }
 controller.displayMode = .unlit
 ```

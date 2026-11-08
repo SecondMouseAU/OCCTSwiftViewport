@@ -191,8 +191,8 @@ matters.
 | Case | Surfaces | Edges | Lighting |
 |---|---|---|---|
 | `.wireframe` | no | yes | — |
-| `.shaded` | yes | no | yes |
-| `.shadedWithEdges` (default) | yes | yes | yes |
+| `.shaded` (default) | yes | no | yes |
+| `.shadedWithEdges` | yes | yes | yes |
 | `.flat` | yes | no | yes (per-triangle face normals) |
 | `.unlit` | yes | no | **no** |
 | `.xray` | yes (see-through, at most `xrayOpacity`, default 0.2) | yes | yes |

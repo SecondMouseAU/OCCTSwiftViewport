@@ -680,10 +680,8 @@ Turntable orbit, shadows disabled, SSAO disabled, MSAA disabled (`msaaSampleCoun
 **Example:**
 
 ```swift
-MetalViewportView(
-    bodies: heavyScene,
-    configuration: .performance
-)
+let controller = ViewportController(configuration: .performance)
+MetalViewportView(controller: controller, bodies: $heavyScene)   // @State var heavyScene: [ViewportBody]
 ```
 
 ---

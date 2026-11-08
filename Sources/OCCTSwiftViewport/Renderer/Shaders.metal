@@ -80,6 +80,41 @@ inline float3 linearToSrgb(float3 c) {
     return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);
 }
 
+// Per-vertex colour mode word (#142): bits 0-1 = `VertexColorMode.rawValue` (0 ignores the vertex
+// colour, 1 multiplies it into the base colour, 2 replaces the base colour), bit 2 = the vertex
+// colours are linear light (`AuthoredColorSpace.linear`) rather than sRGB display values.
+// `RendererSharedSetup.VertexColorBinding.packedMode` builds it; it is 0 whenever the body has no
+// usable colours.
+inline bool vertexColorsLinear(uint modeWord) {
+    return (modeWord & 4u) != 0u && (modeWord & 3u) != 0u;
+}
+
+// The surface albedo as an sRGB value: the body / material base colour combined with the
+// interpolated per-vertex colour (#142). Mode 0 returns `bodyColor` untouched. Vertex colours
+// that are linear light are encoded for display after combining in linear (`.unlit` draws this
+// value as is).
+inline float3 surfaceAlbedo(float3 bodyColor, float3 vertexColor, uint modeWord) {
+    uint mode = modeWord & 3u;
+    if (vertexColorsLinear(modeWord)) {
+        float3 linearVertex = saturate(vertexColor);
+        float3 albedo = (mode == 1u) ? srgbToLinear(bodyColor) * linearVertex : linearVertex;
+        return linearToSrgb(albedo);
+    }
+    if (mode == 1u) return bodyColor * vertexColor;
+    if (mode == 2u) return vertexColor;
+    return bodyColor;
+}
+
+// The same albedo as linear light, for lighting. sRGB vertex colours decode after combining, as
+// before; linear ones are used as they are, with no sRGB decode.
+inline float3 surfaceAlbedoLinear(float3 bodyColor, float3 vertexColor, uint modeWord) {
+    if (vertexColorsLinear(modeWord)) {
+        float3 linearVertex = saturate(vertexColor);
+        return ((modeWord & 3u) == 1u) ? srgbToLinear(bodyColor) * linearVertex : linearVertex;
+    }
+    return srgbToLinear(surfaceAlbedo(bodyColor, vertexColor, modeWord));
+}
+
 // ACES filmic tone mapping (Narkowicz approximation) of a LINEAR colour, scaled by
 // exposure / white point. Returns linear [0, 1]; callers encode with `linearToSrgb`.
 inline float3 acesToneMap(float3 color, float exposure, float whitePoint) {
@@ -116,6 +151,12 @@ struct ShadedVertexOut {
     float3 worldPosition [[centroid_perspective]];
     float3 viewNormal;       // for matcap UV
     float4 clipPositionCopy; // for depth-based effects
+    // Per-vertex colour for mesh bodies (#142): the interpolated sRGB colour, and how it applies.
+    // `vertexColorMode` is a flat mode word: bits 0-1 = VertexColorMode (0 ignored, 1 multiply,
+    // 2 replace), bit 2 = the colours are linear light (AuthoredColorSpace.linear). A body that
+    // ignores its vertex colours has the word 0, so it shades exactly as before.
+    float3 vertexColor;
+    uint   vertexColorMode [[flat]];
 };
 
 struct WireframeVertexOut {
@@ -224,9 +265,16 @@ inline float3 sampleEnvironment(float3 direction) {
 
 // MARK: - Shaded Pipeline
 
+// Buffers 0 and 2 carry the vertex data (the direct-mesh path puts its normals at 2), and 1 the
+// scene uniforms. `vertexColors` (3, stride 16, indexed by `[[vertex_id]]`, which for an indexed
+// draw is the index value) and its mode word (4) are bound on every draw; `vertexColors` is only
+// read when the mode word's bits 0-1 are non-zero (#142).
 vertex ShadedVertexOut shaded_vertex(
     VertexIn in [[stage_in]],
-    constant Uniforms &uniforms [[buffer(1)]]
+    uint vid [[vertex_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device float4 *vertexColors [[buffer(3)]],
+    constant uint &vertexColorMode [[buffer(4)]]
 ) {
     ShadedVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
@@ -238,6 +286,8 @@ vertex ShadedVertexOut shaded_vertex(
     // View-space normal for matcap
     out.viewNormal = normalize((uniforms.viewMatrix * float4(out.worldNormal, 0.0)).xyz);
     out.clipPositionCopy = out.clipPosition;
+    out.vertexColorMode = vertexColorMode;
+    out.vertexColor = ((vertexColorMode & 3u) != 0u) ? vertexColors[vid].rgb : float3(1.0);
     return out;
 }
 
@@ -343,7 +393,7 @@ fragment ShadedFragmentOut shaded_fragment(
     // so vivid diagnostic colours stay faithful and distinguishable. Clip planes and
     // selection tint still apply.
     if (uniforms.unlit == 1u) {
-        float3 flatColor = bodyUniforms.color.rgb;
+        float3 flatColor = surfaceAlbedo(bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode);
         if (bodyUniforms.isSelected == 1) {
             flatColor = mix(flatColor, float3(0.3, 0.5, 1.0), 0.15);
         } else if (bodyUniforms.isSelected == 2) {
@@ -387,8 +437,10 @@ fragment ShadedFragmentOut shaded_fragment(
 
     float roughness = clamp(bodyUniforms.roughness, 0.04, 1.0);
     float metallic = saturate(bodyUniforms.metallic);
-    // Body / material base colour is authored in sRGB; light it in linear.
-    float3 bodyColor = srgbToLinear(bodyUniforms.color.rgb);
+    // Body / material base colour is authored in sRGB, and so are the per-vertex colours (#142)
+    // unless `vertexColorSpace` says linear: combine them, then light the result in linear.
+    float3 bodyColor = surfaceAlbedoLinear(
+        bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode);
     float clearcoat = saturate(bodyUniforms.clearcoat);
     float coatRoughness = clamp(bodyUniforms.clearcoatRoughness, 0.04, 1.0);
 
@@ -722,16 +774,19 @@ fragment PickFragmentOut pick_fragment(
     return out;
 }
 
-// Edge pick — kind=1.
+// Edge pick — kind=1. `firstSegment` is the index of the draw's first segment: `[[primitive_id]]`
+// restarts at 0 for each draw, and a ViewportBody.edgeDrawRange slice starts part-way in (#140).
 fragment PickFragmentOut pick_line_fragment(
     PickVertexOut in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant uint &firstSegment [[buffer(3)]],
     uint primitiveID [[primitive_id]]
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (1u << 30);
+    out.pickID = bodyUniforms.objectIndex | (((firstSegment + primitiveID) & 0x3FFFu) << 16)
+        | (1u << 30);
     return out;
 }
 
@@ -802,7 +857,7 @@ struct PointParams {
     float  worldRadius;        // offset 16
     float  pxPerWorldFactor;   // offset 20
     uint   useVertexColors;    // offset 24 (0 or 1)
-    uint   _pad;               // offset 28 — pad to 16-byte boundary
+    uint   vertexColorSpace;   // offset 28 (0 = sRGB display values, 1 = linear; encoded for display)
 };
 
 struct VisiblePointVertexOut {
@@ -836,7 +891,12 @@ vertex VisiblePointVertexOut visible_point_vertex(
     // visible at extreme depths.
     out.pointSize = clamp(screenSize, 1.0, 64.0);
 
-    out.color = (params.useVertexColors != 0u) ? vertexColors[vid] : params.baseColor;
+    out.color = params.baseColor;
+    if (params.useVertexColors != 0u) {
+        out.color = vertexColors[vid];
+        // Linear-light colours are encoded for the display target; sRGB ones are drawn as given.
+        if (params.vertexColorSpace != 0u) out.color.rgb = linearToSrgb(out.color.rgb);
+    }
     return out;
 }
 
@@ -1025,10 +1085,16 @@ inline float edgeFadeDepth(float3 worldPosition, float4x4 viewMatrix, float near
     return saturate((viewDepth - nearPlane) / max(farPlane - nearPlane, 1e-6));
 }
 
-fragment WireframeFragmentOut wireframe_fragment(
-    WireframeVertexOut in [[stage_in]],
-    constant Uniforms &uniforms [[buffer(1)]],
-    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+// Shared body of wireframe_fragment and wireframe_segment_fragment. With `hasSegmentColor`,
+// `segmentColor` (sRGB RGBA from ViewportBody.edgeColors, drawn as given) replaces the body colour
+// of an edge-only body and the contrast-adaptive edge colour of a meshed one; a meshed body's
+// depth fade and edge intensity still apply, on top of the colour's alpha (#140).
+inline WireframeFragmentOut wireframeFragmentColor(
+    WireframeVertexOut in,
+    constant Uniforms &uniforms,
+    constant BodyUniforms &bodyUniforms,
+    bool hasSegmentColor,
+    float4 segmentColor
 ) {
     // Clip plane discard
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -1044,7 +1110,7 @@ fragment WireframeFragmentOut wireframe_fragment(
     // Edge-only bodies (metallic == -1 sentinel): use body color directly
     if (bodyUniforms.metallic < 0.0) {
         WireframeFragmentOut out;
-        out.color = float4(bodyColor, bodyAlpha);
+        out.color = hasSegmentColor ? segmentColor : float4(bodyColor, bodyAlpha);
         return out;
     }
 
@@ -1055,6 +1121,7 @@ fragment WireframeFragmentOut wireframe_fragment(
     float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+    if (hasSegmentColor) edgeColor = segmentColor.rgb;
 
     // Depth-based edge alpha: near edges fully opaque, far edges fade
     float nearPlane = uniforms.cameraPosition.w;
@@ -1063,10 +1130,42 @@ fragment WireframeFragmentOut wireframe_fragment(
     // edgeIntensity: 0 = invisible, 1 = normal, 2 = fully opaque at all depths
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    if (hasSegmentColor) edgeAlpha *= segmentColor.a;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
     return out;
+}
+
+fragment WireframeFragmentOut wireframe_fragment(
+    WireframeVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    return wireframeFragmentColor(in, uniforms, bodyUniforms, false, float4(0.0));
+}
+
+// A segment colour for display. `segmentParams.y` is ViewportBody.edgeColorSpace: 0 = sRGB, drawn
+// as given; 1 = linear, encoded to sRGB. Alpha is coverage, not a colour, and is never encoded.
+inline float4 segmentDisplayColor(float4 color, uint2 segmentParams) {
+    if (segmentParams.y != 0u) color.rgb = linearToSrgb(color.rgb);
+    return color;
+}
+
+// Per-segment colour variant of wireframe_fragment (#140). Each native line is one segment, so its
+// colour is `segmentColors[segmentParams.x + primitiveID]`: `[[primitive_id]]` restarts at 0 for
+// each draw, and `segmentParams.x` is where the draw's slice (ViewportBody.edgeDrawRange) starts.
+fragment WireframeFragmentOut wireframe_segment_fragment(
+    WireframeVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant float4 *segmentColors [[buffer(3)]],
+    constant uint2 &segmentParams [[buffer(4)]],
+    uint primitiveID [[primitive_id]]
+) {
+    return wireframeFragmentColor(
+        in, uniforms, bodyUniforms, true,
+        segmentDisplayColor(segmentColors[segmentParams.x + primitiveID], segmentParams));
 }
 
 // MARK: - Quad-Expanded Wireframe Pipeline (variable width + dash patterns)
@@ -1187,10 +1286,14 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     return out;
 }
 
-fragment WireframeFragmentOut quad_edge_fragment(
-    QuadEdgeVertexOut in [[stage_in]],
-    constant EdgeUniforms &uniforms [[buffer(1)]],
-    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+// Shared body of quad_edge_fragment and quad_edge_segment_fragment; `hasSegmentColor` and
+// `segmentColor` behave as in wireframeFragmentColor (#140).
+inline WireframeFragmentOut quadEdgeFragmentColor(
+    QuadEdgeVertexOut in,
+    constant EdgeUniforms &uniforms,
+    constant BodyUniforms &bodyUniforms,
+    bool hasSegmentColor,
+    float4 segmentColor
 ) {
     // Clip plane discard
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -1236,7 +1339,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
     // Edge-only body (metallic = -1 sentinel): draw in the body colour, not the contrast edge colour.
     if (bodyUniforms.metallic < 0.0) {
         WireframeFragmentOut out;
-        out.color = float4(bodyColor, bodyAlpha);
+        out.color = hasSegmentColor ? segmentColor : float4(bodyColor, bodyAlpha);
         return out;
     }
 
@@ -1244,6 +1347,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+    if (hasSegmentColor) edgeColor = segmentColor.rgb;
 
     // Depth fade and edgeIntensity scaling, identical to wireframe_fragment.
     float edgeIntensity = max(uniforms.edgeParams.y, 0.0);
@@ -1252,15 +1356,41 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float linearDepth = edgeFadeDepth(in.worldPosition, uniforms.viewMatrix, nearPlane, farPlane);
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    if (hasSegmentColor) edgeAlpha *= segmentColor.a;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
     return out;
 }
 
+fragment WireframeFragmentOut quad_edge_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    return quadEdgeFragmentColor(in, uniforms, bodyUniforms, false, float4(0.0));
+}
+
+// Per-segment colour variant of quad_edge_fragment (#140). Each segment is six strip vertices, so
+// `[[primitive_id]] / 6` is its index within the draw (as in pick_quad_edge_fragment), and
+// `segmentParams` is as in wireframe_segment_fragment: x = the draw's first segment, y = colour space.
+fragment WireframeFragmentOut quad_edge_segment_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant float4 *segmentColors [[buffer(3)]],
+    constant uint2 &segmentParams [[buffer(4)]],
+    uint primitiveID [[primitive_id]]
+) {
+    return quadEdgeFragmentColor(
+        in, uniforms, bodyUniforms, true,
+        segmentDisplayColor(segmentColors[segmentParams.x + primitiveID / 6u], segmentParams));
+}
+
 // Quad-expanded edge pick — kind=1, so picks cover the same width as the visible edge.
-// primSource.y == 0: primitiveID is the segment index (each segment is six strip vertices, so
-// triangle / 6). primSource.y == 1: primitiveID is primSource.x (the arc index, one draw per arc).
+// primSource.y == 0: the segment index is primSource.x (the draw's first segment, 0 unless a
+// ViewportBody.edgeDrawRange slice is drawn) + primitiveID / 6 (each segment is six strip
+// vertices). primSource.y == 1: the id is primSource.x (the arc index, one draw per arc).
 // The packing must match pick_line_fragment.
 fragment PickFragmentOut pick_quad_edge_fragment(
     QuadEdgeVertexOut in [[stage_in]],
@@ -1275,7 +1405,7 @@ fragment PickFragmentOut pick_quad_edge_fragment(
             discard_fragment();
         }
     }
-    uint segmentID = primSource.y != 0u ? primSource.x : primitiveID / 6u;
+    uint segmentID = primSource.y != 0u ? primSource.x : primSource.x + primitiveID / 6u;
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((segmentID & 0x3FFFu) << 16) | (1u << 30);
     return out;
@@ -1460,22 +1590,21 @@ inline float linearizeDepth(float depth, float near, float far, float orthograph
     return near * far / (far - depth * (far - near));
 }
 
-// SSAO-lite + Edge Silhouettes combined post-process
-fragment float4 ssao_fragment(
+// SSAO occlusion term (#188). Runs on its own full-screen pass into an R32Float texture, so
+// `ssao_blur_fragment` can smooth the ordered-dither pattern out of it before `ssao_fragment`
+// multiplies it into the scene. The result is `1 - occlusion * intensity` in [0, 1], 1 = open.
+fragment float4 ssao_occlusion_fragment(
     FullscreenVertexOut in [[stage_in]],
     texture2d<float> depthTexture [[texture(0)]],
-    texture2d<float> colorTexture [[texture(1)]],
     constant SSAOParams &params [[buffer(0)]]
 ) {
-    constexpr sampler texSampler(filter::linear, address::clamp_to_edge);
     constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
 
-    float4 sceneColor = colorTexture.sample(texSampler, in.texCoord);
     float depth = depthTexture.sample(pointSampler, in.texCoord).r;
 
-    // Skip background (depth at or near 1.0)
+    // Background (depth at or near 1.0) is never occluded.
     if (depth > 0.9999) {
-        return sceneColor;
+        return float4(1.0, 0.0, 0.0, 1.0);
     }
 
     float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
@@ -1488,9 +1617,7 @@ fragment float4 ssao_fragment(
         ? 1.0 / max(params.pixelsPerUnit * params.texelSize.y, 1e-6)
         : linearDepth;
     float result_ao = 1.0;
-    float result_edge = 0.0;
 
-    // --- SSAO ---
     if (params.intensity > 0.001) {
         // Two-ring sample pattern: inner ring (tight creases) + outer ring (broader AO)
         const float2 offsets[16] = {
@@ -1564,6 +1691,102 @@ fragment float4 ssao_fragment(
 
         result_ao = 1.0 - (occlusion / 16.0) * params.intensity;
         result_ao = clamp(result_ao, 0.0, 1.0);
+    }
+
+    return float4(result_ao, 0.0, 0.0, 1.0);
+}
+
+// Depth-aware blur of the SSAO term (#188). The occlusion pass rotates its kernel per pixel from
+// a 4x4 ordered (Bayer) pattern; averaging a 4x4 window covers every cell of that pattern exactly
+// once, so on a continuous surface the dither cancels. Taps are weighted by how well their depth
+// matches the plane through the centre pixel (the same depth-gradient prediction the occlusion
+// pass uses, so sloped and curved faces blur like flat ones), which keeps the blur from crossing
+// a depth discontinuity: occlusion neither bleeds onto a nearer silhouette nor lightens the far
+// side of it. Works on linearised depth, so it is the same in perspective and orthographic.
+fragment float4 ssao_blur_fragment(
+    FullscreenVertexOut in [[stage_in]],
+    texture2d<float> aoTexture [[texture(0)]],
+    texture2d<float> depthTexture [[texture(1)]],
+    constant SSAOParams &params [[buffer(0)]]
+) {
+    constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
+
+    float centreAO = aoTexture.sample(pointSampler, in.texCoord).r;
+    float depth = depthTexture.sample(pointSampler, in.texCoord).r;
+    if (depth > 0.9999) {
+        return float4(centreAO, 0.0, 0.0, 1.0);
+    }
+
+    float2 ts = params.texelSize;
+    float dL = depthTexture.sample(pointSampler, in.texCoord - float2(ts.x, 0.0)).r;
+    float dR = depthTexture.sample(pointSampler, in.texCoord + float2(ts.x, 0.0)).r;
+    float dD = depthTexture.sample(pointSampler, in.texCoord - float2(0.0, ts.y)).r;
+    float dU = depthTexture.sample(pointSampler, in.texCoord + float2(0.0, ts.y)).r;
+    float gradX = (abs(depth - dL) < abs(dR - depth)) ? (depth - dL) : (dR - depth);
+    float gradY = (abs(depth - dD) < abs(dU - depth)) ? (depth - dD) : (dU - depth);
+
+    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
+    // Same relative depth tolerance as the occlusion pass's plane bias: a tap further than twice
+    // this from the centre's plane belongs to another surface and gets no weight.
+    float tolerance = 0.005 * linearDepth;
+
+    float sum = 0.0;
+    float weightSum = 0.0;
+    // Offsets -2...1 on both axes: exactly one period of the 4x4 pattern.
+    for (int j = -2; j <= 1; j++) {
+        for (int i = -2; i <= 1; i++) {
+            float2 sampleUV = in.texCoord + float2(float(i), float(j)) * ts;
+            // Off-screen taps would read the clamped border texel, which is not this surface.
+            if (any(sampleUV < 0.0) || any(sampleUV > 1.0)) continue;
+            float sampleDepth = depthTexture.sample(pointSampler, sampleUV).r;
+            if (sampleDepth > 0.9999) continue;
+            float planeDepth = saturate(depth + gradX * float(i) + gradY * float(j));
+            float diff = abs(
+                linearizeDepth(sampleDepth, params.nearPlane, params.farPlane, params.orthographic)
+                - linearizeDepth(planeDepth, params.nearPlane, params.farPlane, params.orthographic));
+            float weight = 1.0 - smoothstep(tolerance, 2.0 * tolerance, diff);
+            sum += aoTexture.sample(pointSampler, sampleUV).r * weight;
+            weightSum += weight;
+        }
+    }
+    // The centre tap always has weight 1, so the sum is never empty.
+    return float4(sum / max(weightSum, 1e-4), 0.0, 0.0, 1.0);
+}
+
+// SSAO-lite + Edge Silhouettes combined post-process
+fragment float4 ssao_fragment(
+    FullscreenVertexOut in [[stage_in]],
+    texture2d<float> depthTexture [[texture(0)]],
+    texture2d<float> colorTexture [[texture(1)]],
+    texture2d<float> aoTexture [[texture(2)]],  // blurred SSAO term; read only when intensity > 0
+    constant SSAOParams &params [[buffer(0)]]
+) {
+    constexpr sampler texSampler(filter::linear, address::clamp_to_edge);
+    constexpr sampler pointSampler(filter::nearest, address::clamp_to_edge);
+
+    float4 sceneColor = colorTexture.sample(texSampler, in.texCoord);
+    float depth = depthTexture.sample(pointSampler, in.texCoord).r;
+
+    // Skip background (depth at or near 1.0)
+    if (depth > 0.9999) {
+        return sceneColor;
+    }
+
+    float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
+    // The length the silhouette and unsharp thresholds below are relative to: the view distance in
+    // perspective, the height of the view in world units in orthographic (as in
+    // `ssao_occlusion_fragment`, #217).
+    float depthScale = params.orthographic > 0.5
+        ? 1.0 / max(params.pixelsPerUnit * params.texelSize.y, 1e-6)
+        : linearDepth;
+    float result_ao = 1.0;
+    float result_edge = 0.0;
+
+    // --- SSAO ---
+    // Read from the blurred occlusion texture (`ssao_occlusion_fragment` + `ssao_blur_fragment`,
+    // #188). The renderers bind a placeholder when SSAO is off, and this branch is not taken.
+    if (params.intensity > 0.001) {
+        result_ao = aoTexture.sample(pointSampler, in.texCoord).r;
     }
 
     // --- Edge Silhouettes (Sobel on depth) ---
@@ -2139,12 +2362,18 @@ kernel void compute_tess_factors(
 
 // --- Post-tessellation vertex function: evaluate PN triangle ---
 
+// Patch k is triangle k, so its three corners' per-vertex colours (#142) are `vertexColors` at
+// `indices[3k...3k+2]`, blended with the same barycentric weights as the normal. They are bound,
+// with the mode, on every draw and only read when the mode is non-zero.
 [[patch(triangle, 3)]]
 vertex ShadedVertexOut tessellated_vertex(
     uint patchID [[patch_id]],
     float3 bary [[position_in_patch]],
     const device PNPatchData* patches [[buffer(0)]],
-    constant Uniforms& uniforms [[buffer(1)]]
+    constant Uniforms& uniforms [[buffer(1)]],
+    const device uint* indices [[buffer(2)]],
+    const device float4* vertexColors [[buffer(3)]],
+    constant uint& vertexColorMode [[buffer(4)]]
 ) {
     PNPatchData p = patches[patchID];
 
@@ -2167,6 +2396,13 @@ vertex ShadedVertexOut tessellated_vertex(
     out.worldPosition = worldPos.xyz;
     out.viewNormal = normalize((uniforms.viewMatrix * float4(out.worldNormal, 0.0)).xyz);
     out.clipPositionCopy = out.clipPosition;
+    out.vertexColorMode = vertexColorMode;
+    out.vertexColor = float3(1.0);
+    if ((vertexColorMode & 3u) != 0u) {
+        out.vertexColor = vertexColors[indices[patchID * 3]].rgb * u
+                        + vertexColors[indices[patchID * 3 + 1]].rgb * v
+                        + vertexColors[indices[patchID * 3 + 2]].rgb * w;
+    }
     return out;
 }
 
@@ -2328,6 +2564,8 @@ struct MeshVertex {
     float3 worldPosition [[centroid_perspective]];  // as ShadedVertexOut (#164)
     float3 viewNormal;
     float4 clipPositionCopy;
+    float3 vertexColor;              // per-vertex colour (#142), as ShadedVertexOut
+    uint   vertexColorMode [[flat]];
 };
 
 // Mesh output type: triangles, max 64 verts / 64 tris
@@ -2384,6 +2622,8 @@ void meshlet_mesh(
     device uint32_t* vertexIndices [[buffer(2)]],  // meshlet vertex index buffer
     device uint8_t* triangleIndices [[buffer(3)]],  // meshlet triangle index buffer (3 per tri)
     constant Uniforms& uniforms [[buffer(4)]],
+    const device float4* vertexColors [[buffer(5)]],  // per-vertex colour (#142), by globalIdx
+    constant uint& vertexColorMode [[buffer(6)]],     // 0 = ignored; bound on every shaded draw
     ShadedMeshOutput output,
     uint tid [[thread_index_in_threadgroup]]
 ) {
@@ -2406,6 +2646,8 @@ void meshlet_mesh(
         v.worldPosition = worldPos.xyz;
         v.viewNormal = normalize((uniforms.viewMatrix * float4(v.worldNormal, 0.0)).xyz);
         v.clipPositionCopy = v.clipPosition;
+        v.vertexColorMode = vertexColorMode;
+        v.vertexColor = ((vertexColorMode & 3u) != 0u) ? vertexColors[globalIdx].rgb : float3(1.0);
         output.set_vertex(tid, v);
     }
 

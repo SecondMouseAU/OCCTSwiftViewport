@@ -236,17 +236,25 @@ extension RendererSharedSetup {
     /// Binds the per-patch factor buffer, the patch data at vertex buffer 0 and `uniforms` at
     /// vertex buffer 1 (`Uniforms` for the shaded and depth paths, `ShadowUniformsSwift` for the
     /// shadow map). The caller sets fragment state and the depth-stencil state.
+    ///
+    /// The shaded pipeline passes `vertexColors` (#142), which adds the triangle indices at vertex
+    /// buffer 2, the colours at 3 and their mode at 4. Every other pipeline leaves it `nil`.
     static func encodeTessellatedDraw<U>(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         tessellation: TessellationBuffers,
-        uniforms: inout U
+        uniforms: inout U,
+        vertexColors: VertexColorBinding? = nil
     ) {
         encoder.setRenderPipelineState(pipeline)
         encoder.setTessellationFactorBuffer(
             tessellation.tessFactorBuffer, offset: 0, instanceStride: 0)
         encoder.setVertexBuffer(tessellation.patchDataBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<U>.size, index: 1)
+        if let vertexColors {
+            encoder.setVertexBuffer(vertexColors.indices, offset: 0, index: 2)
+            encodeVertexColors(encoder: encoder, binding: vertexColors)
+        }
         encoder.drawPatches(
             numberOfPatchControlPoints: 3, patchStart: 0, patchCount: tessellation.patchCount,
             patchIndexBuffer: nil, patchIndexBufferOffset: 0, instanceCount: 1, baseInstance: 0)
@@ -280,12 +288,16 @@ extension RendererSharedSetup {
     ///
     /// `vertexBuffer` is the body's interleaved (stride 6) vertex buffer; `uniforms` is bound at
     /// object buffer 1 and mesh buffer 4. The caller sets fragment state.
+    ///
+    /// The shaded pipeline passes `vertexColors` (#142), which adds the colours at mesh buffer 5
+    /// and their mode at 6. The shadow and depth pipelines leave it `nil`.
     static func encodeMeshletDraw<U>(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         meshlets: MeshletBuffers,
         vertexBuffer: MTLBuffer,
-        uniforms: inout U
+        uniforms: inout U,
+        vertexColors: VertexColorBinding? = nil
     ) {
         encoder.setRenderPipelineState(pipeline)
         encoder.setObjectBuffer(meshlets.descriptorBuffer, offset: 0, index: 0)
@@ -295,6 +307,11 @@ extension RendererSharedSetup {
         encoder.setMeshBuffer(meshlets.vertexIndexBuffer, offset: 0, index: 2)
         encoder.setMeshBuffer(meshlets.triangleIndexBuffer, offset: 0, index: 3)
         encoder.setMeshBytes(&uniforms, length: MemoryLayout<U>.size, index: 4)
+        if let vertexColors {
+            var mode = vertexColors.mode
+            encoder.setMeshBuffer(vertexColors.colors, offset: 0, index: 5)
+            encoder.setMeshBytes(&mode, length: MemoryLayout<UInt32>.size, index: 6)
+        }
         encoder.drawMeshThreadgroups(
             MTLSize(width: meshlets.meshletCount, height: 1, depth: 1),
             threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
