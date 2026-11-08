@@ -159,6 +159,60 @@ A body may mix `edges` and `arcs`, but note that a tap on either reports `PickRe
 
 ---
 
+## Per-segment edge colour and a visible range
+
+A long path (a toolpath, a trajectory, a survey line) is one body with a polyline in `edges`. Two optional fields style it without splitting it into several bodies or rebuilding it every frame:
+
+- `edgeColors` gives each flattened segment its own colour. It needs one entry per segment, `body.edgeSegmentCount`; any other count is ignored and the edges keep the body's usual colour.
+- `edgeDrawRange` limits which segments are drawn, and picked, so a playhead can reveal the path.
+
+Colours are **sRGB (display) RGBA, drawn as given**, by default, like `color`, `vertexColors` and `TriangleStyle.color`. If your data is linear-light, set `body.edgeColorSpace = .linear` and the colours are converted for display (mid-grey 0.5 reads about 188 instead of 128); changing it costs nothing, as it re-uploads no buffer.
+
+```swift
+import simd
+
+enum MoveKind { case rapid, cut, plunge }
+
+// One long polyline; segment `i` is the move from points[i] to points[i + 1].
+let points: [SIMD3<Float>] = toolpathPoints
+let moves: [MoveKind] = toolpathMoves   // points.count - 1 entries
+
+let palette: [MoveKind: SIMD4<Float>] = [
+    .rapid: SIMD4<Float>(0.55, 0.55, 0.60, 1),
+    .cut: SIMD4<Float>(0.15, 0.75, 0.35, 1),
+    .plunge: SIMD4<Float>(0.90, 0.30, 0.15, 1),
+]
+
+var path = ViewportBody(
+    id: "toolpath",
+    vertexData: [], indices: [],
+    edges: [points],
+    color: SIMD4<Float>(0.8, 0.8, 0.8, 1)   // the fallback colour
+)
+path.edgeColors = moves.map { palette[$0] ?? path.color }
+assert(path.edgeColors.count == path.edgeSegmentCount)
+```
+
+Both are cheap to change on a body that is already on screen. Assigning either leaves `generation` alone and never re-uploads the polyline: `edgeColors` re-uploads only its own 16 bytes per segment (about 192 KB for 12,000 segments), and `edgeDrawRange` uploads nothing, so it can move every frame:
+
+```swift
+// `bodies` is the array bound to MetalViewportView; `index` is the path's position in it.
+func show(upTo playhead: Int) {
+    bodies[index].edgeDrawRange = 0..<playhead
+}
+
+// Dim what has been played: fade the colours of the first `playhead` segments.
+func dimPlayed(upTo playhead: Int) {
+    var colors = bodies[index].edgeColors
+    for i in 0..<min(playhead, colors.count) { colors[i].w = 0.35 }
+    bodies[index].edgeColors = colors
+}
+```
+
+The range is clamped, so a playhead may run past the end (`0..<Int.max` shows everything) and `0..<0` shows nothing. On a meshed body the segment colour replaces the contrast edge colour and `edgeIntensity` still applies; alpha 0 hides a segment's drawing but leaves it pickable, so use `edgeDrawRange` to take segments out of picking too. `OffscreenRenderer` honours both fields, so a render of frame *n* of an animation is the same data. Arcs are not affected, and neither is `boundingBox`, so the camera fit does not change as the path is revealed. See the [`ViewportBody` reference](../../reference/ViewportBody.md#edgecolors-simd4float).
+
+---
+
 ## `faceIndices` for sub-body face selection
 
 When `faceIndices` is populated it must be **parallel to the triangle count** (`indices.count / 3`). Each element maps the corresponding triangle back to an integer face ID (e.g., a B-Rep face index). The GPU pick texture encodes `objectIndex | (triangleIndex << 16)`; the controller uses `faceIndices[triangleIndex]` to resolve which logical face was tapped.

@@ -41,7 +41,7 @@ How much of the pick texture each primitive covers, in drawable pixels:
 | Edge, arc | With `EdgeLineConfiguration.useQuadExpansion` on (the default): a band as wide as the drawn edge, at least 1 pt (2 px on a 2× display). Dash gaps are pickable too. With it off: a 1 px line, like the drawn one. |
 | Vertex | An 8 × 8 pt square (16 × 16 px on a 2× display), centred on the vertex. |
 
-Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
+Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. A body's `edgeDrawRange` limits this to the segments it shows: the others are not written to the pick buffer, and the segments inside it report their absolute index. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
 
 ---
 
@@ -584,9 +584,11 @@ Projects a world-space point to a screen-space `CGPoint`. Returns `nil` if the p
 **Example:**
 
 ```swift
+let state = controller.cameraState
+let vpMatrix = state.projectionMatrix(aspectRatio: aspect) * state.viewMatrix
 if let screenPt = ProjectionUtility.worldToScreen(
     point: hitPoint,
-    vpMatrix: controller.viewProjectionMatrix,
+    vpMatrix: vpMatrix,
     viewportSize: viewportSize
 ) {
     // Place a SwiftUI annotation overlay at screenPt

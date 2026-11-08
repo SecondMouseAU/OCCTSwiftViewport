@@ -459,6 +459,10 @@ private struct SampledPipelines {
     let wireframePipeline: MTLRenderPipelineState
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     let quadEdgePipeline: MTLRenderPipelineState?
+    /// The two edge pipelines with the per-segment colour fragment shaders
+    /// (`ViewportBody.edgeColors`, #140).
+    let wireframeSegmentPipeline: MTLRenderPipelineState?
+    let quadEdgeSegmentPipeline: MTLRenderPipelineState?
     let gridPipeline: MTLRenderPipelineState
     let axisPipeline: MTLRenderPipelineState
     /// Visible point-cloud pipeline (issue #28).
@@ -513,6 +517,15 @@ private struct SampledPipelines {
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat,
             vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
+        wireframeSegmentPipeline = RendererSharedSetup.makeWireframePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+            fragmentFunction: "wireframe_segment_fragment", label: "offscreen_wireframe_segment")
+        quadEdgeSegmentPipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor(),
+            fragmentFunction: "quad_edge_segment_fragment", label: "offscreen_quad_edge_segment")
         visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat, label: "offscreen_visible_point")
@@ -583,6 +596,13 @@ public final class OffscreenRenderer: Sendable {
     private let depthOnlyPipeline: MTLRenderPipelineState?
     private let depthOnlyDirectPipeline: MTLRenderPipelineState?
     private let ssaoCompositePipeline: MTLRenderPipelineState?
+    /// The SSAO occlusion pass and its depth-aware blur (#188), run between the prepass and the
+    /// composite.
+    private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
+    /// The occlusion textures, allocated only by renders that run SSAO.
+    ///
+    /// Internal so tests can check that SSAO off allocates and encodes nothing.
+    private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
     /// Single-sample colour the main pass resolves into when the composite runs.
     private var postColorTexture: MTLTexture?
     /// Single-sample depth written by the SSAO / silhouette depth prepass.
@@ -686,6 +706,8 @@ public final class OffscreenRenderer: Sendable {
             label: "offscreen_depth_only_direct")
         self.ssaoCompositePipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
             device: device, library: library, label: "offscreen_ssao_composite")
+        self.ssaoOcclusionPipelines = RendererSharedSetup.makeSSAOOcclusionPipelines(
+            device: device, library: library, labelPrefix: "offscreen")
 
         guard let gridAxisBuffers = GridAxisBuffers(device: device) else {
             return nil
@@ -1105,17 +1127,26 @@ public final class OffscreenRenderer: Sendable {
         /// Draws a body's edge polylines when the display mode shows edges, or the body has no
         /// mesh, through the quad-expanded or native line pipeline.
         func encodeEdges(
+            _ body: ViewportBody,
             _ buffers: BodyBuffersOffscreen,
             hasMesh: Bool,
             uniforms: inout Uniforms,
             bodyUniforms: BodyUniforms
         ) {
             let hasEdges = buffers.edgeVertexBuffer != nil && buffers.edgeVertexCount > 0
-            guard hasEdges, displayMode.showsEdges || !hasMesh,
+            // The slice of edge segments to draw (`edgeDrawRange`, #140); empty draws none.
+            let segmentCount = buffers.edgeVertexCount / EdgeSegmentStyle.nativeVerticesPerSegment
+            let edgeSegments = EdgeSegmentStyle.drawnRange(
+                body.edgeDrawRange, segmentCount: segmentCount)
+            guard hasEdges, displayMode.showsEdges || !hasMesh, !edgeSegments.isEmpty,
                 let edgeVB = buffers.edgeVertexBuffer
             else { return }
             var edgeBodyUniforms = bodyUniforms
             if !hasMesh { edgeBodyUniforms.metallic = -1.0 }
+            // Per-segment colours (`edgeColors`) are built per render, like `triangleStyles`, so
+            // reassigning them on an existing body (same `generation`) is always picked up.
+            let segmentColors = EdgeSegmentStyle.makeColorBuffer(
+                device: device, colors: body.edgeColors, segmentCount: segmentCount)
 
             let edgeConfig = options.edgeLineConfiguration
             var edgeUniforms = EdgeUniforms(
@@ -1127,7 +1158,11 @@ public final class OffscreenRenderer: Sendable {
                 let quadEdgeVB = buffers.quadEdgeVertexBuffer,
                 buffers.quadEdgeVertexCount > 0
             {
-                mainEncoder.setRenderPipelineState(quadPipeline)
+                EdgeSegmentStyle.setPipeline(
+                    mainEncoder, plain: quadPipeline,
+                    segmentVariant: pipelines.quadEdgeSegmentPipeline,
+                    colors: segmentColors, firstSegment: edgeSegments.lowerBound,
+                    colorSpace: body.edgeColorSpace)
                 mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(
                     &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
@@ -1135,12 +1170,16 @@ public final class OffscreenRenderer: Sendable {
                     &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
                     &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                 mainEncoder.drawPrimitives(
-                    type: .triangleStrip, vertexStart: 0,
-                    vertexCount: buffers.quadEdgeVertexCount)
+                    type: .triangleStrip, vertexStart: slice.start, vertexCount: slice.count)
             } else {
                 // Native Metal line pipeline (backward compatible)
-                mainEncoder.setRenderPipelineState(pipelines.wireframePipeline)
+                EdgeSegmentStyle.setPipeline(
+                    mainEncoder, plain: pipelines.wireframePipeline,
+                    segmentVariant: pipelines.wireframeSegmentPipeline,
+                    colors: segmentColors, firstSegment: edgeSegments.lowerBound,
+                    colorSpace: body.edgeColorSpace)
                 mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                 mainEncoder.setVertexBytes(
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -1148,8 +1187,9 @@ public final class OffscreenRenderer: Sendable {
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 mainEncoder.setFragmentBytes(
                     &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                 mainEncoder.drawPrimitives(
-                    type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                    type: .line, vertexStart: slice.start, vertexCount: slice.count)
             }
         }
 
@@ -1263,7 +1303,8 @@ public final class OffscreenRenderer: Sendable {
                 encodeHighlight(body, buffers, uniforms: &uniforms)
                 mainEncoder.setDepthStencilState(depthState)
             }
-            encodeEdges(buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
+            encodeEdges(
+                body, buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
         // Transparent surface pass (issue #53): deferred translucent bodies,
@@ -1480,7 +1521,8 @@ public final class OffscreenRenderer: Sendable {
                         bodyUniforms: &bodyUniforms, refine: false)
                 }
                 encodeEdges(
-                    buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
+                    body, buffers, hasMesh: hasMesh, uniforms: &uniforms,
+                    bodyUniforms: bodyUniforms)
             }
             for draw in arcDraws where draw.body.id == body.id {
                 encodeArcs(draw)
@@ -1489,6 +1531,10 @@ public final class OffscreenRenderer: Sendable {
 
         mainEncoder.endEncoding()
 
+        if compositeTargets == nil {
+            // No composite this render (SSAO off, unlit or wireframe): hold no occlusion memory.
+            ssaoOcclusionTargets.release()
+        }
         if let compositeTargets {
             encodeSSAOComposite(
                 commandBuffer: commandBuffer,
@@ -1612,7 +1658,8 @@ public final class OffscreenRenderer: Sendable {
     }
 
     /// Encodes the live renderer's SSAO / silhouette post-process: a single-sample depth prepass,
-    /// then the `ssao_fragment` composite from `targets.color` into `output`.
+    /// the SSAO occlusion pass and its depth-aware blur when SSAO is on (#188), then the
+    /// `ssao_fragment` composite from `targets.color` into `output`.
     ///
     /// Tone mapping is not part of the composite: `shaded_fragment` applies it to every lit
     /// surface. Depth of field is never applied offscreen.
@@ -1673,12 +1720,6 @@ public final class OffscreenRenderer: Sendable {
             encoder.endEncoding()
         }
 
-        let compositePass = MTLRenderPassDescriptor()
-        compositePass.colorAttachments[0].texture = output
-        compositePass.colorAttachments[0].loadAction = .dontCare
-        compositePass.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
-        else { return }
         let lighting = options.lightingConfiguration
         var params = SSAOParamsSwift(
             texelSize: SIMD2<Float>(
@@ -1696,9 +1737,36 @@ public final class OffscreenRenderer: Sendable {
             dofMaxBlurRadius: 0,
             dofEnabled: 0
         )
+
+        // SSAO occlusion + depth-aware blur (#188), as the live renderer runs them. Skipped (and
+        // its textures released) unless SSAO is on: the composite also runs for silhouettes
+        // alone, and then multiplies in no occlusion.
+        var occlusionTexture: MTLTexture?
+        if RendererSharedSetup.ssaoOcclusionActive(lighting),
+            let occlusionPipelines = ssaoOcclusionPipelines
+        {
+            occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
+                commandBuffer: commandBuffer, pipelines: occlusionPipelines,
+                targets: &ssaoOcclusionTargets, device: device, depth: targets.depth,
+                params: params, blur: lighting.ssaoBlur)
+        }
+        if occlusionTexture == nil {
+            ssaoOcclusionTargets.release()
+            params.intensity = 0
+        }
+
+        let compositePass = MTLRenderPassDescriptor()
+        compositePass.colorAttachments[0].texture = output
+        compositePass.colorAttachments[0].loadAction = .dontCare
+        compositePass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
+        else { return }
         encoder.setRenderPipelineState(compositePipeline)
         encoder.setFragmentTexture(targets.depth, index: 0)
         encoder.setFragmentTexture(targets.color, index: 1)
+        // With no occlusion the shader never reads this slot; bind the depth as a same-shaped
+        // placeholder.
+        encoder.setFragmentTexture(occlusionTexture ?? targets.depth, index: 2)
         encoder.setFragmentBytes(&params, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
