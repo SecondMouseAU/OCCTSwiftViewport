@@ -210,6 +210,12 @@ public struct OffscreenRenderOptions: Sendable {
     /// Outline colour and width for the hovered body, matching `ViewportConfiguration.hoverOutline`.
     public var hoverOutline: SelectionOutlineStyle
 
+    /// Surface tint for selected bodies, matching `ViewportConfiguration.selectionTint`.
+    public var selectionTint: SelectionTintStyle
+
+    /// Surface tint for the hovered body, matching `ViewportConfiguration.hoverTint`.
+    public var hoverTint: SelectionTintStyle
+
     /// Whether interleaved bodies get crease-aware normal smoothing, matching
     /// `ViewportConfiguration.autoSmoothNormals`.
     public var autoSmoothNormals: Bool
@@ -323,6 +329,9 @@ public struct OffscreenRenderOptions: Sendable {
         selectionOutline: SelectionOutlineStyle =
             ViewportController.defaultConfiguration.selectionOutline,
         hoverOutline: SelectionOutlineStyle = ViewportController.defaultConfiguration.hoverOutline,
+        selectionTint: SelectionTintStyle =
+            ViewportController.defaultConfiguration.selectionTint,
+        hoverTint: SelectionTintStyle = ViewportController.defaultConfiguration.hoverTint,
         autoSmoothNormals: Bool = ViewportController.defaultConfiguration.autoSmoothNormals,
         normalSmoothingCreaseAngle: Float =
             ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
@@ -365,6 +374,8 @@ public struct OffscreenRenderOptions: Sendable {
         self.hoveredBodyID = hoveredBodyID
         self.selectionOutline = selectionOutline
         self.hoverOutline = hoverOutline
+        self.selectionTint = selectionTint
+        self.hoverTint = hoverTint
         self.autoSmoothNormals = autoSmoothNormals
         self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle
         self.enableSilhouettes = enableSilhouettes
@@ -414,6 +425,8 @@ public struct OffscreenRenderOptions: Sendable {
             hoveredBodyID: controller.hoveredBodyID,
             selectionOutline: config.selectionOutline,
             hoverOutline: config.hoverOutline,
+            selectionTint: config.selectionTint,
+            hoverTint: config.hoverTint,
             autoSmoothNormals: config.autoSmoothNormals,
             normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
             enableSilhouettes: config.enableSilhouettes,
@@ -836,7 +849,9 @@ public final class OffscreenRenderer: Sendable {
                 clipPlaneCount: clipPlaneCount,
                 unlit: options.displayMode == .unlit,
                 flatShading: !options.displayMode.usesSmoothShading,
-                viewportSize: SIMD2(Float(w), Float(h))
+                viewportSize: SIMD2(Float(w), Float(h)),
+                selectionTint: options.selectionTint,
+                hoverTint: options.hoverTint
             )
         }
 

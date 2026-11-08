@@ -50,6 +50,17 @@ struct Uniforms {
     // Inverse transpose of `modelMatrix`'s upper 3x3 (see `Uniforms.normalMatrix(forModel:)`): the
     // matrix the vertex stages transform normals with. Kept in step with `modelMatrix`.
     var normalMatrix: simd_float3x3 = matrix_identity_float3x3
+    // rgb = sRGB colour at the -X, +X, -Y and +Y ends of the ambient side and depth axes
+    // (LightingConfiguration.ambientTint*). Four 16-byte slots, so the struct stays aligned.
+    var ambientAxisTints: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
+        .zero, .zero, .zero, .zero
+    )
+    // rgb = sRGB ground, horizon and sky colours of the procedural environment
+    // (LightingConfiguration.proceduralEnvironment*Color).
+    var proceduralEnvironment: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero)
+    // rgb = sRGB tint colour, w = mix amount (0 = off): ViewportConfiguration.selectionTint/hoverTint
+    var selectionTint: SIMD4<Float> = .zero
+    var hoverTint: SIMD4<Float> = .zero
 }
 
 // Per-body shader uniforms.
@@ -1440,7 +1451,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 clipPlaneCount: clipPlaneCount,
                 unlit: controller.displayMode == .unlit,
                 flatShading: !controller.displayMode.usesSmoothShading,
-                viewportSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height))
+                viewportSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
+                selectionTint: controller.configuration.selectionTint,
+                hoverTint: controller.configuration.hoverTint
             )
         }
         // Quad-expanded edges (body edges, arcs, overlay edges) and their pick footprints.

@@ -224,8 +224,9 @@ Full scene-lighting rig. Assign to `ViewportController.lightingConfiguration` (o
 
 Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal distribution, Smith geometry, Schlick Fresnel), not Blinn-Phong. Highlight size and sharpness come from each body's material (`ViewportBody.roughness`/`metallic`, or `PBRMaterial`), so the configuration has no shininess exponent. On top of the three direct lights the shader adds:
 
-- **Hemisphere ambient**: `ambientGroundColor` → `ambientSkyColor` by how far the normal points up, blended with two fixed side tints, then multiplied by `ambientColor × ambientIntensity / 0.25` (so `.threePoint`'s 0.25 is the reference level and 0 removes ambient). The world is **Z-up**: faces pointing +Z take the sky colour.
-- **Environment reflection**: image-based lighting when an environment map is loaded, otherwise a procedural ground→horizon→sky gradient, also Z-up.
+- **Hemisphere ambient**: `ambientGroundColor` → `ambientSkyColor` by how far the normal points up, blended with a side tint and a depth tint, then multiplied by `ambientColor × ambientIntensity / 0.25` (so `.threePoint`'s 0.25 is the reference level and 0 removes ambient). The world is **Z-up**: faces pointing +Z take the sky colour. See [Ambient tints](#ambient-tints).
+- **Environment reflection**: image-based lighting when an environment map is loaded, otherwise a procedural ground→horizon→sky gradient, also Z-up, whose three colours are the `proceduralEnvironment*Color` properties.
+- **Ambient and the environment map**: a loaded map's diffuse irradiance already lights every surface from all around, so the hemisphere ambient fades out as the environment takes over. See [Ambient with an environment map](#ambient-with-an-environment-map).
 - **Fresnel rim**, **matcap** blend, **PCSS shadows** on the direct light, **SSAO**, and screen-space curvature shading.
 
 `specularIntensity` scales the direct-light GGX highlights (0.5 = the physically based lobe). It does not touch environment reflections.
@@ -237,7 +238,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `keyLight` | `LightSettings` | (required) | Main directional light — typically the dominant, warm source |
 | `fillLight` | `LightSettings` | (required) | Secondary softer light to reduce shadow harshness |
 | `backLight` | `LightSettings` | (required) | Rim/kicker light for edge definition |
-| `ambientIntensity` | `Float` | `0.3` | Hemisphere ambient strength, relative to 0.25 (the `.threePoint` reference level); 0 removes ambient |
+| `ambientIntensity` | `Float` | `0.3` | Hemisphere ambient strength, relative to 0.25 (the `.threePoint` reference level); 0 removes ambient. Fades out with `environmentIntensity` while an environment map is loaded, unless `environmentReplacesAmbient` is `false` |
 | `ambientColor` | `SIMD3<Float>` | `(1,1,1)` | Tint multiplied into the hemisphere ambient |
 | `shadowsEnabled` | `Bool` | `true` | Master switch for the shadow-map pass. The pass culls no faces, so an open sheet casts a shadow whichever way it faces, and a mirroring transform (negative determinant) shadows exactly like its unmirrored body (#209) |
 | `shadowSoftness` | `Float` | `0.3` | **Deprecated, ignored.** PCSS softness comes from `shadowLightSize` |
@@ -249,8 +250,15 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `fresnelPower` | `Float` | `3.0` | Fresnel rim falloff exponent |
 | `fresnelIntensity` | `Float` | `0.3` | Fresnel rim brightness (0–1) |
 | `matcapBlend` | `Float` | `0.0` | Matcap blend factor (0 = pure lighting, 1 = pure matcap) |
-| `ambientSkyColor` | `SIMD3<Float>` | `(0.9,0.95,1.0)` | Hemisphere ambient — colour for normals pointing up (+Z) |
-| `ambientGroundColor` | `SIMD3<Float>` | `(0.3,0.25,0.2)` | Hemisphere ambient — colour for normals pointing down (−Z) |
+| `ambientSkyColor` | `SIMD3<Float>` | `(0.9,0.95,1.0)` | Hemisphere ambient — sRGB colour for normals pointing up (+Z) |
+| `ambientGroundColor` | `SIMD3<Float>` | `(0.3,0.25,0.2)` | Hemisphere ambient — sRGB colour for normals pointing down (−Z) |
+| `ambientTintNegativeX` | `SIMD3<Float>` | `(0.35,0.30,0.28)` | Ambient side tint (sRGB) at normals pointing −X: a warm grey. See [Ambient tints](#ambient-tints) |
+| `ambientTintPositiveX` | `SIMD3<Float>` | `(0.28,0.30,0.35)` | Ambient side tint (sRGB) at normals pointing +X: a cool grey |
+| `ambientTintNegativeY` | `SIMD3<Float>` | `(0.32,0.32,0.30)` | Ambient depth tint (sRGB) at normals pointing −Y, toward a front-view camera |
+| `ambientTintPositiveY` | `SIMD3<Float>` | `(0.25,0.25,0.27)` | Ambient depth tint (sRGB) at normals pointing +Y, away from a front-view camera |
+| `proceduralEnvironmentGroundColor` | `SIMD3<Float>` | `(0.3,0.28,0.25)` | Procedural environment (sRGB), shown in reflections when no map is loaded — colour toward −Z |
+| `proceduralEnvironmentHorizonColor` | `SIMD3<Float>` | `(0.7,0.72,0.75)` | Procedural environment (sRGB) — colour at the horizon |
+| `proceduralEnvironmentSkyColor` | `SIMD3<Float>` | `(0.85,0.9,1.0)` | Procedural environment (sRGB) — colour toward +Z |
 | `enableSSAO` | `Bool` | `true` | Enable screen-space ambient occlusion |
 | `ssaoRadius` | `Float` | `0.5` | SSAO sampling radius in world units (see [Ambient occlusion](#ambient-occlusion)) |
 | `ssaoIntensity` | `Float` | `0.6` | SSAO darkening intensity (0 = none, 1 = maximum) |
@@ -262,6 +270,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `environmentMapData` | `Data?` | `nil` | Legacy raw-bytes HDR: `Int32 width \| Int32 height \| RGBA32Float pixels`. Loaded automatically by both renderers when it changes; cleared when set back to `nil` |
 | `environmentMapURL` | `URL?` | `nil` | File URL to a Radiance `.hdr` file; takes precedence over `environmentMapData`. Loaded automatically like it; a file that fails to decode is skipped |
 | `environmentIntensity` | `Float` | `1.0` | IBL contribution multiplier |
+| `environmentReplacesAmbient` | `Bool` | `true` | While a map is loaded, multiply the hemisphere ambient by `1 − environmentIntensity` (never below 0) so it does not stack on the map's diffuse light. `false` keeps the full ambient on top, as earlier releases did |
 | `environmentRotationY` | `Float` | `0` | Rotation of the environment about the world up axis (Z) in radians (0…2π). The panorama's horizon lies in the XY plane |
 | `backgroundExposure` | `Float` | `1.0` | Exposure for the visible skybox background; independent of `environmentIntensity` |
 | `drawBackground` | `Bool` | `false` | Render the environment map as a skybox; `false` uses a solid clear colour |
@@ -300,7 +309,15 @@ public init(
     environmentIntensity: Float = 1.0,
     environmentRotationY: Float = 0,
     backgroundExposure: Float = 1.0,
-    drawBackground: Bool = false
+    drawBackground: Bool = false,
+    ambientTintNegativeX: SIMD3<Float> = SIMD3<Float>(0.35, 0.30, 0.28),
+    ambientTintPositiveX: SIMD3<Float> = SIMD3<Float>(0.28, 0.30, 0.35),
+    ambientTintNegativeY: SIMD3<Float> = SIMD3<Float>(0.32, 0.32, 0.30),
+    ambientTintPositiveY: SIMD3<Float> = SIMD3<Float>(0.25, 0.25, 0.27),
+    proceduralEnvironmentGroundColor: SIMD3<Float> = SIMD3<Float>(0.3, 0.28, 0.25),
+    proceduralEnvironmentHorizonColor: SIMD3<Float> = SIMD3<Float>(0.7, 0.72, 0.75),
+    proceduralEnvironmentSkyColor: SIMD3<Float> = SIMD3<Float>(0.85, 0.9, 1.0),
+    environmentReplacesAmbient: Bool = true
 )
 ```
 
@@ -315,7 +332,7 @@ controller.lightingConfiguration = config
 
 ### Colour pipeline
 
-Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, `backgroundColor`, grid, axis, edge and outline colours (`ViewportBody.edgeColors` included, unless `edgeColorSpace` is set to `.linear`), `ViewportBody.vertexColors` (unless `vertexColorSpace` is set to `.linear`), and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
+Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, the ambient side and depth tints, the procedural environment colours, `backgroundColor`, grid, axis, edge and outline colours (`ViewportBody.edgeColors` included, unless `edgeColorSpace` is set to `.linear`), the selection and hover tint colours, `ViewportBody.vertexColors` (unless `vertexColorSpace` is set to `.linear`), and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
 
 Lit surfaces are the only place the renderer does arithmetic on light, so the surface shader:
 
@@ -328,12 +345,40 @@ Everything else (unlit bodies, edges, wireframe, grid, axes, background clear co
 
 The SSAO / silhouette composite decodes the image to linear, applies occlusion, silhouettes and depth of field there, and re-encodes. The skybox (`drawBackground` with an environment map) is linear HDR, so it is scaled by `backgroundExposure`, tone mapped with `exposure` / `whitePoint`, and encoded like lit surfaces.
 
-The selection and hover tints are blended into the final sRGB colour, so they look the same in every display mode.
+The selection and hover tints (`ViewportConfiguration.selectionTint` / `hoverTint`, see [`SelectionTintStyle`](Configuration.md#selectiontintstyle)) are blended into the final sRGB colour, so they look the same in every display mode.
 
 Translucent surfaces (opacity below 1, including `.xray`) get two adjustments:
 
 - **Far walls:** a body's far wall, seen through its near wall, is lit as the side being looked at. Its normals are flipped toward the viewer, so the Fresnel rim and environment reflection don't light up the whole far wall.
 - **Highlights:** alpha is raised where the direct specular highlight is bright. Reflection isn't dimmed by how transparent a surface is, so glass at 10 % opacity still shows its highlight; the rest of the surface keeps its own opacity.
+
+### Ambient tints
+
+The hemisphere ambient is `0.6 × hemisphere + 0.2 × side + 0.2 × depth`, evaluated per fragment from the surface normal `N`:
+
+- **hemisphere** runs from `ambientGroundColor` at `N.z = -1` to `ambientSkyColor` at `N.z = +1`;
+- **side** runs from `ambientTintNegativeX` at `N.x = -1` to `ambientTintPositiveX` at `N.x = +1`;
+- **depth** runs from `ambientTintNegativeY` at `N.y = -1` to `ambientTintPositiveY` at `N.y = +1`.
+
+The sum is blended in sRGB, decoded to linear, then scaled by `ambientColor × ambientIntensity / 0.25` and by the body's colour. The defaults are the values the shader used to hard-code: a warm grey on −X, a cool one on +X, and a slightly brighter front (−Y). They break up flat shading between faces at the same elevation but different azimuths. Set all four to the same colour for a neutral side term, or to any colours to match a brand look; the presets leave them at their defaults.
+
+With no environment map, the **procedural environment** that reflections sample is `proceduralEnvironmentGroundColor` at −Z, `proceduralEnvironmentHorizonColor` at the horizon and `proceduralEnvironmentSkyColor` at +Z, blended with a smoothstep in each half. It only shows on glossy and metallic surfaces, and it is not the background.
+
+```swift
+var lighting = LightingConfiguration.studio
+lighting.ambientTintNegativeX = SIMD3(0.30, 0.30, 0.30)   // neutral sides
+lighting.ambientTintPositiveX = SIMD3(0.30, 0.30, 0.30)
+lighting.proceduralEnvironmentSkyColor = SIMD3(1.0, 0.85, 0.7)  // warm sky in reflections
+controller.lightingConfiguration = lighting
+```
+
+### Ambient with an environment map
+
+A loaded environment map lights every surface from all around through its diffuse irradiance, which is the same job as the hemisphere ambient. Adding both double-counted the light, flattened the image, and made a default `.threePoint` scene with an HDR much brighter than the same map in other viewers. While a map is loaded and `environmentReplacesAmbient` is `true` (the default), the ambient is multiplied by `1 − environmentIntensity`, clamped at 0: gone at the default intensity of 1, filling back in as you dim the environment, and unchanged with no map. A scene that set `ambientIntensity = 0` by hand to work around this looks the same as before. Set `environmentReplacesAmbient = false` to restore the old stacked look. The direct lights, the specular environment reflection and the SSAO are not affected.
+
+### Environment map orientation
+
+An equirectangular panorama is laid out with its top row at world +Z (up) and its horizon in the XY plane. The **centre column** (u = 0.5) faces world **+X**, and u grows toward **−Y**: the quarter-way column (u = 0.25) is +Y, three-quarters (u = 0.75) is −Y, and the left and right edges meet at −X. Seen from inside, standing at the origin facing +X with +Z up, the image runs left to right as it does on screen, so a panorama is not mirrored. `environmentRotationY` turns this about world up. The headless test `EquirectHandednessTests` pins it with markers at four azimuths, in both the skybox and reflections.
 
 ### Tone mapping
 

@@ -127,6 +127,39 @@ public struct SelectionOutlineStyle: Sendable, Hashable {
     public static let hover = SelectionOutlineStyle(color: SIMD3<Float>(0.4, 0.7, 1.0))
 }
 
+// MARK: - Selection Tint Style
+
+/// Colour and strength of the surface tint blended into a selected or hovered body.
+///
+/// The tint is the wash over the body itself, separate from the outline ring around it
+/// (``SelectionOutlineStyle``). It is mixed into the colour the body is displayed in, in every
+/// display mode including `.unlit`.
+public struct SelectionTintStyle: Sendable, Hashable {
+    /// Tint colour as an sRGB (display) value.
+    public var color: SIMD3<Float>
+
+    /// Share of `color` mixed into the body's displayed colour, `0...1`, clamped when drawn.
+    ///
+    /// 0 leaves the body untouched and 1 paints it solid.
+    public var strength: Float
+
+    public init(color: SIMD3<Float>, strength: Float) {
+        self.color = color
+        self.strength = strength
+    }
+
+    /// Default tint for selected bodies: a 15 % wash of blue.
+    public static let selection = SelectionTintStyle(
+        color: SIMD3<Float>(0.3, 0.5, 1.0), strength: 0.15)
+
+    /// Default tint for the hovered body: an 8 % wash of light blue.
+    public static let hover = SelectionTintStyle(
+        color: SIMD3<Float>(0.4, 0.6, 1.0), strength: 0.08)
+
+    /// No tint, for outline-only selection.
+    public static let off = SelectionTintStyle(color: .zero, strength: 0)
+}
+
 // MARK: - Grid Style
 
 /// Rendering style for the ground grid.
@@ -369,6 +402,18 @@ public struct ViewportConfiguration: Sendable {
     ///
     /// Defaults to ``SelectionOutlineStyle/hover``.
     public var hoverOutline: SelectionOutlineStyle = .hover
+
+    /// Surface tint blended into selected bodies.
+    ///
+    /// Defaults to ``SelectionTintStyle/selection``, a faint blue. Set it to match the outline
+    /// colour, or to ``SelectionTintStyle/off`` (or any style with `strength` 0) for outline-only
+    /// selection.
+    public var selectionTint: SelectionTintStyle = .selection
+
+    /// Surface tint blended into the hovered body when it is not also selected.
+    ///
+    /// Defaults to ``SelectionTintStyle/hover``.
+    public var hoverTint: SelectionTintStyle = .hover
 
     // MARK: - Edge Lines
 

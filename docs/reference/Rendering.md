@@ -120,6 +120,8 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `hoveredBodyID` | `String?` | `nil` | Body drawn hovered (lighter tint and outline), mirroring `ViewportController.hoveredBodyID`. |
 | `selectionOutline` | `SelectionOutlineStyle` | `.selection` | Outline colour and pixel width for selected bodies, mirroring `ViewportConfiguration.selectionOutline`. |
 | `hoverOutline` | `SelectionOutlineStyle` | `.hover` | Outline colour and pixel width for the hovered body, mirroring `ViewportConfiguration.hoverOutline`. |
+| `selectionTint` | `SelectionTintStyle` | `.selection` | Surface tint colour and strength for selected bodies, mirroring `ViewportConfiguration.selectionTint`. `.off` removes the wash. See [`SelectionTintStyle`](Configuration.md#selectiontintstyle). |
+| `hoverTint` | `SelectionTintStyle` | `.hover` | Surface tint for the hovered body, mirroring `ViewportConfiguration.hoverTint`. |
 | `autoSmoothNormals` | `Bool` | `false` | Crease-aware normal smoothing of interleaved meshes, mirroring `ViewportConfiguration.autoSmoothNormals` (on in `.cadHighQuality`). |
 | `normalSmoothingCreaseAngle` | `Float` | `0.524` | Crease angle in radians for `autoSmoothNormals`. |
 | `enableSilhouettes` | `Bool` | `true` | Screen-space depth silhouettes, mirroring `ViewportConfiguration.enableSilhouettes`. Shares one composite pass with SSAO (tone mapping happens in the surface shader, not here); the pass is skipped in `.wireframe` and `.unlit`. |
@@ -168,6 +170,8 @@ public init(
     hoveredBodyID: String? = nil,
     selectionOutline: SelectionOutlineStyle = .selection,
     hoverOutline: SelectionOutlineStyle = .hover,
+    selectionTint: SelectionTintStyle = .selection,
+    hoverTint: SelectionTintStyle = .hover,
     autoSmoothNormals: Bool = false,
     normalSmoothingCreaseAngle: Float = 0.524,
     enableSilhouettes: Bool = true,

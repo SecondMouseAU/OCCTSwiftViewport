@@ -254,15 +254,16 @@ struct NormalMatrixTests {
         #expect(uniforms.normalMatrix == matrix_identity_float3x3)
     }
 
-    @Test("The Swift Uniforms layout matches the Metal struct's tail")
+    @Test("The Swift Uniforms layout matches the Metal struct's viewport and normal fields")
     func uniformsLayout() {
-        // Metal: ..., toneMapWhitePoint (float), float4 viewportParams, float3x3 normalMatrix.
+        // Metal: ..., toneMapWhitePoint (float), float4 viewportParams, float3x3 normalMatrix,
+        // then the ambient / procedural-environment / tint fields (LightingTintsAndIBLTests).
         let viewport = MemoryLayout<Uniforms>.offset(of: \Uniforms.viewportParams)!
         let normal = MemoryLayout<Uniforms>.offset(of: \Uniforms.normalMatrix)!
         #expect(viewport % 16 == 0)
         #expect(normal == viewport + 16)
         #expect(MemoryLayout<simd_float3x3>.size == 48)
-        #expect(MemoryLayout<Uniforms>.size == normal + 48)
+        #expect(MemoryLayout<Uniforms>.offset(of: \Uniforms.ambientAxisTints)! == normal + 48)
         #expect(MemoryLayout<Uniforms>.stride == MemoryLayout<Uniforms>.size)
     }
 

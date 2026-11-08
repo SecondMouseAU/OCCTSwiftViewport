@@ -56,6 +56,7 @@ public typealias _EdgeLineDashKind = EdgeLineDashKind
 public typealias _EdgeLineDashPattern = EdgeLineDashPattern
 public typealias _EdgeLineConfiguration = EdgeLineConfiguration
 public typealias _SelectionOutlineStyle = SelectionOutlineStyle
+public typealias _SelectionTintStyle = SelectionTintStyle
 public typealias _RenderingQuality = RenderingQuality
 public typealias _UniformTessellationFactor = UniformTessellationFactor
 

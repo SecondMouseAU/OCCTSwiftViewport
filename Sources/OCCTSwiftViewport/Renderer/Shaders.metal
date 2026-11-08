@@ -41,6 +41,11 @@ struct Uniforms {
     float4   viewportParams;           // xy = render target size in pixels, zw unused
     float3x3 normalMatrix;             // inverse transpose of modelMatrix's upper 3x3: the matrix
                                        // normals are transformed with (not modelMatrix itself)
+    float4   ambientAxisTints[4];      // rgb = sRGB colour at -X, +X, -Y, +Y: the ambient side
+                                       // (X) and depth (Y) tints, LightingConfiguration.ambientTint*
+    float4   proceduralEnvironment[3]; // rgb = sRGB ground, horizon, sky of the procedural sky
+    float4   selectionTint;            // rgb = sRGB tint colour, w = mix amount (0 = off)
+    float4   hoverTint;                // same, for the hovered body
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).
@@ -249,18 +254,31 @@ inline float3 worldToEnvironment(float3 v, float angle) {
     return rotateY(float3(v.x, v.z, -v.y), angle);
 }
 
-// Procedural environment reflection: sky-ground gradient. World is Z-up.
-inline float3 sampleEnvironment(float3 direction) {
+// Procedural environment reflection: sky-ground gradient. World is Z-up. The three colours are
+// sRGB values from LightingConfiguration.proceduralEnvironment*Color.
+inline float3 sampleEnvironment(float3 direction, constant float4 *colors) {
     float t = direction.z * 0.5 + 0.5; // 0 = ground, 1 = sky
-    float3 groundColor = float3(0.3, 0.28, 0.25);
-    float3 horizonColor = float3(0.7, 0.72, 0.75);
-    float3 skyColor = float3(0.85, 0.9, 1.0);
+    float3 groundColor = colors[0].rgb;
+    float3 horizonColor = colors[1].rgb;
+    float3 skyColor = colors[2].rgb;
     // Two-segment blend: ground→horizon→sky
     if (t < 0.5) {
         return mix(groundColor, horizonColor, smoothstep(0.0, 0.5, t));
     } else {
         return mix(horizonColor, skyColor, smoothstep(0.5, 1.0, t));
     }
+}
+
+// Selection / hover surface tint (ViewportConfiguration.selectionTint / hoverTint): mixes the
+// display-encoded colour toward the tint's sRGB colour by its strength. isSelected is
+// 1 = selected, 2 = hovered; a strength of 0 leaves the colour untouched.
+inline float3 applySelectionTint(float3 color, uint isSelected, constant Uniforms &uniforms) {
+    if (isSelected == 1) {
+        return mix(color, uniforms.selectionTint.rgb, uniforms.selectionTint.w);
+    } else if (isSelected == 2) {
+        return mix(color, uniforms.hoverTint.rgb, uniforms.hoverTint.w);
+    }
+    return color;
 }
 
 // MARK: - Shaded Pipeline
@@ -393,12 +411,9 @@ fragment ShadedFragmentOut shaded_fragment(
     // so vivid diagnostic colours stay faithful and distinguishable. Clip planes and
     // selection tint still apply.
     if (uniforms.unlit == 1u) {
-        float3 flatColor = surfaceAlbedo(bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode);
-        if (bodyUniforms.isSelected == 1) {
-            flatColor = mix(flatColor, float3(0.3, 0.5, 1.0), 0.15);
-        } else if (bodyUniforms.isSelected == 2) {
-            flatColor = mix(flatColor, float3(0.4, 0.6, 1.0), 0.08);
-        }
+        float3 flatColor = applySelectionTint(
+            surfaceAlbedo(bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode),
+            bodyUniforms.isSelected, uniforms);
         ShadedFragmentOut unlitOut;
         unlitOut.color = float4(flatColor, bodyUniforms.color.a);
         return unlitOut;
@@ -537,10 +552,13 @@ fragment ShadedFragmentOut shaded_fragment(
     float3 skyColor = uniforms.ambientSkyColor.rgb;
     float3 groundColor = uniforms.ambientGroundColor.rgb;
     float3 ambientUp = mix(groundColor, skyColor, N.z * 0.5 + 0.5);
-    // Side axis: warm on +X, cool on -X (simulates fill/key side difference)
-    float3 ambientX = mix(float3(0.35, 0.30, 0.28), float3(0.28, 0.30, 0.35), N.x * 0.5 + 0.5);
+    // Side axis: warm on -X, cool on +X (simulates fill/key side difference). The four tints are
+    // LightingConfiguration.ambientTint* (sRGB).
+    float3 ambientX = mix(uniforms.ambientAxisTints[0].rgb, uniforms.ambientAxisTints[1].rgb,
+                          N.x * 0.5 + 0.5);
     // Depth axis: slightly brighter facing the front-view camera (−Y), darker facing away
-    float3 ambientDepth = mix(float3(0.32, 0.32, 0.30), float3(0.25, 0.25, 0.27), N.y * 0.5 + 0.5);
+    float3 ambientDepth = mix(uniforms.ambientAxisTints[2].rgb, uniforms.ambientAxisTints[3].rgb,
+                              N.y * 0.5 + 0.5);
     float3 ambientLevel = srgbToLinear((ambientUp * 0.6) + (ambientX * 0.2) + (ambientDepth * 0.2));
     float3 ambient = ambientLevel * bodyColor * (1.0 - metallic * 0.5);
     // ambientColor × ambientIntensity, normalised so the .threePoint preset's 0.25 is 1×.
@@ -584,7 +602,7 @@ fragment ShadedFragmentOut shaded_fragment(
         }
     } else {
         // Procedural environment fallback
-        float3 envColor = srgbToLinear(sampleEnvironment(R));
+        float3 envColor = srgbToLinear(sampleEnvironment(R, uniforms.proceduralEnvironment));
         float envFresnel = pow(1.0 - NdotV, 5.0);
         float envStrength = mix(0.04, 1.0, metallic) * mix(0.3, 1.0, envFresnel) * (1.0 - roughness * 0.7);
         envContribution = envColor * mix(float3(dielectricF0), bodyColor, metallic) * envStrength;
@@ -643,13 +661,10 @@ fragment ShadedFragmentOut shaded_fragment(
     litColor = acesToneMap(litColor, uniforms.toneMapExposure, uniforms.toneMapWhitePoint);
     litColor = linearToSrgb(litColor);
 
-    // Selection tint: subtle blue overlay for selected, lighter for hovered. Applied to the
-    // display-encoded colour, like the unlit path, so it reads the same in every mode.
-    if (bodyUniforms.isSelected == 1) {
-        litColor = mix(litColor, float3(0.3, 0.5, 1.0), 0.15);
-    } else if (bodyUniforms.isSelected == 2) {
-        litColor = mix(litColor, float3(0.4, 0.6, 1.0), 0.08);
-    }
+    // Selection tint: a wash of the configured colour over a selected or hovered body (a subtle
+    // blue by default). Applied to the display-encoded colour, like the unlit path, so it reads
+    // the same in every mode.
+    litColor = applySelectionTint(litColor, bodyUniforms.isSelected, uniforms);
 
     // Reflection is not attenuated by how transparent the surface is: glass at 10 % opacity
     // still shows a full-strength highlight. With "over" blending the whole colour is scaled by

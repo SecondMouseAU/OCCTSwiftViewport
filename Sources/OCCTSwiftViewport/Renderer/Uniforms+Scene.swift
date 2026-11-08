@@ -46,10 +46,20 @@ extension Uniforms {
     /// normalised so `.threePoint` (white, 0.25) is exactly 1 and keeps its look. `w` multiplies
     /// the direct-light GGX specular: `specularIntensity / 0.5`, so 0 removes highlights and the
     /// default 0.5 is the unscaled, physically based lobe. Negative inputs clamp to 0.
-    nonisolated static func lightingScales(for lighting: LightingConfiguration) -> SIMD4<Float> {
-        let ambient =
+    ///
+    /// With a loaded environment map (`iblParams.w > 0.5`) and `environmentReplacesAmbient`, the
+    /// ambient is also multiplied by `1 - environmentIntensity` (`iblParams.x`), clamped at 0, so
+    /// the map's diffuse irradiance replaces the hemisphere ambient instead of stacking on it
+    /// (#168). Without a map the factor is 1.
+    nonisolated static func lightingScales(
+        for lighting: LightingConfiguration, iblParams: SIMD4<Float> = .zero
+    ) -> SIMD4<Float> {
+        var ambient =
             simd_max(lighting.ambientColor, .zero)
             * (max(lighting.ambientIntensity, 0) / referenceAmbientIntensity)
+        if iblParams.w > 0.5 && lighting.environmentReplacesAmbient {
+            ambient *= max(1 - iblParams.x, 0)
+        }
         let specular = max(lighting.specularIntensity, 0) / referenceSpecularIntensity
         return SIMD4<Float>(ambient, specular)
     }
@@ -88,6 +98,13 @@ extension Uniforms {
         return simd_float3x3(columns: (c0, c1, c2))
     }
 
+    /// Packs a tint style for the shader: clamped sRGB colour in `rgb`, mix amount in `w`.
+    nonisolated static func packedTint(_ tint: SelectionTintStyle) -> SIMD4<Float> {
+        SIMD4<Float>(
+            simd_clamp(tint.color, .zero, SIMD3<Float>(repeating: 1)),
+            min(max(tint.strength, 0), 1))
+    }
+
     /// Builds the per-frame scene uniforms both renderers hand to the shaders.
     ///
     /// `modelMatrix` starts out as the identity; callers overwrite it per body.
@@ -111,6 +128,8 @@ extension Uniforms {
     ///     when `unlit` is set.
     ///   - viewportSize: Size of the render target in pixels. The native edge depth bias is a
     ///     number of pixels of it (#193); leave it `.zero` and the shader assumes 1000 px tall.
+    ///   - selectionTint: Surface tint of selected bodies.
+    ///   - hoverTint: Surface tint of the hovered body.
     init(
         viewProjection: simd_float4x4,
         viewMatrix: simd_float4x4,
@@ -128,7 +147,9 @@ extension Uniforms {
         clipPlaneCount: UInt32 = 0,
         unlit: Bool,
         flatShading: Bool = false,
-        viewportSize: SIMD2<Float> = .zero
+        viewportSize: SIMD2<Float> = .zero,
+        selectionTint: SelectionTintStyle = .selection,
+        hoverTint: SelectionTintStyle = .hover
     ) {
         self.init(
             viewProjectionMatrix: viewProjection,
@@ -140,7 +161,7 @@ extension Uniforms {
             light2: LightDataSwift(lighting.backLight),
             ambientSkyColor: SIMD4<Float>(lighting.ambientSkyColor, 0),
             ambientGroundColor: SIMD4<Float>(lighting.ambientGroundColor, 0),
-            lightingScales: Self.lightingScales(for: lighting),
+            lightingScales: Self.lightingScales(for: lighting, iblParams: iblParams),
             materialParams: SIMD4<Float>(
                 lighting.fresnelPower, lighting.fresnelIntensity, lighting.matcapBlend, farPlane),
             lightViewProjectionMatrix: lightViewProjection,
@@ -152,7 +173,20 @@ extension Uniforms {
             unlit: unlit ? 1 : (flatShading ? 2 : 0),
             toneMapExposure: lighting.exposure,
             toneMapWhitePoint: lighting.whitePoint,
-            viewportParams: SIMD4<Float>(viewportSize.x, viewportSize.y, 0, 0)
+            viewportParams: SIMD4<Float>(viewportSize.x, viewportSize.y, 0, 0),
+            ambientAxisTints: (
+                SIMD4<Float>(lighting.ambientTintNegativeX, 0),
+                SIMD4<Float>(lighting.ambientTintPositiveX, 0),
+                SIMD4<Float>(lighting.ambientTintNegativeY, 0),
+                SIMD4<Float>(lighting.ambientTintPositiveY, 0)
+            ),
+            proceduralEnvironment: (
+                SIMD4<Float>(lighting.proceduralEnvironmentGroundColor, 0),
+                SIMD4<Float>(lighting.proceduralEnvironmentHorizonColor, 0),
+                SIMD4<Float>(lighting.proceduralEnvironmentSkyColor, 0)
+            ),
+            selectionTint: Self.packedTint(selectionTint),
+            hoverTint: Self.packedTint(hoverTint)
         )
     }
 }
