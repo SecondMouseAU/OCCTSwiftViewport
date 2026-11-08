@@ -66,6 +66,15 @@ lighting.specularIntensity = 0.8    // 0 = none, 0.5 = physically based
 lighting.ambientIntensity = 0.35
 lighting.ambientColor = SIMD3<Float>(1.0, 0.97, 0.92)
 
+// The ambient also carries a warm/cool side tint (X) and a front/back depth tint (Y); these
+// are sRGB colours, shown at their defaults. Make the sides neutral:
+lighting.ambientTintNegativeX = SIMD3<Float>(0.3, 0.3, 0.3)
+lighting.ambientTintPositiveX = SIMD3<Float>(0.3, 0.3, 0.3)
+
+// With no environment map, glossy and metallic surfaces reflect a procedural sky
+// (ground -Z, horizon, sky +Z), also sRGB. Warm the sky:
+lighting.proceduralEnvironmentSkyColor = SIMD3<Float>(1.0, 0.85, 0.7)
+
 // Strengthen the Fresnel rim glow on silhouette edges.
 lighting.fresnelPower = 2.5         // lower = broader rim
 lighting.fresnelIntensity = 0.5     // 0–1
@@ -225,7 +234,7 @@ Supplying an HDR environment map upgrades ambient and specular contributions fro
 
 ### Loading from a `.hdr` File URL
 
-Set `environmentMapURL` in the lighting configuration. Both the interactive renderer and `OffscreenRenderer` call `HDRLoader.loadFromURL(_:)` (Radiance RGBE `.hdr`/`.rgbe`/`.pic`) and upload the result automatically when the URL changes, and clear it again when it goes back to `nil`. The panorama is oriented Z-up: its top row is the sky above +Z.
+Set `environmentMapURL` in the lighting configuration. Both the interactive renderer and `OffscreenRenderer` call `HDRLoader.loadFromURL(_:)` (Radiance RGBE `.hdr`/`.rgbe`/`.pic`) and upload the result automatically when the URL changes, and clear it again when it goes back to `nil`. The panorama is oriented Z-up: its top row is the sky above +Z, its centre column faces world +X, and it runs left to right as seen from inside (u grows toward −Y), so it is not mirrored.
 
 ```swift
 guard let url = Bundle.main.url(forResource: "studio_garden_2k", withExtension: "hdr") else {
@@ -254,14 +263,15 @@ controller.lightingConfiguration = lighting
 
 ### Combining IBL with the Directional Rig
 
-IBL and the three-point rig are additive. A common product-shot setup suppresses the directional lights and relies entirely on the environment:
+IBL and the three directional lights are additive. The hemisphere ambient is not: the environment's diffuse irradiance does the same job, so while a map is loaded the ambient is multiplied by `1 − environmentIntensity` (gone at the default intensity of 1, filling back in as you dim the environment). That keeps a default `.threePoint` scene with an HDR from looking washed out. Set `environmentReplacesAmbient = false` to keep the full ambient on top of the map.
+
+A common product-shot setup suppresses the directional lights and relies entirely on the environment:
 
 ```swift
 var lighting = LightingConfiguration.studio
 lighting.keyLight.intensity = 0.0
 lighting.fillLight.intensity = 0.0
 lighting.backLight.intensity = 0.0
-lighting.ambientIntensity = 0.0
 lighting.environmentMapURL = hdrlUrl
 lighting.environmentIntensity = 1.2
 lighting.drawBackground = true

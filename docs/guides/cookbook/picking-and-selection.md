@@ -106,6 +106,16 @@ controller.deselectAll()
 controller.clearSelection()   // also clears pickResult
 ```
 
+Selected and hovered bodies also get a faint blue wash over the body itself, separate from the outline. Its colour and strength come from `ViewportConfiguration.selectionTint` and `.hoverTint` (`SelectionTintStyle`), so an app with an orange selection colour can match it, or turn the wash off for outline-only selection. `OffscreenRenderOptions` carries the same two fields.
+
+```swift
+var config = ViewportConfiguration.cad
+let orange = SIMD3<Float>(1.0, 0.6, 0.1)
+config.selectionOutline = SelectionOutlineStyle(color: orange, width: 3)
+config.selectionTint = SelectionTintStyle(color: orange, strength: 0.2)  // match the outline
+config.hoverTint = .off                                                  // no wash on hover
+```
+
 ---
 
 ## PickResultFilter chains

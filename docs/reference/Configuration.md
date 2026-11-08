@@ -11,7 +11,7 @@ These types control viewport appearance, rendering fidelity, and picking. `Viewp
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [SelectionTintStyle](#selectiontintstyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -398,6 +398,36 @@ public var hoverOutline: SelectionOutlineStyle  // default: .hover
 ```
 
 Outline for `ViewportController.hoveredBodyID` when that body is not also selected. Not an `init` parameter.
+
+---
+
+#### `selectionTint`
+
+```swift
+public var selectionTint: SelectionTintStyle  // default: .selection
+```
+
+Colour and strength of the surface wash mixed into bodies in `ViewportController.selectedBodyIDs`, separate from the outline ring around them. The default is the faint blue (15 % of `(0.3, 0.5, 1.0)`) the shaded pass has always used. Set it to the outline colour so an orange outline does not sit around a blue-tinted body, or to `.off` (or any style with `strength` 0) for outline-only selection. Applies in every display mode, `.unlit` included. Not an `init` parameter; assign it on the value. See [`SelectionTintStyle`](#selectiontintstyle).
+
+```swift
+var config = ViewportConfiguration.cad
+let orange = SIMD3<Float>(1.0, 0.6, 0.1)
+config.selectionOutline = SelectionOutlineStyle(color: orange, width: 4)
+config.selectionTint = SelectionTintStyle(color: orange, strength: 0.25)
+// or outline-only selection:
+config.selectionTint = .off
+config.hoverTint = .off
+```
+
+---
+
+#### `hoverTint`
+
+```swift
+public var hoverTint: SelectionTintStyle  // default: .hover
+```
+
+Tint for `ViewportController.hoveredBodyID` when that body is not also selected (a selected body uses `selectionTint`). Not an `init` parameter.
 
 ---
 
@@ -815,7 +845,30 @@ Colour and width of the outline ring the live renderer draws around a selected o
 | `.selection` | `(0.1, 0.5, 1.0)` bright blue | 3 px |
 | `.hover` | `(0.4, 0.7, 1.0)` light blue | 3 px |
 
-The faint blue tint the shaded pass mixes into selected (15 %) and hovered (8 %) bodies is separate and fixed.
+The faint tint the shaded pass mixes into selected and hovered bodies is separate: see [`SelectionTintStyle`](#selectiontintstyle).
+
+---
+
+## SelectionTintStyle
+
+```swift
+public struct SelectionTintStyle: Sendable, Hashable
+```
+
+Colour and strength of the surface tint blended into a selected or hovered body. Used by `ViewportConfiguration.selectionTint` and `.hoverTint`, and mirrored by `OffscreenRenderOptions.selectionTint` / `.hoverTint`. The result is `mix(displayedColour, color, strength)`, applied to the colour the body is displayed in (after lighting, tone mapping and sRGB encoding, or to the flat colour in `.unlit`), so it reads the same in every display mode. It tints the body only; the ring around it is the [`SelectionOutlineStyle`](#selectionoutlinestyle), and the two are independent.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `color` | `SIMD3<Float>` | — | Tint colour, sRGB (display) RGB, clamped to `0...1`. |
+| `strength` | `Float` | — | Share of `color` mixed in, `0...1` (clamped). `0` turns the tint off. |
+
+| Preset | Colour | Strength |
+|---|---|---|
+| `.selection` | `(0.3, 0.5, 1.0)` blue | 0.15 |
+| `.hover` | `(0.4, 0.6, 1.0)` light blue | 0.08 |
+| `.off` | — | 0 |
+
+The defaults are the values the shader used to hard-code, so a configuration that does not touch the tint renders exactly as before.
 
 ---
 

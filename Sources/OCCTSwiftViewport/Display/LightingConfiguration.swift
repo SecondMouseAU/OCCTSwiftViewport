@@ -25,9 +25,12 @@ public struct LightingConfiguration: Sendable {
 
     /// Ambient light intensity (0-1).
     ///
-    /// Scales the hemisphere ambient (`ambientSkyColor`/`ambientGroundColor` plus the shader's
-    /// fixed side tints). It is relative to `.threePoint`'s 0.25, which gives the renderer's
-    /// reference ambient level; 0 removes ambient light entirely.
+    /// Scales the hemisphere ambient (`ambientSkyColor`/`ambientGroundColor` plus the side and
+    /// depth tints, `ambientTintNegativeX` and friends). It is relative to `.threePoint`'s 0.25,
+    /// which gives the renderer's reference ambient level; 0 removes ambient light entirely.
+    ///
+    /// While an environment map is loaded the ambient fades out as `environmentIntensity` rises,
+    /// unless `environmentReplacesAmbient` is off.
     public var ambientIntensity: Float
 
     /// Ambient light colour, multiplied into the hemisphere ambient (white leaves it untinted).
@@ -91,11 +94,55 @@ public struct LightingConfiguration: Sendable {
     /// Matcap blend factor (0 = pure lighting, 1 = pure matcap).
     public var matcapBlend: Float
 
-    /// Hemisphere ambient sky color (upper hemisphere).
+    /// Hemisphere ambient sky color (upper hemisphere), as an sRGB value.
     public var ambientSkyColor: SIMD3<Float>
 
-    /// Hemisphere ambient ground color (lower hemisphere).
+    /// Hemisphere ambient ground color (lower hemisphere), as an sRGB value.
     public var ambientGroundColor: SIMD3<Float>
+
+    /// Ambient side tint on faces whose normal points along -X, an sRGB value.
+    ///
+    /// The ambient is `0.6 × hemisphere + 0.2 × side + 0.2 × depth`. The side term runs from this
+    /// colour at N.x = -1 to `ambientTintPositiveX` at N.x = +1; the depth term runs from
+    /// `ambientTintNegativeY` at N.y = -1 to `ambientTintPositiveY` at N.y = +1. The sum is
+    /// blended in sRGB like `ambientSkyColor`, decoded to linear, then scaled by `ambientColor` and
+    /// `ambientIntensity`. The default is a warm grey, `(0.35, 0.30, 0.28)`.
+    public var ambientTintNegativeX: SIMD3<Float>
+
+    /// Ambient side tint on faces whose normal points along +X, an sRGB value.
+    ///
+    /// A cool grey, `(0.28, 0.30, 0.35)`, by default. See `ambientTintNegativeX`.
+    public var ambientTintPositiveX: SIMD3<Float>
+
+    /// Ambient depth tint on faces whose normal points along -Y, an sRGB value.
+    ///
+    /// -Y faces a front-view camera. `(0.32, 0.32, 0.30)` by default. See `ambientTintNegativeX`.
+    public var ambientTintNegativeY: SIMD3<Float>
+
+    /// Ambient depth tint on faces whose normal points along +Y, an sRGB value.
+    ///
+    /// +Y faces away from a front-view camera. `(0.25, 0.25, 0.27)` by default. See
+    /// `ambientTintNegativeX`.
+    public var ambientTintPositiveY: SIMD3<Float>
+
+    /// Ground colour of the procedural environment, an sRGB value.
+    ///
+    /// `(0.3, 0.28, 0.25)` by default. With no environment map loaded, reflections sample a
+    /// sky-horizon-ground gradient along the world's Z axis: this colour at -Z,
+    /// `proceduralEnvironmentHorizonColor` at the horizon, `proceduralEnvironmentSkyColor` at +Z.
+    /// It shows up on glossy and metallic surfaces; it is not the visible background and is unused
+    /// once an environment map loads.
+    public var proceduralEnvironmentGroundColor: SIMD3<Float>
+
+    /// Horizon colour of the procedural environment, an sRGB value.
+    ///
+    /// `(0.7, 0.72, 0.75)` by default. See `proceduralEnvironmentGroundColor`.
+    public var proceduralEnvironmentHorizonColor: SIMD3<Float>
+
+    /// Sky colour of the procedural environment, an sRGB value.
+    ///
+    /// `(0.85, 0.9, 1.0)` by default, shown toward +Z. See `proceduralEnvironmentGroundColor`.
+    public var proceduralEnvironmentSkyColor: SIMD3<Float>
 
     /// Whether screen-space ambient occlusion is enabled.
     public var enableSSAO: Bool
@@ -147,6 +194,17 @@ public struct LightingConfiguration: Sendable {
 
     /// Environment map intensity multiplier, scaling the IBL contribution to lighting.
     public var environmentIntensity: Float
+
+    /// Whether a loaded environment map replaces the hemisphere ambient instead of adding to it
+    /// (default `true`).
+    ///
+    /// The map's diffuse irradiance already lights every surface from all around, so the
+    /// hemisphere ambient on top would count that light twice and flatten the image. While a map
+    /// is loaded, `true` multiplies the ambient by `1 - environmentIntensity` (never below 0): it
+    /// is gone at the default intensity of 1 and fills back in as the environment is dimmed. With
+    /// no map loaded the ambient is unchanged. Set `false` to keep the full ambient on top of the
+    /// map, as releases before this option did.
+    public var environmentReplacesAmbient: Bool
 
     /// Rotation of the environment about the world up axis (Z), in radians.
     ///
@@ -201,7 +259,15 @@ public struct LightingConfiguration: Sendable {
         environmentIntensity: Float = 1.0,
         environmentRotationY: Float = 0,
         backgroundExposure: Float = 1.0,
-        drawBackground: Bool = false
+        drawBackground: Bool = false,
+        ambientTintNegativeX: SIMD3<Float> = SIMD3<Float>(0.35, 0.30, 0.28),
+        ambientTintPositiveX: SIMD3<Float> = SIMD3<Float>(0.28, 0.30, 0.35),
+        ambientTintNegativeY: SIMD3<Float> = SIMD3<Float>(0.32, 0.32, 0.30),
+        ambientTintPositiveY: SIMD3<Float> = SIMD3<Float>(0.25, 0.25, 0.27),
+        proceduralEnvironmentGroundColor: SIMD3<Float> = SIMD3<Float>(0.3, 0.28, 0.25),
+        proceduralEnvironmentHorizonColor: SIMD3<Float> = SIMD3<Float>(0.7, 0.72, 0.75),
+        proceduralEnvironmentSkyColor: SIMD3<Float> = SIMD3<Float>(0.85, 0.9, 1.0),
+        environmentReplacesAmbient: Bool = true
     ) {
         self.keyLight = keyLight
         self.fillLight = fillLight
@@ -233,6 +299,14 @@ public struct LightingConfiguration: Sendable {
         self.environmentRotationY = environmentRotationY
         self.backgroundExposure = backgroundExposure
         self.drawBackground = drawBackground
+        self.ambientTintNegativeX = ambientTintNegativeX
+        self.ambientTintPositiveX = ambientTintPositiveX
+        self.ambientTintNegativeY = ambientTintNegativeY
+        self.ambientTintPositiveY = ambientTintPositiveY
+        self.proceduralEnvironmentGroundColor = proceduralEnvironmentGroundColor
+        self.proceduralEnvironmentHorizonColor = proceduralEnvironmentHorizonColor
+        self.proceduralEnvironmentSkyColor = proceduralEnvironmentSkyColor
+        self.environmentReplacesAmbient = environmentReplacesAmbient
     }
 
     // MARK: - Presets
