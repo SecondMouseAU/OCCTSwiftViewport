@@ -50,6 +50,28 @@ public enum BodyPrimitiveKind: Sendable, Hashable {
     case wire
 }
 
+/// How a mesh body's per-vertex colours (`ViewportBody.vertexColors`) combine with its base colour.
+///
+/// The default, `.ignored`, leaves every existing render unchanged: a mesh body draws with its
+/// `color` (or `material`) alone, whether or not `vertexColors` is populated. The other two modes
+/// colour the shaded surface from the vertices. `.point` bodies always use their `vertexColors` and
+/// ignore this setting. See ``ViewportBody/vertexColors`` and ``ViewportBody/vertexColorSpace``.
+public enum VertexColorMode: UInt32, Sendable, Hashable, CaseIterable {
+    /// The shaded surface uses the body's `color` or `material` base colour only.
+    case ignored = 0
+
+    /// The base colour is multiplied by the interpolated vertex colour, per channel.
+    ///
+    /// A white body shows the vertex colours as authored; a coloured body tints them.
+    case multiply = 1
+
+    /// The interpolated vertex colour replaces the base colour as the surface albedo.
+    ///
+    /// Lighting, `roughness`, `metallic`, clearcoat, emission and opacity still come from the
+    /// body's material.
+    case replace = 2
+}
+
 /// Per-triangle highlight style. `.zero` alpha = no highlight; non-zero alpha
 /// composites the given color over the base shading at that triangle.
 ///
@@ -100,8 +122,9 @@ public struct ViewportBody: Identifiable, Sendable {
     /// `meshPositions`, `meshNormals`). The renderers compare it with the generation they cached
     /// GPU buffers for under this `id` and re-upload when it differs, so mutating a body and
     /// handing it back is enough to update the GPU (issue #166). Appearance and placement fields
-    /// (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, ...) leave it unchanged,
-    /// since they are read per frame and need no re-upload.
+    /// (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, `edgeColors`,
+    /// `edgeDrawRange`, `edgeColorSpace`, ...) leave it unchanged, since they are read per frame or re-upload only
+    /// their own small buffer.
     ///
     /// Copies share a generation until one of them is mutated. Two bodies with the same `id`
     /// and `generation` therefore hold the same geometry.
@@ -147,6 +170,13 @@ public struct ViewportBody: Identifiable, Sendable {
         didSet { geometryDidChange() }
     }
 
+    /// Number of line segments in `edges` once flattened (a polyline of `n` points has `n - 1`).
+    ///
+    /// The length `edgeColors` and `edgeIndices` need, and the bound of `edgeDrawRange`.
+    public var edgeSegmentCount: Int {
+        edges.reduce(0) { $0 + max($1.count - 1, 0) }
+    }
+
     /// Maps each drawn line segment back to the B-Rep edge it came from, for edge selection.
     ///
     /// Parallel to the line primitives of `edges` flattened
@@ -173,14 +203,40 @@ public struct ViewportBody: Identifiable, Sendable {
         didSet { geometryDidChange() }
     }
 
-    /// Per-point colour for point-cloud bodies, parallel to `vertices`.
+    /// Per-vertex colour RGBA, in the colour space ``vertexColorSpace`` names (sRGB display
+    /// values like ``color`` by default).
     ///
-    /// Empty (the default), or any count that does not match `vertices`, falls back to the
-    /// body's `color` for every point. Read only by the point-cloud pass, so it has no
-    /// effect unless `primitiveKind` is `.point`.
+    /// - Point-cloud bodies (`primitiveKind == .point`): one colour per point, parallel to
+    ///   `vertices`. Always used when the count matches.
+    /// - Mesh bodies: one colour per mesh vertex, parallel to the vertices of the shaded surface
+    ///   (`vertexData.count / 6` for an interleaved body, `meshPositions.count / 3` for a
+    ///   direct-mesh one). Interpolated across each triangle and applied according to
+    ///   ``vertexColorMode``, which is ``VertexColorMode/ignored`` by default. Only the RGB channels
+    ///   are read: opacity still comes from `color.w` or the material.
+    ///
+    /// Empty (the default), or any count that does not match, falls back to the body's `color` for
+    /// every point or vertex. Assigning it takes a fresh ``generation``, so the renderers re-upload
+    /// the body.
     public var vertexColors: [SIMD4<Float>] {
         didSet { geometryDidChange() }
     }
+
+    /// How a mesh body's ``vertexColors`` combine with its base colour in the shaded pass.
+    ///
+    /// Defaults to ``VertexColorMode/ignored``, so setting `vertexColors` alone changes nothing
+    /// about how a mesh draws. It has no effect on point-cloud bodies, and the shadow and pick
+    /// passes ignore it. Read per frame, so changing it leaves ``generation`` as it was.
+    public var vertexColorMode: VertexColorMode
+
+    /// The colour space ``vertexColors`` are authored in, for mesh and point-cloud bodies alike.
+    ///
+    /// ``AuthoredColorSpace/sRGB`` (the default) takes them as display values, like ``color``.
+    /// ``AuthoredColorSpace/linear`` takes them as linear light: lit surfaces use them as linear
+    /// albedo (no sRGB decode), and `.unlit` surfaces and point clouds encode them to display
+    /// values when drawn. With ``VertexColorMode/multiply`` a linear body combines the vertex
+    /// colour with the decoded body colour in linear light. Read per frame, so changing it leaves
+    /// ``generation`` as it was. It does not affect `color`, which is always an sRGB value.
+    public var vertexColorSpace: AuthoredColorSpace
 
     /// Radius of each point sprite in world units, for point-cloud bodies.
     ///
@@ -217,6 +273,32 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Changes whenever `triangleStyles` is assigned, so the renderer can re-upload just the
     /// style buffer for a body whose `generation` (and so geometry) is unchanged.
     private(set) var triangleStylesGeneration: UInt64
+
+    /// Per-segment colour for the `edges` polylines, in the colour space `edgeColorSpace` names.
+    ///
+    /// Parallel to the flattened segments (`count == edgeSegmentCount`), in `edgeIndices` order.
+    /// Empty, or any other count, leaves every segment in the body's usual edge colour, the rule
+    /// `vertexColors` follows for points. Assigning it leaves `generation` alone and re-uploads
+    /// only its own buffer, as `triangleStyles` does. See `docs/reference/ViewportBody.md`.
+    public var edgeColors: [SIMD4<Float>] {
+        didSet { edgeColorsGeneration = Self.nextGeneration() }
+    }
+
+    /// Changes whenever `edgeColors` is assigned, so the live renderer can re-upload just the
+    /// colour buffer for a body whose `generation` (and so geometry) is unchanged.
+    private(set) var edgeColorsGeneration: UInt64
+
+    /// How `edgeColors` are interpreted: sRGB display values drawn as given (the default), or
+    /// linear-light values converted to display encoding when drawn.
+    ///
+    /// Changing it leaves `generation` alone and uploads nothing; alpha is never converted.
+    public var edgeColorSpace: AuthoredColorSpace
+
+    /// The flattened `edges` segments that are drawn and picked, or `nil` (the default) for all.
+    ///
+    /// Clamped to the segments that exist; an empty range draws none. Assigning it leaves
+    /// `generation` alone and uploads nothing. See `docs/reference/ViewportBody.md`.
+    public var edgeDrawRange: Range<Int>?
 
     /// Base colour as sRGB (display) RGBA, used for shading when no `material` is set.
     ///
@@ -306,7 +388,12 @@ public struct ViewportBody: Identifiable, Sendable {
         vertices: [SIMD3<Float>] = [],
         vertexIndices: [Int32] = [],
         vertexColors: [SIMD4<Float>] = [],
+        vertexColorMode: VertexColorMode = .ignored,
+        vertexColorSpace: AuthoredColorSpace = .sRGB,
         triangleStyles: [TriangleStyle] = [],
+        edgeColors: [SIMD4<Float>] = [],
+        edgeDrawRange: Range<Int>? = nil,
+        edgeColorSpace: AuthoredColorSpace = .sRGB,
         color: SIMD4<Float>,
         roughness: Float = 0.5,
         metallic: Float = 0.0,
@@ -324,6 +411,7 @@ public struct ViewportBody: Identifiable, Sendable {
         let generation = Self.nextGeneration()
         self.generation = generation
         self.triangleStylesGeneration = generation
+        self.edgeColorsGeneration = generation
         self.id = id
         self.vertexData = vertexData
         self.indices = indices
@@ -336,7 +424,12 @@ public struct ViewportBody: Identifiable, Sendable {
         self.vertices = vertices
         self.vertexIndices = vertexIndices
         self.vertexColors = vertexColors
+        self.vertexColorMode = vertexColorMode
+        self.vertexColorSpace = vertexColorSpace
         self.triangleStyles = triangleStyles
+        self.edgeColors = edgeColors
+        self.edgeDrawRange = edgeDrawRange
+        self.edgeColorSpace = edgeColorSpace
         self.color = color
         self.roughness = roughness
         self.metallic = metallic
@@ -372,6 +465,9 @@ extension ViewportBody {
         color: SIMD4<Float>,
         faceIndices: [Int32] = [],
         edges: [[SIMD3<Float>]] = [],
+        vertexColors: [SIMD4<Float>] = [],
+        vertexColorMode: VertexColorMode = .ignored,
+        vertexColorSpace: AuthoredColorSpace = .sRGB,
         material: PBRMaterial? = nil,
         transform: simd_float4x4 = matrix_identity_float4x4
     ) -> ViewportBody {
@@ -391,6 +487,9 @@ extension ViewportBody {
             faceIndices: faceIndices,
             vertices: verts,
             vertexIndices: indices.map { Int32($0) },
+            vertexColors: vertexColors,
+            vertexColorMode: vertexColorMode,
+            vertexColorSpace: vertexColorSpace,
             color: color,
             material: material,
             transform: transform,

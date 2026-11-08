@@ -376,12 +376,13 @@ struct LightingTintFieldTests {
 
     @Test("The Swift Uniforms layout matches the Metal struct")
     func uniformsLayout() {
-        // The new fields start on a 16-byte boundary after the tone-map scalars and add
-        // 4 + 3 + 2 float4 slots (144 bytes) to the struct.
+        // The new fields start on a 16-byte boundary right after `normalMatrix` (48 bytes: the
+        // last field before them, itself after `viewportParams`) and add 4 + 3 + 2 float4 slots
+        // (144 bytes) to the end of the struct.
         #expect(MemoryLayout<Uniforms>.offset(of: \.ambientAxisTints)! % 16 == 0)
         #expect(
             MemoryLayout<Uniforms>.offset(of: \.ambientAxisTints)!
-                == MemoryLayout<Uniforms>.offset(of: \.toneMapWhitePoint)! + 4)
+                == MemoryLayout<Uniforms>.offset(of: \.normalMatrix)! + 48)
         #expect(
             MemoryLayout<Uniforms>.offset(of: \.proceduralEnvironment)!
                 == MemoryLayout<Uniforms>.offset(of: \.ambientAxisTints)! + 64)
@@ -391,6 +392,9 @@ struct LightingTintFieldTests {
         #expect(
             MemoryLayout<Uniforms>.offset(of: \.hoverTint)!
                 == MemoryLayout<Uniforms>.offset(of: \.selectionTint)! + 16)
+        #expect(
+            MemoryLayout<Uniforms>.size
+                == MemoryLayout<Uniforms>.offset(of: \.hoverTint)! + 16)
         #expect(MemoryLayout<Uniforms>.stride % 16 == 0)
     }
 

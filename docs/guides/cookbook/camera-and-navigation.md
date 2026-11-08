@@ -68,7 +68,9 @@ let proj = cameraState.projectionMatrix(
 
 `near` sits 1% in front of the nearest corner of the scene's bounding box, measured as depth along the view direction, so neither a face square-on to the camera at the front of the box (a top view of a plate, a flat sketch) nor the near corner of an obliquely viewed scene is clipped by it.
 
-The near plane can't go behind the eye, so an eye inside the scene still cuts it. In orthographic that never has to happen: the picture is `orthographicScale` tall wherever the eye is along the view axis, so orthographic zoom changes only the scale, and `MetalViewportView` keeps the eye in front of the scene (`CameraController.sceneBoundsProvider`): its bodies, the overlay bodies and the axes. `OffscreenRenderer` places the eye of the camera it is given the same way before it draws (issue #215). For a camera you use some other way, place the eye first:
+In orthographic the planes follow the scene's own depth, not the eye: `near` is just in front of the nearest corner of the bounds (and goes negative if the eye is inside the scene, which an orthographic projection allows) and `far` is a fixed three scene diagonals behind it. Moving the eye along the view axis changes neither the picture nor the planes' place relative to the scene, so edge fading, SSAO and silhouettes look the same wherever the eye sits (issue #217).
+
+The picture is `orthographicScale` tall wherever the eye is along the view axis, so orthographic zoom changes only the scale, and `MetalViewportView` keeps the eye in front of the scene (`CameraController.sceneBoundsProvider`): its bodies, the overlay bodies and the axes. `OffscreenRenderer` places the eye of the camera it is given the same way before it draws (issue #215). For a camera you use some other way, place the eye first:
 
 ```swift
 let camera = cameraState.placingOrthographicEye(inFrontOf: sceneBoundingBox)
@@ -344,8 +346,8 @@ A pivot change never moves the view. Every pivot the strategy returns is on the 
 To focus on a specific world point programmatically (bypassing the strategy):
 
 ```swift
-// Animate pivot to a pick result's world position
-viewport.focusOn(point: pickResult.worldPosition, distance: 5.0, animated: true)
+// Animate the pivot to a world point, such as a SceneRaycast hit's `point`
+viewport.focusOn(point: hit.point, distance: 5.0, animated: true)
 ```
 
 `focusOn` stops any momentum, animated or not, so the camera stays on the point. Under an orthographic camera `distance` sets the zoom: the scale becomes the height a perspective camera 5 units away would show.

@@ -18,7 +18,11 @@ struct LightDataSwift {
 
 struct Uniforms {
     var viewProjectionMatrix: simd_float4x4
-    var modelMatrix: simd_float4x4
+    // Setting the model matrix refreshes `normalMatrix` with it, so every per-body
+    // `uniforms.modelMatrix = body.transform` also hands the shaders the matching normal matrix.
+    var modelMatrix: simd_float4x4 {
+        didSet { normalMatrix = Uniforms.normalMatrix(forModel: modelMatrix) }
+    }
     var viewMatrix: simd_float4x4
     var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
     var light0: LightDataSwift
@@ -41,6 +45,11 @@ struct Uniforms {
     var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map), 2 = faceted
     var toneMapExposure: Float = 1.1  // LightingConfiguration.exposure
     var toneMapWhitePoint: Float = 1.0  // LightingConfiguration.whitePoint
+    // xy = render target size in pixels, zw unused. The pixel-sized depth bias of native edges.
+    var viewportParams: SIMD4<Float> = .zero
+    // Inverse transpose of `modelMatrix`'s upper 3x3 (see `Uniforms.normalMatrix(forModel:)`): the
+    // matrix the vertex stages transform normals with. Kept in step with `modelMatrix`.
+    var normalMatrix: simd_float3x3 = matrix_identity_float3x3
     // rgb = sRGB colour at the -X, +X, -Y and +Y ends of the ambient side and depth axes
     // (LightingConfiguration.ambientTint*). Four 16-byte slots, so the struct stays aligned.
     var ambientAxisTints: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (
@@ -101,7 +110,7 @@ struct PointParamsSwift {
     var worldRadius: Float  // offset 16
     var pxPerWorldFactor: Float  // offset 20 — viewportHeight * projection[1][1] / 2
     var useVertexColors: UInt32  // offset 24
-    var _pad: UInt32 = 0  // offset 28
+    var vertexColorSpace: UInt32 = 0  // offset 28 — 0 = sRGB display values, 1 = linear
 }
 
 // Swift↔Metal sync: Renderer/Shaders.metal `struct GridUniforms` (same field order; `rows`
@@ -230,6 +239,12 @@ private struct BodyBuffers {
     /// When non-nil, `vertexBuffer` holds positions only (stride 12) and the body draws via
     /// `directMeshPipeline` in the opaque shaded pass; the shadow / pick / depth passes skip it.
     var normalBuffer: MTLBuffer? = nil
+    /// Per-vertex RGBA colours (stride 16) for the shaded pass (issue #142).
+    ///
+    /// Nil unless `body.vertexColorMode` asked for them and `body.vertexColors` matched the mesh's
+    /// vertex count; the shaded pass then uses the body colour. Built lazily, so a body that
+    /// switches mode on gets its buffer without a rebuild of the rest.
+    var vertexColorBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
@@ -270,6 +285,11 @@ private struct BodyBuffers {
     /// Nil when `body.triangleStyles` is empty. RGBA per triangle, indexed by
     /// `[[primitive_id]]` in the highlight fragment shader.
     var triangleStyleBuffer: MTLBuffer?
+    /// Per-segment edge colours (`ViewportBody.edgeColors`, #140): RGBA per flattened edge segment.
+    ///
+    /// Nil when the body has none, or their count does not match its segment count, in which case
+    /// the edge pass draws in the body colour. Re-uploaded on its own when the colours change.
+    var edgeColorBuffer: MTLBuffer?
     /// The body's local-space AABB, computed once when buffers are built.
     ///
     /// Cached here so per-frame frustum culling (issue #42) doesn't rescan vertices.
@@ -330,6 +350,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let wireframePipeline: MTLRenderPipelineState
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     private let quadEdgePipeline: MTLRenderPipelineState?
+    /// `wireframePipeline` / `quadEdgePipeline` with the per-segment colour fragment shaders
+    /// (`ViewportBody.edgeColors`, #140).
+    private let wireframeSegmentPipeline: MTLRenderPipelineState?
+    private let quadEdgeSegmentPipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
     // 1x pick-only pipelines (pick texture is always sampleCount=1)
@@ -474,6 +498,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // SSAO post-process
     private let ssaoPipeline: MTLRenderPipelineState?
+    /// The SSAO occlusion pass and its depth-aware blur (#188), which run between the depth
+    /// prepass and the composite when `LightingConfiguration.enableSSAO` is on.
+    private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
+    /// The occlusion textures, allocated only on frames that run SSAO.
+    ///
+    /// Internal so tests can check that SSAO off allocates and encodes nothing.
+    private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
     /// 1x resolved color texture for SSAO input (MSAA resolves into this).
     private var resolvedColorTexture: MTLTexture?
     /// 1x resolved depth texture for SSAO depth sampling.
@@ -500,6 +531,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private var bodyGeneration: [String: UInt64] = [:]
     /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
     private var bodyStyleGeneration: [String: UInt64] = [:]
+    /// `ViewportBody.edgeColorsGeneration` each cached `edgeColorBuffer` was built from.
+    private var bodyEdgeColorGeneration: [String: UInt64] = [:]
 
     /// Axis cylinders and the cached `.plane` grid-line buffer.
     private let gridAxisBuffers: GridAxisBuffers
@@ -613,6 +646,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat,
             vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
+        self.wireframeSegmentPipeline = RendererSharedSetup.makeWireframePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat, vertexDescriptor: vertexDesc,
+            fragmentFunction: "wireframe_segment_fragment", label: "wireframe_segment")
+        self.quadEdgeSegmentPipeline = RendererSharedSetup.makeQuadEdgePipelineState(
+            device: device, library: library, sampleCount: sampleCount,
+            depthFormat: depthFormat,
+            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor(),
+            fragmentFunction: "quad_edge_segment_fragment", label: "quad_edge_segment")
 
         guard
             let gridPipeline = RendererSharedSetup.makeGridPipelineState(
@@ -973,6 +1015,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // and the fullscreen pass needs no depth attachment.
         self.ssaoPipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
             device: device, library: library, label: "ssao_postprocess")
+        self.ssaoOcclusionPipelines = RendererSharedSetup.makeSSAOOcclusionPipelines(
+            device: device, library: library, labelPrefix: "viewport")
 
         // TAA resolve pipeline (1x fullscreen pass)
         self.taaPipeline = RendererSharedSetup.makePipelineState(
@@ -1109,6 +1153,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Clears the current environment map.
     public func clearEnvironmentMap() {
         environmentMapManager?.clear()
+    }
+
+    /// The cached edge buffers for a body, or `nil` when it has none cached; for tests.
+    ///
+    /// Object identity shows what a mutation re-uploaded: `edgeColors` replaces only `colors`,
+    /// and `edgeDrawRange` replaces nothing (#140).
+    func cachedEdgeBuffers(for bodyID: String) -> (
+        native: MTLBuffer?, quad: MTLBuffer?, colors: MTLBuffer?
+    )? {
+        guard let buffers = bodyBufferCache[bodyID] else { return nil }
+        return (buffers.edgeVertexBuffer, buffers.quadEdgeVertexBuffer, buffers.edgeColorBuffer)
     }
 
     /// Invalidates cached buffers so they are rebuilt on next draw.
@@ -1396,6 +1451,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 clipPlaneCount: clipPlaneCount,
                 unlit: controller.displayMode == .unlit,
                 flatShading: !controller.displayMode.usesSmoothShading,
+                viewportSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
                 selectionTint: controller.configuration.selectionTint,
                 hoverTint: controller.configuration.hoverTint
             )
@@ -1785,7 +1841,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 encodeShadedSurface(
-                    mainEncoder, buffers: buffers, uniforms: &uniforms,
+                    mainEncoder, buffers: buffers, vertexColorMode: body.vertexColorMode,
+                    vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
                     useMeshShaders: useMeshShaders, useTessellation: useTessellation)
 
                 // Per-triangle highlights (issue #25) straight over the surface they style, so
@@ -1796,14 +1853,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder, buffers: buffers, uniforms: &uniforms,
                         patches: drawnPatches(
                             of: buffers, useMeshShaders: useMeshShaders,
-                            useTessellation: useTessellation))
+                            useTessellation: useTessellation),
+                        overMeshletSurface: drawsMeshShaded(
+                            buffers, useMeshShaders: useMeshShaders))
                     mainEncoder.setDepthStencilState(depthState)
                 }
             }
 
             // Wireframe/edge pass
             let shouldDrawEdges = hasEdges && (displayMode.showsEdges || !hasMesh)
-            if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
+            // The slice of edge segments to draw (`edgeDrawRange`, #140); empty draws none.
+            let edgeSegments = EdgeSegmentStyle.drawnRange(
+                body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+            if shouldDrawEdges, !edgeSegments.isEmpty, let edgeVB = buffers.edgeVertexBuffer {
                 // For edge-only bodies, signal the shader to use the body color directly
                 // instead of contrast-adaptive edge color (metallic = -1 sentinel)
                 var edgeBodyUniforms = bodyUniforms
@@ -1822,7 +1884,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var edgeUniforms = EdgeUniforms(
                         uniforms: uniforms, configuration: edgeConfig,
                         viewportSize: edgeViewportSize)
-                    mainEncoder.setRenderPipelineState(quadPipeline)
+                    EdgeSegmentStyle.setPipeline(
+                        mainEncoder, plain: quadPipeline, segmentVariant: quadEdgeSegmentPipeline,
+                        colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                        colorSpace: body.edgeColorSpace)
                     mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
                         &edgeUniforms,
@@ -1835,13 +1900,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     // The CPU buffer already contains the six-vertex triangle strip per segment.
+                    let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                     mainEncoder.drawPrimitives(
                         type: .triangleStrip,
-                        vertexStart: 0,
-                        vertexCount: buffers.quadEdgeVertexCount)
+                        vertexStart: slice.start,
+                        vertexCount: slice.count)
                 } else {
                     // Native Metal line pipeline (backward compatible)
-                    mainEncoder.setRenderPipelineState(wireframePipeline)
+                    EdgeSegmentStyle.setPipeline(
+                        mainEncoder, plain: wireframePipeline,
+                        segmentVariant: wireframeSegmentPipeline,
+                        colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                        colorSpace: body.edgeColorSpace)
                     mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                     mainEncoder.setVertexBytes(
                         &uniforms,
@@ -1851,8 +1921,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
                         &edgeBodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                    let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                     mainEncoder.drawPrimitives(
-                        type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                        type: .line, vertexStart: slice.start, vertexCount: slice.count)
                 }
             }
         }
@@ -1907,7 +1978,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setFragmentBytes(
                         &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     encodeShadedSurface(
-                        mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                        mainEncoder, buffers: d.buffers, vertexColorMode: d.body.vertexColorMode,
+                        vertexColorSpace: d.body.vertexColorSpace, uniforms: &uniforms,
                         useMeshShaders: useMeshShaders, useTessellation: useTessellation)
                     if d.buffers.triangleStyleBuffer != nil {
                         mainEncoder.setDepthStencilState(highlightDepthState)
@@ -1915,7 +1987,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             mainEncoder, buffers: d.buffers, uniforms: &uniforms,
                             patches: drawnPatches(
                                 of: d.buffers, useMeshShaders: useMeshShaders,
-                                useTessellation: useTessellation))
+                                useTessellation: useTessellation),
+                            overMeshletSurface: drawsMeshShaded(
+                                d.buffers, useMeshShaders: useMeshShaders))
                     }
                 }
             }
@@ -2066,7 +2140,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     baseColor: body.color,
                     worldRadius: body.pointRadius,
                     pxPerWorldFactor: pxPerWorldFactor,
-                    useVertexColors: useColors
+                    useVertexColors: useColors,
+                    vertexColorSpace: body.vertexColorSpace.shaderValue
                 )
 
                 mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -2194,6 +2269,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder.setRenderPipelineState(shadedPipeline)
                         mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                     }
+                    // Per-vertex colours (#142): overlay widgets honour them like geometry.
+                    RendererSharedSetup.encodeVertexColors(
+                        encoder: mainEncoder,
+                        binding: RendererSharedSetup.VertexColorBinding(
+                            mode: body.vertexColorMode, space: body.vertexColorSpace,
+                            colorBuffer: buffers.vertexColorBuffer, placeholder: vb, indices: ib))
                     mainEncoder.setVertexBytes(
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
@@ -2211,7 +2292,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 let shouldDrawEdges = hasEdges && displayMode.drawsEdges(bodyHasMesh: hasMesh)
-                if shouldDrawEdges, let edgeVB = buffers.edgeVertexBuffer {
+                let edgeSegments = EdgeSegmentStyle.drawnRange(
+                    body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+                if shouldDrawEdges, !edgeSegments.isEmpty, let edgeVB = buffers.edgeVertexBuffer {
                     var edgeBodyUniforms = bodyUniforms
                     if !hasMesh {
                         edgeBodyUniforms.metallic = -1.0
@@ -2226,24 +2309,34 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         var edgeUniforms = EdgeUniforms(
                             uniforms: uniforms, configuration: frameEdgeConfig,
                             viewportSize: edgeViewportSize)
-                        mainEncoder.setRenderPipelineState(quadPipeline)
+                        EdgeSegmentStyle.setPipeline(
+                            mainEncoder, plain: quadPipeline,
+                            segmentVariant: quadEdgeSegmentPipeline,
+                            colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                            colorSpace: body.edgeColorSpace)
                         mainEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                         mainEncoder.setVertexBytes(
                             &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
                         mainEncoder.setFragmentBytes(
                             &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+                        let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                         mainEncoder.drawPrimitives(
-                            type: .triangleStrip, vertexStart: 0,
-                            vertexCount: buffers.quadEdgeVertexCount)
+                            type: .triangleStrip, vertexStart: slice.start,
+                            vertexCount: slice.count)
                     } else {
-                        mainEncoder.setRenderPipelineState(wireframePipeline)
+                        EdgeSegmentStyle.setPipeline(
+                            mainEncoder, plain: wireframePipeline,
+                            segmentVariant: wireframeSegmentPipeline,
+                            colors: buffers.edgeColorBuffer, firstSegment: edgeSegments.lowerBound,
+                            colorSpace: body.edgeColorSpace)
                         mainEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
                         mainEncoder.setVertexBytes(
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                         mainEncoder.setFragmentBytes(
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                         mainEncoder.drawPrimitives(
-                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                            type: .line, vertexStart: slice.start, vertexCount: slice.count)
                     }
                 }
 
@@ -2267,7 +2360,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         baseColor: body.color,
                         worldRadius: body.pointRadius,
                         pxPerWorldFactor: pxPerWorldFactor,
-                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0,
+                        vertexColorSpace: body.vertexColorSpace.shaderValue
                     )
                     mainEncoder.setRenderPipelineState(pointPipeline)
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -2421,6 +2515,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     ) {
                         guard let edgeVB = buffers.edgeVertexBuffer, buffers.edgePrimitiveCount > 0
                         else { return }
+                        // Only the segments `edgeDrawRange` shows can be picked (#140).
+                        let edgeSegments = EdgeSegmentStyle.drawnRange(
+                            body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
+                        guard !edgeSegments.isEmpty else { return }
                         var uniforms = makeUniforms()
                         uniforms.modelMatrix = body.transform
                         var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
@@ -2430,7 +2528,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             var edgeUniforms = EdgeUniforms(
                                 uniforms: uniforms, configuration: frameEdgeConfig,
                                 viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                            var primSource = SIMD2<UInt32>(0, 0)  // segment = triangle / 6
+                            // Segment = the slice's first segment + triangle / 6.
+                            var primSource = SIMD2<UInt32>(UInt32(edgeSegments.lowerBound), 0)
                             pickEncoder.setRenderPipelineState(quadPickPipeline)
                             pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
                             pickEncoder.setVertexBytes(
@@ -2441,9 +2540,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                                 &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                             pickEncoder.setFragmentBytes(
                                 &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
+                            let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
                             pickEncoder.drawPrimitives(
-                                type: .triangleStrip, vertexStart: 0,
-                                vertexCount: buffers.quadEdgeVertexCount)
+                                type: .triangleStrip, vertexStart: slice.start,
+                                vertexCount: slice.count)
                             return
                         }
                         guard let pickLinePipeline else { return }
@@ -2455,8 +2555,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                         pickEncoder.setFragmentBytes(
                             &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+                        var firstSegment = UInt32(edgeSegments.lowerBound)
+                        pickEncoder.setFragmentBytes(
+                            &firstSegment, length: MemoryLayout<UInt32>.size, index: 3)
+                        let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
                         pickEncoder.drawPrimitives(
-                            type: .line, vertexStart: 0, vertexCount: buffers.edgeVertexCount)
+                            type: .line, vertexStart: slice.start, vertexCount: slice.count)
                     }
 
                     /// Re-draws one of this frame's sampled arcs (from `frameArcQuadBuffer` or
@@ -2774,6 +2878,53 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 depthEncoder.endEncoding()
             }
 
+            // SSAO occlusion + depth-aware blur (#188), into textures the composite reads. Skipped
+            // (and its textures released) unless SSAO is on: the composite also runs for
+            // silhouettes alone, and then multiplies in no occlusion.
+            let silhouetteConfig = controller.configuration
+            let dofEnabled = controller.enableDepthOfField
+            var dofFocalDist = controller.dofFocalDistance
+            if dofEnabled && dofFocalDist == 0 {
+                // Auto-focus: the view depth of the world-space scene center
+                dofFocalDist = Self.autoFocusDistance(
+                    bodies: bodies, cameraState: cameraState)
+            } else {
+                // Orthographic: from the pivot, not the placed eye (#217).
+                dofFocalDist = Self.manualFocusDistance(
+                    dofFocalDist, cameraState: cameraState)
+            }
+            var ssaoParams = SSAOParamsSwift(
+                texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
+                radius: lighting.ssaoRadius,
+                // The composite also runs for silhouettes alone; keep AO off unless enabled.
+                intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
+                nearPlane: nearPlane,
+                farPlane: farPlane,
+                silhouetteThickness: silhouetteConfig.enableSilhouettes
+                    ? silhouetteConfig.silhouetteThickness : 0.0,
+                silhouetteIntensity: silhouetteConfig.enableSilhouettes
+                    ? silhouetteConfig.silhouetteIntensity : 0.0,
+                pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
+                orthographic: cameraState.isOrthographic ? 1.0 : 0.0,
+                dofAperture: controller.dofAperture,
+                dofFocalDistance: dofFocalDist,
+                dofMaxBlurRadius: controller.dofMaxBlurRadius,
+                dofEnabled: dofEnabled ? 1.0 : 0.0
+            )
+            var occlusionTexture: MTLTexture?
+            if RendererSharedSetup.ssaoOcclusionActive(lighting),
+                let occlusionPipelines = ssaoOcclusionPipelines
+            {
+                occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
+                    commandBuffer: commandBuffer, pipelines: occlusionPipelines,
+                    targets: &ssaoOcclusionTargets, device: device, depth: resolvedDepth,
+                    params: ssaoParams, blur: lighting.ssaoBlur)
+            }
+            if occlusionTexture == nil {
+                ssaoOcclusionTargets.release()
+                ssaoParams.intensity = 0
+            }
+
             // SSAO composite pass: read resolved color + depth, output to drawable
             let ssaoPass = MTLRenderPassDescriptor()
             ssaoPass.colorAttachments[0].texture = targets.finalColorTexture
@@ -2782,44 +2933,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             if let ssaoEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: ssaoPass) {
                 ssaoEncoder.setRenderPipelineState(ssaoPipeline)
-
-                let silhouetteConfig = controller.configuration
-                let dofEnabled = controller.enableDepthOfField
-                var dofFocalDist = controller.dofFocalDistance
-                if dofEnabled && dofFocalDist == 0 {
-                    // Auto-focus: the view depth of the world-space scene center
-                    dofFocalDist = Self.autoFocusDistance(
-                        bodies: bodies, cameraState: cameraState)
-                } else {
-                    // Orthographic: from the pivot, not the placed eye (#217).
-                    dofFocalDist = Self.manualFocusDistance(
-                        dofFocalDist, cameraState: cameraState)
-                }
-                var ssaoParams = SSAOParamsSwift(
-                    texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
-                    radius: lighting.ssaoRadius,
-                    // The composite also runs for silhouettes alone; keep AO off unless enabled.
-                    intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
-                    nearPlane: nearPlane,
-                    farPlane: farPlane,
-                    silhouetteThickness: silhouetteConfig.enableSilhouettes
-                        ? silhouetteConfig.silhouetteThickness : 0.0,
-                    silhouetteIntensity: silhouetteConfig.enableSilhouettes
-                        ? silhouetteConfig.silhouetteIntensity : 0.0,
-                    pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
-                    orthographic: cameraState.isOrthographic ? 1.0 : 0.0,
-                    dofAperture: controller.dofAperture,
-                    dofFocalDistance: dofFocalDist,
-                    dofMaxBlurRadius: controller.dofMaxBlurRadius,
-                    dofEnabled: dofEnabled ? 1.0 : 0.0
-                )
                 ssaoEncoder.setFragmentTexture(resolvedDepth, index: 0)
                 ssaoEncoder.setFragmentTexture(resolvedColor, index: 1)
+                // With no occlusion the shader never reads this slot; bind the depth as a
+                // same-shaped placeholder.
+                ssaoEncoder.setFragmentTexture(occlusionTexture ?? resolvedDepth, index: 2)
                 ssaoEncoder.setFragmentBytes(
                     &ssaoParams, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
                 ssaoEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 ssaoEncoder.endEncoding()
             }
+        } else {
+            // No composite this frame (SSAO off, unlit or wireframe): hold no occlusion memory.
+            ssaoOcclusionTargets.release()
         }
 
         // Prune cache entries for bodies no longer in the scene. Walk `bodyGeneration`, a
@@ -2829,6 +2955,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodyBufferCache.removeValue(forKey: id)
             bodyGeneration.removeValue(forKey: id)
             bodyStyleGeneration.removeValue(forKey: id)
+            bodyEdgeColorGeneration.removeValue(forKey: id)
         }
 
         if let presentable = targets.presentable {
@@ -2866,10 +2993,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The depth is measured along the line of sight from the eye, as the composite pass
     /// linearizes the depth buffer it blurs by, so it is the pivot plane's depth (`distance`)
     /// plus the focus point's depth past that plane. It used to be the straight-line distance
-    /// from the eye, which also counted how far off-axis the centre lies (#215). In
-    /// orthographic the composite pass still decodes depth as perspective depth, so the blur
-    /// there does not yet follow this. A centre at or behind the eye's plane focuses just in
-    /// front of the eye.
+    /// from the eye, which also counted how far off-axis the centre lies (#215). A centre at or
+    /// behind the eye's plane focuses just in front of the eye.
     nonisolated static func autoFocusDistance(
         bodies: [ViewportBody], cameraState: CameraState
     ) -> Float {
@@ -2983,18 +3108,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private func encodeShadedSurface(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
+        vertexColorMode: VertexColorMode,
+        vertexColorSpace: AuthoredColorSpace,
         uniforms: inout Uniforms,
         useMeshShaders: Bool,
         useTessellation: Bool
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0
         else { return }
+        // The body's per-vertex colours (#142), bound on every shaded draw.
+        let vertexColors = RendererSharedSetup.VertexColorBinding(
+            mode: vertexColorMode, space: vertexColorSpace, colorBuffer: buffers.vertexColorBuffer,
+            placeholder: vb, indices: ib)
 
         if let nb = buffers.normalBuffer {
             // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.
             encoder.setRenderPipelineState(directMeshPipeline)
             encoder.setVertexBuffer(vb, offset: 0, index: 0)
             encoder.setVertexBuffer(nb, offset: 0, index: 2)
+            RendererSharedSetup.encodeVertexColors(encoder: encoder, binding: vertexColors)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             encoder.drawIndexedPrimitives(
                 type: .triangle,
@@ -3008,15 +3140,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         {
             RendererSharedSetup.encodeMeshletDraw(
                 encoder: encoder, pipeline: msPipeline, meshlets: ml, vertexBuffer: vb,
-                uniforms: &uniforms)
+                uniforms: &uniforms, vertexColors: vertexColors)
         } else if useTessellation, let tess = buffers.tessellation,
             let tessPipeline = tessellatedShadedPipeline
         {
             RendererSharedSetup.encodeTessellatedDraw(
-                encoder: encoder, pipeline: tessPipeline, tessellation: tess, uniforms: &uniforms)
+                encoder: encoder, pipeline: tessPipeline, tessellation: tess, uniforms: &uniforms,
+                vertexColors: vertexColors)
         } else {
             encoder.setRenderPipelineState(shadedPipeline)
             encoder.setVertexBuffer(vb, offset: 0, index: 0)
+            RendererSharedSetup.encodeVertexColors(encoder: encoder, binding: vertexColors)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             encoder.drawIndexedPrimitives(
                 type: .triangle,
@@ -3042,20 +3176,37 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return buffers.tessellation
     }
 
+    /// Whether `encodeShadedSurface` draws a body's surface through the mesh-shader pipeline.
+    private func drawsMeshShaded(_ buffers: BodyBuffers, useMeshShaders: Bool) -> Bool {
+        buffers.normalBuffer == nil && useMeshShaders && buffers.meshlets != nil
+            && meshShaderShadedPipeline != nil
+    }
+
     /// Composites a body's `triangleStyles` over its shaded surface (issue #25).
     ///
     /// The caller sets the depth-stencil state (`highlightDepthState`) and cull mode. Rebinds
     /// fragment buffers 1 (scene uniforms) and 2 (the style buffer). With `patches`, draws on
-    /// the tessellated surface instead of the flat mesh (#202).
+    /// the tessellated surface instead of the flat mesh (#202). `overMeshletSurface` biases the
+    /// highlight's depth toward the viewer, so it wins its depth tie with a mesh-shader surface
+    /// (#213).
     private func encodeTriangleHighlight(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
         uniforms: inout Uniforms,
-        patches: TessellationBuffers?
+        patches: TessellationBuffers?,
+        overMeshletSurface: Bool = false
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
             let styleBuf = buffers.triangleStyleBuffer, buffers.indexCount > 0
         else { return }
+        if overMeshletSurface {
+            RendererSharedSetup.setHighlightDepthBias(on: encoder, overMeshletSurface: true)
+        }
+        defer {
+            if overMeshletSurface {
+                RendererSharedSetup.setHighlightDepthBias(on: encoder, overMeshletSurface: false)
+            }
+        }
         if let patches, let pipeline = tessellatedHighlightPipeline {
             // On the tessellated surface the shaded pass drew (#202).
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
@@ -3095,6 +3246,26 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 bodyBufferCache[body.id] = cached
             }
             bodyStyleGeneration[body.id] = body.triangleStylesGeneration
+            // Likewise `edgeColors` (#140): re-upload only the colour buffer, never the edges.
+            if bodyEdgeColorGeneration[body.id] != body.edgeColorsGeneration,
+                var cached = bodyBufferCache[body.id]
+            {
+                cached.edgeColorBuffer = EdgeSegmentStyle.makeColorBuffer(
+                    device: device, colors: body.edgeColors,
+                    segmentCount: cached.edgePrimitiveCount)
+                bodyBufferCache[body.id] = cached
+            }
+            bodyEdgeColorGeneration[body.id] = body.edgeColorsGeneration
+            // `vertexColorMode` is not geometry, so switching it on leaves the generation as it
+            // was: upload the colours the first time a body asks for them (#142).
+            if body.vertexColorMode != .ignored, var cached = bodyBufferCache[body.id],
+                cached.vertexColorBuffer == nil,
+                let colors = RendererSharedBuffers.makeMeshColorBuffer(
+                    device: device, body: body, vertexCount: cached.vertexCount)
+            {
+                cached.vertexColorBuffer = colors
+                bodyBufferCache[body.id] = cached
+            }
             return  // buffer still valid
         }
 
@@ -3213,6 +3384,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         bodyBufferCache[body.id] = BodyBuffers(
             vertexBuffer: vertexBuffer,
             normalBuffer: normalBuffer,
+            vertexColorBuffer: RendererSharedBuffers.makeMeshColorBuffer(
+                device: device, body: body, vertexCount: vertexCount),
             indexBuffer: indexBuffer,
             indexCount: indexCount,
             edgeVertexBuffer: nativeEdgeVB,
@@ -3228,10 +3401,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             tessellation: tessBuffers,
             meshlets: meshletBufs,
             triangleStyleBuffer: triStyleBuf,
+            edgeColorBuffer: EdgeSegmentStyle.makeColorBuffer(
+                device: device, colors: body.edgeColors, segmentCount: nativeEdgePrimitiveCount),
             localBoundingBox: body.boundingBox
         )
         bodyGeneration[body.id] = currentGen
         bodyStyleGeneration[body.id] = body.triangleStylesGeneration
+        bodyEdgeColorGeneration[body.id] = body.edgeColorsGeneration
     }
 
     /// The interleaved vertex data meshlets are built from, or `nil` when the body gets none.

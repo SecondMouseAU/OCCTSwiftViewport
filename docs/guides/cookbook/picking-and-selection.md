@@ -180,6 +180,8 @@ let groundPlane = ViewportBody(
 
 The body's `objectIndex` still advances in the draw order so other indices remain stable. You do not need a `PickResultFilter` as well: `isPickable: false` is cheaper because it skips the pick sub-passes entirely.
 
+To take only some of a body's edge segments out of picking, set `ViewportBody.edgeDrawRange`: the segments outside it are neither drawn nor pickable, and the ones inside keep their absolute index in `triangleIndex`. See [Per-segment edge colour and a visible range](loading-geometry.md#per-segment-edge-colour-and-a-visible-range).
+
 ---
 
 ## CPU raycast with `SceneRaycast`
@@ -285,7 +287,8 @@ let ray = Ray(
 Use `ProjectionUtility` to go the other direction, world position to screen coordinates, for annotation placement or custom overlays:
 
 ```swift
-let vpMatrix = controller.cameraState.viewProjectionMatrix(aspectRatio: aspectRatio)
+let state = controller.cameraState
+let vpMatrix = state.projectionMatrix(aspectRatio: aspectRatio) * state.viewMatrix
 
 if let screenPt = ProjectionUtility.worldToScreen(
     point: hit.point,

@@ -33,6 +33,7 @@ public typealias _ViewportArc = ViewportArc
 public typealias _ArcSampling = ArcSampling
 public typealias _PrimitiveUpAxis = PrimitiveUpAxis
 public typealias _BodyPrimitiveKind = BodyPrimitiveKind
+public typealias _VertexColorMode = VertexColorMode
 public typealias _RenderLayer = RenderLayer
 public typealias _PickLayer = PickLayer
 public typealias _ViewportRenderer = ViewportRenderer
@@ -102,6 +103,7 @@ public typealias _NavigationCube = NavigationCube
 public typealias _OrientationGnomon = OrientationGnomon
 public typealias _ScaleBarView = ScaleBarView
 public typealias _ScaleBarMetrics = ScaleBarMetrics
+public typealias _AuthoredColorSpace = AuthoredColorSpace
 
 // MARK: - Deprecated re-exports
 

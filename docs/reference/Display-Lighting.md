@@ -262,6 +262,7 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `enableSSAO` | `Bool` | `true` | Enable screen-space ambient occlusion |
 | `ssaoRadius` | `Float` | `0.5` | SSAO sampling radius in world units (see [Ambient occlusion](#ambient-occlusion)) |
 | `ssaoIntensity` | `Float` | `0.6` | SSAO darkening intensity (0 = none, 1 = maximum) |
+| `ssaoBlur` | `Bool` | `true` | Smooth the SSAO term with a depth-aware 4×4 blur before applying it, which removes the ordered dither from flat faces (see [Ambient occlusion](#ambient-occlusion)); `false` skips the blur pass |
 | `exposure` | `Float` | `1.1` | Tone-mapping exposure multiplier, applied in linear space (see [Tone mapping](#tone-mapping)) |
 | `whitePoint` | `Float` | `1.0` | White point for tone-mapping normalization (see [Tone mapping](#tone-mapping)) |
 | `shadowLightSize` | `Float` | `0.02` | PCSS light-source size (larger = softer penumbras) |
@@ -298,6 +299,7 @@ public init(
     enableSSAO: Bool = true,
     ssaoRadius: Float = 0.5,
     ssaoIntensity: Float = 0.6,
+    ssaoBlur: Bool = true,
     exposure: Float = 1.1,
     whitePoint: Float = 1.0,
     shadowLightSize: Float = 0.02,
@@ -330,7 +332,7 @@ controller.lightingConfiguration = config
 
 ### Colour pipeline
 
-Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, the ambient side and depth tints, the procedural environment colours, `backgroundColor`, grid, axis, edge and outline colours, the selection and hover tint colours, and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
+Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, the ambient side and depth tints, the procedural environment colours, `backgroundColor`, grid, axis, edge and outline colours (`ViewportBody.edgeColors` included, unless `edgeColorSpace` is set to `.linear`), the selection and hover tint colours, `ViewportBody.vertexColors` (unless `vertexColorSpace` is set to `.linear`), and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
 
 Lit surfaces are the only place the renderer does arithmetic on light, so the surface shader:
 
@@ -386,7 +388,13 @@ Until the fix for issue #136 (finding H6), lighting ran on sRGB values directly.
 
 ### Ambient occlusion
 
-SSAO darkens a pixel only where nearby geometry sits **in front of the surface's tangent plane**, within `ssaoRadius` world units. Typical cases are concave creases, contact points and the inside of holes. Flat and convex surfaces are never darkened. The radius is projected to pixels at each fragment's depth and clamped to 2–64 px. Occluders more than `ssaoRadius` in front fade out by twice that distance, so a separate object in front doesn't cast a halo. A 4×4 ordered pattern rotates and scales the 16-tap kernel per pixel, so the occlusion reads as a fine dither, and TAA smooths it when enabled. Orthographic cameras are supported.
+SSAO darkens a pixel only where nearby geometry sits **in front of the surface's tangent plane**, within `ssaoRadius` world units. Typical cases are concave creases, contact points and the inside of holes. Flat and convex surfaces are never darkened. The radius is projected to pixels at each fragment's depth and clamped to 2–64 px. Occluders more than `ssaoRadius` in front fade out by twice that distance, so a separate object in front doesn't cast a halo. A 4×4 ordered pattern rotates and scales the 16-tap kernel per pixel so the taps don't print their outline onto the image. Orthographic cameras are supported.
+
+That pattern is removed by a depth-aware blur (issue #188). The occlusion is computed in its own full-screen pass into a full-resolution `r32Float` texture, a second pass averages a 4×4 window of it into an `r16Float` one (one full period of the dither, so it cancels on any continuous surface), and the composite multiplies the blurred result into the image. Each tap is weighted by how closely its depth matches the plane through the centre pixel, the same depth-gradient prediction the occlusion pass uses, so sloped and curved faces blur like flat ones, while taps across a depth discontinuity get no weight (full weight within 0.5 % of the view distance off that plane, none beyond 1 %). Occlusion therefore stays inside the surface it belongs to: it doesn't bleed onto a nearer silhouette, and the far side of a silhouette keeps its full darkening. Depths are linearised first, so perspective and orthographic cameras behave the same. Before the blur, the dither showed as a faint period-4 texture on large flat faces beside an occluder (2 to 7 levels of 255 on a face next to a low wall) unless TAA was on.
+
+The two passes run between the depth prepass and the composite, in `ViewportRenderer` and `OffscreenRenderer` alike, and only when `enableSSAO` is `true` and `ssaoIntensity` is above 0. With SSAO off, including when the composite runs for silhouettes alone, no occlusion pass is encoded and no occlusion texture is held; the textures are allocated on the first SSAO frame, rebuilt when the frame size changes, and released on the first frame that doesn't run SSAO. `ssaoRadius` and `ssaoIntensity` act as before, and `ssaoIntensity` still scales the blurred result linearly.
+
+Set `ssaoBlur = false` to skip the blur pass: the raw, dithered occlusion is then composited exactly as before the blur existed (byte-identical output), which is slightly crisper at creases and saves one full-screen pass. The setting applies to `ViewportRenderer` and `OffscreenRenderer` alike (`OffscreenRenderOptions(matching:)` copies it with the rest of the lighting configuration), and does nothing when SSAO itself is off.
 
 Before issue #136, every tap was compared against the centre pixel's depth. That darkened any sloped or curved surface, and the sample radius was a fraction of a pixel at normal viewing distances, so real creases got almost nothing.
 

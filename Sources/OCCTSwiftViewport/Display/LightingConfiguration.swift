@@ -157,6 +157,18 @@ public struct LightingConfiguration: Sendable {
     /// SSAO darkening intensity (0 = none, 1 = maximum).
     public var ssaoIntensity: Float
 
+    /// Whether the SSAO term is smoothed by a depth-aware 4x4 blur before it is applied
+    /// (default `true`).
+    ///
+    /// The occlusion kernel is rotated per pixel from a 4x4 ordered pattern, which shows as a
+    /// faint period-4 texture on large flat faces beside an occluder unless the term is blurred.
+    /// The blur averages a 4x4 window weighted by depth, so it doesn't cross silhouettes, and it
+    /// costs one extra full-screen pass. Set `false` to skip that pass and apply the raw,
+    /// dithered occlusion (slightly crisper at creases, cheaper). Has no effect when `enableSSAO`
+    /// is `false`, which runs neither pass. Applies to both `ViewportRenderer` and
+    /// `OffscreenRenderer`.
+    public var ssaoBlur: Bool
+
     /// Tone mapping exposure multiplier (default 1.1).
     ///
     /// Lit surfaces are ACES tone mapped on every frame, in both `ViewportRenderer` and
@@ -250,6 +262,7 @@ public struct LightingConfiguration: Sendable {
         enableSSAO: Bool = true,
         ssaoRadius: Float = 0.5,
         ssaoIntensity: Float = 0.6,
+        ssaoBlur: Bool = true,
         exposure: Float = 1.1,
         whitePoint: Float = 1.0,
         shadowLightSize: Float = 0.02,
@@ -289,6 +302,7 @@ public struct LightingConfiguration: Sendable {
         self.enableSSAO = enableSSAO
         self.ssaoRadius = ssaoRadius
         self.ssaoIntensity = ssaoIntensity
+        self.ssaoBlur = ssaoBlur
         self.exposure = exposure
         self.whitePoint = whitePoint
         self.shadowLightSize = shadowLightSize

@@ -79,9 +79,14 @@ lighting.proceduralEnvironmentSkyColor = SIMD3<Float>(1.0, 0.85, 0.7)
 lighting.fresnelPower = 2.5         // lower = broader rim
 lighting.fresnelIntensity = 0.5     // 0–1
 
-// Boost SSAO for more contact shadow depth.
+// Boost SSAO for more contact shadow depth. The occlusion is blurred depth-aware (a 4x4
+// window that doesn't cross silhouettes) before it is applied, so it is smooth on flat
+// faces and still stops at an object's edge. With enableSSAO = false (or ssaoIntensity = 0)
+// neither the occlusion nor the blur runs.
 lighting.ssaoRadius = 1.0
 lighting.ssaoIntensity = 0.9
+lighting.ssaoBlur = true            // default; false skips the blur pass and shows the raw,
+                                    // dithered occlusion (a faint period-4 texture on flat faces)
 
 // Tone-mapping exposure, applied in linear space to every lit surface on every
 // frame, whether or not SSAO / silhouettes are on, and in OffscreenRenderer too.

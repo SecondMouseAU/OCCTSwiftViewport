@@ -531,7 +531,7 @@ Simulated f-number. Smaller values produce a shallower (stronger) blur.
 public var dofFocalDistance: Float  // default: 0
 ```
 
-Focus distance in world units from the camera, measured along the line of sight (in orthographic, from a reference eye in front of the pivot; see below). `0` activates autofocus on the scene centre: the view depth of the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied). It used to be the straight-line distance from the eye, which put an off-axis centre out of focus (issue #215). In orthographic the composite pass still decodes depth as perspective depth, so the blur there does not yet follow these distances. In orthographic it is measured from a reference eye in front of the pivot, at the distance a perspective camera showing the same height would sit (`orthographicScale / (2 · tan(fieldOfView / 2))`), not from the eye, which is only placed in front of the scene and moves back whenever the scene grows; so the focal plane stays put as the eye moves, follows the pivot, and matches the same framing in perspective (issue #217). Following the pivot, it moves when the dynamic pivot slides along the line of sight, by the depth slid; a focal distance equal to that reference distance focuses on the pivot.
+Focus distance in world units from the camera, measured along the line of sight (in orthographic, from a reference eye in front of the pivot; see below). `0` activates autofocus on the scene centre: the view depth of the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied). It used to be the straight-line distance from the eye, which put an off-axis centre out of focus (issue #215). In orthographic it is measured from a reference eye in front of the pivot, at the distance a perspective camera showing the same height would sit (`orthographicScale / (2 · tan(fieldOfView / 2))`), not from the eye, which is only placed in front of the scene and moves back whenever the scene grows; so the focal plane stays put as the eye moves, follows the pivot, and matches the same framing in perspective (issue #217). Following the pivot, it moves when the dynamic pivot slides along the line of sight, by the depth slid; a focal distance equal to that reference distance focuses on the pivot.
 
 ---
 
@@ -710,10 +710,8 @@ Turntable orbit, shadows disabled, SSAO disabled, MSAA disabled (`msaaSampleCoun
 **Example:**
 
 ```swift
-MetalViewportView(
-    bodies: heavyScene,
-    configuration: .performance
-)
+let controller = ViewportController(configuration: .performance)
+MetalViewportView(controller: controller, bodies: $heavyScene)   // @State var heavyScene: [ViewportBody]
 ```
 
 ---
@@ -882,7 +880,7 @@ Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled ea
 
 Quad edges are shaded like native ones: `ViewportController.edgeIntensity` (or `OffscreenRenderOptions.edgeIntensity`) dims and depth-fades them (the fade is linear in view distance from the near to the far clip plane), and they are depth-biased toward the viewer so an edge lying on a face is not lost to it. The bias grows with the line width: each edge vertex is pulled toward the viewer by twice (half the width + 1 px), measured as world distance per pixel at its depth, so a wide edge keeps its full width on faces tilted up to about 63° from the view plane. Only a face less than that distance in front of an edge can let it show through.
 
-Native edges (`useQuadExpansion` off) are biased the same way, by a fixed 0.6% of the NDC height (about 3 px at 1000 px tall) in world units at each vertex's depth, because the shader has no viewport size. Neither path uses a constant NDC depth offset, whose world-space size depends on the near/far range: under a wide range it let hidden back edges show through faces (issue #157). Neither bias can push an edge past the near plane. The 1x pick pass applies the same bias to native edge and arc picks as to the drawn edges, so an edge drawn over a tilted face picks as the edge, not the face (issue #182).
+Native edges (`useQuadExpansion` off) are biased the same way, by a fixed 3 px (what a quad edge gets for a 1 px line) in world units at each vertex's depth, so a native edge also keeps winning over faces tilted up to about 63° from the view plane. The 3 px are pixels of the render target (the drawable, or the offscreen image), not a fraction of its height: the shader used to pull by 0.6% of the NDC height, which is about 3 px at 1000 px tall but under one pixel's depth on a drawable under about 256 px tall, where the face then won, for the drawn edge and its pick alike (issue #193). Neither path uses a constant NDC depth offset, whose world-space size depends on the near/far range: under a wide range it let hidden back edges show through faces (issue #157). Neither bias can push an edge past the near plane. The 1x pick pass applies the same bias to native edge and arc picks as to the drawn edges, so an edge drawn over a tilted face picks as the edge, not the face (issue #182).
 
 With `PickingConfiguration.isEnabled`, edge and arc picks cover the same width as the drawn edge (at least 1 pt), so a wide edge is clickable across its whole width. Dash gaps are pickable too. See [Picking](Picking.md#pick-footprints).
 

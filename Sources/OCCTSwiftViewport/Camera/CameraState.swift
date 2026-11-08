@@ -30,8 +30,9 @@ public struct CameraState: Hashable, Codable, Sendable {
     /// Distance from pivot point along view direction.
     ///
     /// In perspective it sets how large the view is. In orthographic `orthographicScale` does
-    /// that, and `distance` only places the eye along the line of sight, which moves the clip
-    /// planes but not the picture; orthographic zoom leaves it alone (issue #211).
+    /// that, and `distance` only places the eye along the line of sight, which changes neither
+    /// the picture nor the depth range the clip planes cover (issue #217); orthographic zoom
+    /// leaves it alone (issue #211).
     public var distance: Float
 
     /// Pivot point (orbit center) in world coordinates.
