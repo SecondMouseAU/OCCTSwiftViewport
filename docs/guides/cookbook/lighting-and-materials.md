@@ -70,7 +70,10 @@ lighting.ambientColor = SIMD3<Float>(1.0, 0.97, 0.92)
 lighting.fresnelPower = 2.5         // lower = broader rim
 lighting.fresnelIntensity = 0.5     // 0–1
 
-// Boost SSAO for more contact shadow depth.
+// Boost SSAO for more contact shadow depth. The occlusion is blurred depth-aware (a 4x4
+// window that doesn't cross silhouettes) before it is applied, so it is smooth on flat
+// faces and still stops at an object's edge. Nothing extra to configure; with
+// enableSSAO = false (or ssaoIntensity = 0) neither the occlusion nor the blur runs.
 lighting.ssaoRadius = 1.0
 lighting.ssaoIntensity = 0.9
 

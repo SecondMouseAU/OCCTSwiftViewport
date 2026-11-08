@@ -463,6 +463,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // SSAO post-process
     private let ssaoPipeline: MTLRenderPipelineState?
+    /// The SSAO occlusion pass and its depth-aware blur (#188), which run between the depth
+    /// prepass and the composite when `LightingConfiguration.enableSSAO` is on.
+    private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
+    /// The occlusion textures; allocated only on frames that run SSAO. Internal so tests can check
+    /// that SSAO off allocates and encodes nothing.
+    private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
+    /// Test hook: `false` feeds the composite the raw, un-blurred occlusion (#188).
+    var ssaoBlurEnabled = true
     /// 1x resolved color texture for SSAO input (MSAA resolves into this).
     private var resolvedColorTexture: MTLTexture?
     /// 1x resolved depth texture for SSAO depth sampling.
@@ -962,6 +970,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // and the fullscreen pass needs no depth attachment.
         self.ssaoPipeline = RendererSharedSetup.makeSSAOCompositePipelineState(
             device: device, library: library, label: "ssao_postprocess")
+        self.ssaoOcclusionPipelines = RendererSharedSetup.makeSSAOOcclusionPipelines(
+            device: device, library: library, labelPrefix: "viewport")
 
         // TAA resolve pipeline (1x fullscreen pass)
         self.taaPipeline = RendererSharedSetup.makePipelineState(
@@ -2761,6 +2771,53 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 depthEncoder.endEncoding()
             }
 
+            // SSAO occlusion + depth-aware blur (#188), into textures the composite reads. Skipped
+            // (and its textures released) unless SSAO is on: the composite also runs for
+            // silhouettes alone, and then multiplies in no occlusion.
+            let silhouetteConfig = controller.configuration
+            let dofEnabled = controller.enableDepthOfField
+            var dofFocalDist = controller.dofFocalDistance
+            if dofEnabled && dofFocalDist == 0 {
+                // Auto-focus: the view depth of the world-space scene center
+                dofFocalDist = Self.autoFocusDistance(
+                    bodies: bodies, cameraState: cameraState)
+            } else {
+                // Orthographic: from the pivot, not the placed eye (#217).
+                dofFocalDist = Self.manualFocusDistance(
+                    dofFocalDist, cameraState: cameraState)
+            }
+            var ssaoParams = SSAOParamsSwift(
+                texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
+                radius: lighting.ssaoRadius,
+                // The composite also runs for silhouettes alone; keep AO off unless enabled.
+                intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
+                nearPlane: nearPlane,
+                farPlane: farPlane,
+                silhouetteThickness: silhouetteConfig.enableSilhouettes
+                    ? silhouetteConfig.silhouetteThickness : 0.0,
+                silhouetteIntensity: silhouetteConfig.enableSilhouettes
+                    ? silhouetteConfig.silhouetteIntensity : 0.0,
+                pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
+                orthographic: cameraState.isOrthographic ? 1.0 : 0.0,
+                dofAperture: controller.dofAperture,
+                dofFocalDistance: dofFocalDist,
+                dofMaxBlurRadius: controller.dofMaxBlurRadius,
+                dofEnabled: dofEnabled ? 1.0 : 0.0
+            )
+            var occlusionTexture: MTLTexture?
+            if RendererSharedSetup.ssaoOcclusionActive(lighting),
+                let occlusionPipelines = ssaoOcclusionPipelines
+            {
+                occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
+                    commandBuffer: commandBuffer, pipelines: occlusionPipelines,
+                    targets: &ssaoOcclusionTargets, device: device, depth: resolvedDepth,
+                    params: ssaoParams, blur: ssaoBlurEnabled)
+            }
+            if occlusionTexture == nil {
+                ssaoOcclusionTargets.release()
+                ssaoParams.intensity = 0
+            }
+
             // SSAO composite pass: read resolved color + depth, output to drawable
             let ssaoPass = MTLRenderPassDescriptor()
             ssaoPass.colorAttachments[0].texture = targets.finalColorTexture
@@ -2769,44 +2826,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
             if let ssaoEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: ssaoPass) {
                 ssaoEncoder.setRenderPipelineState(ssaoPipeline)
-
-                let silhouetteConfig = controller.configuration
-                let dofEnabled = controller.enableDepthOfField
-                var dofFocalDist = controller.dofFocalDistance
-                if dofEnabled && dofFocalDist == 0 {
-                    // Auto-focus: the view depth of the world-space scene center
-                    dofFocalDist = Self.autoFocusDistance(
-                        bodies: bodies, cameraState: cameraState)
-                } else {
-                    // Orthographic: from the pivot, not the placed eye (#217).
-                    dofFocalDist = Self.manualFocusDistance(
-                        dofFocalDist, cameraState: cameraState)
-                }
-                var ssaoParams = SSAOParamsSwift(
-                    texelSize: SIMD2<Float>(1.0 / Float(w), 1.0 / Float(h)),
-                    radius: lighting.ssaoRadius,
-                    // The composite also runs for silhouettes alone; keep AO off unless enabled.
-                    intensity: lighting.enableSSAO ? lighting.ssaoIntensity : 0.0,
-                    nearPlane: nearPlane,
-                    farPlane: farPlane,
-                    silhouetteThickness: silhouetteConfig.enableSilhouettes
-                        ? silhouetteConfig.silhouetteThickness : 0.0,
-                    silhouetteIntensity: silhouetteConfig.enableSilhouettes
-                        ? silhouetteConfig.silhouetteIntensity : 0.0,
-                    pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
-                    orthographic: cameraState.isOrthographic ? 1.0 : 0.0,
-                    dofAperture: controller.dofAperture,
-                    dofFocalDistance: dofFocalDist,
-                    dofMaxBlurRadius: controller.dofMaxBlurRadius,
-                    dofEnabled: dofEnabled ? 1.0 : 0.0
-                )
                 ssaoEncoder.setFragmentTexture(resolvedDepth, index: 0)
                 ssaoEncoder.setFragmentTexture(resolvedColor, index: 1)
+                // With no occlusion the shader never reads this slot; bind the depth as a
+                // same-shaped placeholder.
+                ssaoEncoder.setFragmentTexture(occlusionTexture ?? resolvedDepth, index: 2)
                 ssaoEncoder.setFragmentBytes(
                     &ssaoParams, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
                 ssaoEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 ssaoEncoder.endEncoding()
             }
+        } else {
+            // No composite this frame (SSAO off, unlit or wireframe): hold no occlusion memory.
+            ssaoOcclusionTargets.release()
         }
 
         // Prune cache entries for bodies no longer in the scene. Walk `bodyGeneration`, a
