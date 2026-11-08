@@ -25,6 +25,8 @@ struct ShaderLibraryLoadingTests {
         .deletingLastPathComponent()  // package root
         .appendingPathComponent("Sources/OCCTSwiftViewport/Renderer/Shaders.metal")
 
+    private struct BundleCreationFailed: Error {}
+
     /// Makes a throwaway directory that `Bundle(path:)` accepts, optionally holding `Shaders.metal`.
     private func makeBundle(withShaderSource: Bool) throws -> (bundle: Bundle, cleanup: () -> Void) {
         let dir = FileManager.default.temporaryDirectory
@@ -34,8 +36,12 @@ struct ShaderLibraryLoadingTests {
             try FileManager.default.copyItem(
                 at: Self.shaderSourceURL, to: dir.appendingPathComponent("Shaders.metal"))
         }
-        let bundle = try #require(Bundle(path: dir.path))
-        return (bundle, { try? FileManager.default.removeItem(at: dir) })
+        let cleanup = { try? FileManager.default.removeItem(at: dir) }
+        guard let bundle = Bundle(path: dir.path) else {
+            cleanup()
+            throw BundleCreationFailed()
+        }
+        return (bundle, { cleanup() })
     }
 
     @Test("The module bundle yields a library with the renderer's functions")

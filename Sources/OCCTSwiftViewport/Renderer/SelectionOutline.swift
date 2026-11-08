@@ -93,8 +93,9 @@ extension RendererSharedSetup {
             return try device.makeLibrary(source: source, options: nil)
         } catch {
             NSLog(
-                "[OCCTSwiftViewport] Compiling Shaders.metal at run time failed on %@: %@",
-                device.name, String(describing: error))
+                "[OCCTSwiftViewport] No shader library on %@: default.metallib failed (%@) and "
+                    + "compiling Shaders.metal at run time failed too (%@)",
+                device.name, String(describing: metallibError), String(describing: error))
             return nil
         }
     }
