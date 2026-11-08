@@ -466,8 +466,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The SSAO occlusion pass and its depth-aware blur (#188), which run between the depth
     /// prepass and the composite when `LightingConfiguration.enableSSAO` is on.
     private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
-    /// The occlusion textures; allocated only on frames that run SSAO. Internal so tests can check
-    /// that SSAO off allocates and encodes nothing.
+    /// The occlusion textures, allocated only on frames that run SSAO.
+    ///
+    /// Internal so tests can check that SSAO off allocates and encodes nothing.
     private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
     /// 1x resolved color texture for SSAO input (MSAA resolves into this).
     private var resolvedColorTexture: MTLTexture?

@@ -586,8 +586,9 @@ public final class OffscreenRenderer: Sendable {
     /// The SSAO occlusion pass and its depth-aware blur (#188), run between the prepass and the
     /// composite.
     private let ssaoOcclusionPipelines: SSAOOcclusionPipelines?
-    /// The occlusion textures; allocated only by renders that run SSAO. Internal so tests can
-    /// check that SSAO off allocates and encodes nothing.
+    /// The occlusion textures, allocated only by renders that run SSAO.
+    ///
+    /// Internal so tests can check that SSAO off allocates and encodes nothing.
     private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
     /// Single-sample colour the main pass resolves into when the composite runs.
     private var postColorTexture: MTLTexture?
