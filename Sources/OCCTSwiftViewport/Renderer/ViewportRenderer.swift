@@ -140,7 +140,11 @@ struct SelectionOutlineParamsSwift {
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
-// Field order, types, and 16-byte alignment must stay identical.
+// Field order, types, and 16-byte alignment must stay identical. Total size = stride = 352 bytes:
+// the Metal struct is 16-byte aligned, so its declared size is rounded up to a multiple of 16, but
+// Swift's `MemoryLayout.size` is not (the struct ended at 344 until `_pad2` was added, and the
+// encoders bind `.size` bytes). A buffer shorter than the declared struct aborts under
+// `MTL_DEBUG_LAYER=1` (#231), so the trailing pad is explicit on both sides.
 struct EdgeUniforms {
     var viewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
@@ -156,6 +160,7 @@ struct EdgeUniforms {
     var dashPatternType: UInt32 = 0
     var viewportSize: SIMD2<Float> = .zero
     var _pad: SIMD2<Float> = .zero
+    var _pad2: SIMD2<Float> = .zero  // rounds the size up to the 16-byte alignment (#231)
 }
 
 extension EdgeUniforms {
