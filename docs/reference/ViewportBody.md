@@ -15,7 +15,7 @@ All types are `Sendable` and value types (structs or enums), safe to pass across
 - [ViewportArc](#viewportarc) · [ArcSampling](#arcsampling)
 - [PBRMaterial](#pbrmaterial)
 - [TriangleStyle](#trianglestyle)
-- [BodyPrimitiveKind](#bodyprimitivekind) · [RenderLayer](#renderlayer) · [PickLayer](#picklayer)
+- [BodyPrimitiveKind](#bodyprimitivekind) · [VertexColorMode](#vertexcolormode) · [RenderLayer](#renderlayer) · [PickLayer](#picklayer)
 
 ---
 
@@ -54,6 +54,7 @@ public init(
     vertices: [SIMD3<Float>] = [],
     vertexIndices: [Int32] = [],
     vertexColors: [SIMD4<Float>] = [],
+    vertexColorMode: VertexColorMode = .ignored,
     triangleStyles: [TriangleStyle] = [],
     color: SIMD4<Float>,
     roughness: Float = 0.5,
@@ -82,7 +83,8 @@ Creates a body and assigns it the next unique `generation` value. The two requir
 | `edgeIndices` | Per-segment source-edge index, parallel to the flattened edge segment list across all `edges` polylines. Enables edge-pick mapping. Default `[]` — body is not edge-pickable. |
 | `vertices` | Point list for vertex-pick sprites. Default `[]` — body is not vertex-pickable. |
 | `vertexIndices` | Per-point source-vertex index, parallel to `vertices`. Default `[]` — pick reports the raw vertex array index. |
-| `vertexColors` | Per-point RGBA colors, parallel to `vertices`. Only consumed by the `.point` point-cloud pass. Default `[]`. |
+| `vertexColors` | Per-vertex colour as sRGB (display) RGBA. For `.point` bodies: one per point, parallel to `vertices`. For mesh bodies: one per mesh vertex, applied per `vertexColorMode`. Default `[]`. See [per-vertex colours](#per-vertex-colours-on-mesh-bodies). |
+| `vertexColorMode` | How a mesh body's `vertexColors` combine with its base colour: `.ignored` (default, the body colour alone), `.multiply` or `.replace`. See [`VertexColorMode`](#vertexcolormode). |
 | `triangleStyles` | Per-triangle highlight overrides, parallel to triangle count. Default `[]` (no highlight pass). |
 | `color` | Base RGBA colour, as sRGB (display) values. Used as `effectiveMaterial.baseColor + opacity` when `material` is `nil`. |
 | `roughness` | PBR roughness 0–1. Default `0.5`. Ignored when `material` is set. |
@@ -128,6 +130,8 @@ public static func directMesh(
     color: SIMD4<Float>,
     faceIndices: [Int32] = [],
     edges: [[SIMD3<Float>]] = [],
+    vertexColors: [SIMD4<Float>] = [],
+    vertexColorMode: VertexColorMode = .ignored,
     material: PBRMaterial? = nil,
     transform: simd_float4x4 = matrix_identity_float4x4
 ) -> ViewportBody
@@ -144,6 +148,8 @@ Use this when your geometry source **already hands you flat, contiguous position
 | `indices` | Triangle index list, indexing *vertices* (not floats). |
 | `faceIndices` | Per-triangle B-Rep face index, for face pick mapping. Default `[]`. |
 | `edges` | Wireframe polylines, as on `init`. Default `[]`. |
+| `vertexColors` | One sRGB RGBA colour per vertex, parallel to `positions`. Default `[]`. See [per-vertex colours](#per-vertex-colours-on-mesh-bodies). |
+| `vertexColorMode` | How `vertexColors` combine with `color`. Default `.ignored`. |
 
 ```swift
 // positions/normals come straight from the kernel — no interleaving
@@ -225,7 +231,16 @@ Per-point source-vertex index, parallel to `vertices`. Empty defaults to identit
 
 #### `vertexColors: [SIMD4<Float>]`
 
-Per-point RGBA colors, parallel to `vertices`. Only used by the `.point` point-cloud render pass. Empty means all points use `color`.
+Per-vertex RGBA colour, as **sRGB (display) values** like `color`. Two readers:
+
+- **`.point` bodies:** one colour per point, parallel to `vertices`, always used when the count matches.
+- **Mesh bodies:** one colour per *mesh* vertex (`vertexData.count / 6` for an interleaved body, `meshPositions.count / 3` for a direct-mesh one), interpolated across each triangle and applied per [`vertexColorMode`](#vertexcolormode). See [per-vertex colours](#per-vertex-colours-on-mesh-bodies).
+
+Empty, or any count that does not match, means every point or vertex uses `color`. Assigning it takes a fresh `generation`, so the renderers re-upload the body.
+
+#### `vertexColorMode: VertexColorMode`
+
+How a mesh body's `vertexColors` combine with its base colour in the shaded pass. Defaults to `.ignored`, so setting `vertexColors` alone changes nothing about how a mesh draws. No effect on `.point` bodies. Read per frame, so changing it leaves `generation` unchanged (the colours upload the first time a body needs them). See [`VertexColorMode`](#vertexcolormode).
 
 #### `pointRadius: Float`
 
@@ -804,6 +819,42 @@ let body = ViewportBody(
     primitiveKind: .point
 )
 ```
+
+---
+
+## VertexColorMode
+
+```swift
+public enum VertexColorMode: UInt32, Sendable, Hashable, CaseIterable
+```
+
+How a mesh body's [`vertexColors`](#vertexcolors-simd4float) combine with its base colour (`color`, or `material.baseColor`) in the shaded pass. Set it on [`ViewportBody.vertexColorMode`](#vertexcolormode-vertexcolormode).
+
+| Case | Behaviour |
+|---|---|
+| `.ignored` | Default. The surface uses the body colour alone, whether or not `vertexColors` is populated. Every existing render is unchanged. |
+| `.multiply` | The base colour times the interpolated vertex colour, per channel. A white body shows the vertex colours as authored; a coloured body tints them. |
+| `.replace` | The interpolated vertex colour replaces the base colour as the albedo. |
+
+`.point` bodies always use their `vertexColors` and ignore this setting.
+
+### Per-vertex colours on mesh bodies
+
+```swift
+// A scalar field (say, distance from a plane) as a colour ramp over the mesh vertices.
+var body = ViewportBody.directMesh(
+    id: "part", positions: mesh.vertexData, normals: mesh.normalData, indices: mesh.indices,
+    color: SIMD4<Float>(1, 1, 1, 1))
+body.vertexColors = field.map { t in SIMD4<Float>(t, 0, 1 - t, 1) }   // one per vertex
+body.vertexColorMode = .replace
+```
+
+- **Colour space.** Vertex colours are sRGB (display) values, exactly like `color`, `PBRMaterial.baseColor` and the point-cloud colours: the library's authored colours are display values, and lit surfaces decode to linear for lighting (see [Colour pipeline](Display-Lighting.md#colour-pipeline)). The colour is interpolated across the triangle as stored (sRGB), then combined with the body colour (`.multiply` or `.replace`), then decoded for lighting. A ramp therefore looks like the same ramp drawn in any image tool. `.unlit` shows the combined colour as is. Values outside `0...1` are clamped. Pass linear data through `sRGB = 1.055 * pow(linear, 1/2.4) - 0.055` first.
+- **Where it applies.** The shaded pass on every mesh path: interleaved, [`directMesh`](#directmesh-direct-mesh-path), PN tessellation (`renderingQuality = .enhanced`, each patch blends its triangle's three corner colours with the patch's barycentric weights) and mesh shaders (`.maximum` on Apple9; other GPUs draw `.maximum` through tessellation, which supports it too). Also the translucent and x-ray passes, `.unlit` and `.flat` display modes, matcap, overlay-layer bodies, and `OffscreenRenderer` as well as `ViewportRenderer`. Lighting, `roughness`, `metallic`, clearcoat, emission, shadows and the selection tint still come from the material, and `triangleStyles` highlights still composite over the result.
+- **What ignores it.** The shadow, depth-prepass, selection-mask and pick passes draw no colour. Edges, arcs and the selection outline keep their own colours.
+- **Alpha is not read.** Only the RGB channels are used. Opacity still comes from `color.w` / `material.opacity` (and x-ray), because a body's opaque-versus-translucent pass is chosen per body, not per vertex.
+- **Fallback.** An empty `vertexColors`, or one whose count does not match the mesh's vertex count, falls back to the body colour (nothing is read out of bounds). A mismatch is silent.
+- **Cost.** One RGBA `Float` per vertex (16 bytes), uploaded in a buffer parallel to the vertices (the interleaved 6-float layout is unchanged), only for a body whose `vertexColorMode` is not `.ignored`. Assigning `vertexColors` takes a fresh `generation`, so the whole body re-uploads (vertex, index, tessellation patches and meshlets as well as the colours). To animate a field every frame, expect that cost on large meshes.
 
 ---
 

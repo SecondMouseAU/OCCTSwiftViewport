@@ -248,6 +248,34 @@ let cloud = ViewportBody(
 
 ---
 
+## Per-vertex colours on a mesh (scalar fields, analysis maps)
+
+`vertexColors` also colours a *mesh*: one RGBA per mesh vertex, interpolated across each triangle. It is opt-in, so existing bodies draw as before: set `vertexColorMode` to `.replace` (the vertex colour is the surface colour) or `.multiply` (it tints the body `color`).
+
+```swift
+// Colour each vertex of a mesh by its height: blue at the bottom, red at the top.
+var body = ViewportBody(id: "part", vertexData: vertexData, indices: indices, edges: [],
+                        color: SIMD4<Float>(1, 1, 1, 1))
+let zs = stride(from: 0, to: vertexData.count, by: 6).map { vertexData[$0 + 2] }
+let (lo, hi) = (zs.min() ?? 0, zs.max() ?? 1)
+body.vertexColors = zs.map { z in
+    let t = (z - lo) / max(hi - lo, .leastNonzeroMagnitude)
+    return SIMD4<Float>(t, 0, 1 - t, 1)        // parallel to the mesh vertices
+}
+body.vertexColorMode = .replace               // the default, .ignored, leaves the body colour
+```
+
+The same two properties are parameters of `ViewportBody.directMesh(...)`, so a kernel's flat position/normal arrays take a flat colour array too (`vertexColors` must have one entry per position, so `positions.count / 3`).
+
+Things to know:
+
+- **Colour space.** sRGB (display) values, like `color` and the point-cloud colours. A ramp built from an sRGB colour table looks as it does in an image tool. If your field is linear light, encode it to sRGB first. Only RGB is read; opacity still comes from `color.w`.
+- **Fallback.** An empty array, or one whose count differs from the mesh's vertex count, is ignored and the body keeps its colour.
+- **Everywhere the surface is drawn.** All rendering qualities (including PN tessellation and mesh shaders), the x-ray and translucent passes, the `.unlit` display mode (which shows the ramp exactly, with no lighting), overlay bodies, and `OffscreenRenderer`.
+- **Cost.** Assigning `vertexColors` counts as a geometry change (new `generation`), so the body re-uploads. Switching `vertexColorMode` alone does not.
+
+---
+
 ## Visibility and pickability
 
 Two independent switches control how a body participates in rendering and picking:

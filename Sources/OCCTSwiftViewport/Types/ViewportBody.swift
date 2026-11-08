@@ -50,6 +50,28 @@ public enum BodyPrimitiveKind: Sendable, Hashable {
     case wire
 }
 
+/// How a mesh body's per-vertex colours (`ViewportBody.vertexColors`) combine with its base colour.
+///
+/// The default, `.ignored`, leaves every existing render unchanged: a mesh body draws with its
+/// `color` (or `material`) alone, whether or not `vertexColors` is populated. The other two modes
+/// colour the shaded surface from the vertices. `.point` bodies always use their `vertexColors` and
+/// ignore this setting. See ``ViewportBody/vertexColors``.
+public enum VertexColorMode: UInt32, Sendable, Hashable, CaseIterable {
+    /// The shaded surface uses the body's `color` or `material` base colour only.
+    case ignored = 0
+
+    /// The base colour is multiplied by the interpolated vertex colour, per channel.
+    ///
+    /// A white body shows the vertex colours as authored; a coloured body tints them.
+    case multiply = 1
+
+    /// The interpolated vertex colour replaces the base colour as the surface albedo.
+    ///
+    /// Lighting, `roughness`, `metallic`, clearcoat, emission and opacity still come from the
+    /// body's material.
+    case replace = 2
+}
+
 /// Per-triangle highlight style. `.zero` alpha = no highlight; non-zero alpha
 /// composites the given color over the base shading at that triangle.
 ///
@@ -173,14 +195,29 @@ public struct ViewportBody: Identifiable, Sendable {
         didSet { geometryDidChange() }
     }
 
-    /// Per-point colour for point-cloud bodies, parallel to `vertices`.
+    /// Per-vertex colour, as sRGB (display) RGBA like ``color``.
     ///
-    /// Empty (the default), or any count that does not match `vertices`, falls back to the
-    /// body's `color` for every point. Read only by the point-cloud pass, so it has no
-    /// effect unless `primitiveKind` is `.point`.
+    /// - Point-cloud bodies (`primitiveKind == .point`): one colour per point, parallel to
+    ///   `vertices`. Always used when the count matches.
+    /// - Mesh bodies: one colour per mesh vertex, parallel to the vertices of the shaded surface
+    ///   (`vertexData.count / 6` for an interleaved body, `meshPositions.count / 3` for a
+    ///   direct-mesh one). Interpolated across each triangle and applied according to
+    ///   ``vertexColorMode``, which is ``VertexColorMode/ignored`` by default. Only the RGB channels
+    ///   are read: opacity still comes from `color.w` or the material.
+    ///
+    /// Empty (the default), or any count that does not match, falls back to the body's `color` for
+    /// every point or vertex. Assigning it takes a fresh ``generation``, so the renderers re-upload
+    /// the body.
     public var vertexColors: [SIMD4<Float>] {
         didSet { geometryDidChange() }
     }
+
+    /// How a mesh body's ``vertexColors`` combine with its base colour in the shaded pass.
+    ///
+    /// Defaults to ``VertexColorMode/ignored``, so setting `vertexColors` alone changes nothing
+    /// about how a mesh draws. It has no effect on point-cloud bodies, and the shadow and pick
+    /// passes ignore it. Read per frame, so changing it leaves ``generation`` as it was.
+    public var vertexColorMode: VertexColorMode
 
     /// Radius of each point sprite in world units, for point-cloud bodies.
     ///
@@ -306,6 +343,7 @@ public struct ViewportBody: Identifiable, Sendable {
         vertices: [SIMD3<Float>] = [],
         vertexIndices: [Int32] = [],
         vertexColors: [SIMD4<Float>] = [],
+        vertexColorMode: VertexColorMode = .ignored,
         triangleStyles: [TriangleStyle] = [],
         color: SIMD4<Float>,
         roughness: Float = 0.5,
@@ -336,6 +374,7 @@ public struct ViewportBody: Identifiable, Sendable {
         self.vertices = vertices
         self.vertexIndices = vertexIndices
         self.vertexColors = vertexColors
+        self.vertexColorMode = vertexColorMode
         self.triangleStyles = triangleStyles
         self.color = color
         self.roughness = roughness
@@ -372,6 +411,8 @@ extension ViewportBody {
         color: SIMD4<Float>,
         faceIndices: [Int32] = [],
         edges: [[SIMD3<Float>]] = [],
+        vertexColors: [SIMD4<Float>] = [],
+        vertexColorMode: VertexColorMode = .ignored,
         material: PBRMaterial? = nil,
         transform: simd_float4x4 = matrix_identity_float4x4
     ) -> ViewportBody {
@@ -391,6 +432,8 @@ extension ViewportBody {
             faceIndices: faceIndices,
             vertices: verts,
             vertexIndices: indices.map { Int32($0) },
+            vertexColors: vertexColors,
+            vertexColorMode: vertexColorMode,
             color: color,
             material: material,
             transform: transform,

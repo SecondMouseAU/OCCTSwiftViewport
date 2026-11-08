@@ -313,7 +313,7 @@ controller.lightingConfiguration = config
 
 ### Colour pipeline
 
-Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, `backgroundColor`, grid, axis, edge and outline colours, and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
+Colours you author are **sRGB (display) values**: `ViewportBody.color`, `ViewportBody.vertexColors`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, `backgroundColor`, grid, axis, edge and outline colours, and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
 
 Lit surfaces are the only place the renderer does arithmetic on light, so the surface shader:
 
