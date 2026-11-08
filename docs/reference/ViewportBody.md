@@ -14,8 +14,8 @@ All types are `Sendable` and value types (structs or enums), safe to pass across
 - [ViewportBody](#viewportbody) · [Vertex data layout](#vertex-data-layout) · [Primitive factories](#primitive-factories) · [PrimitiveUpAxis](#primitiveupaxis)
 - [ViewportArc](#viewportarc) · [ArcSampling](#arcsampling)
 - [PBRMaterial](#pbrmaterial)
-- [TriangleStyle](#trianglestyle)
-- [BodyPrimitiveKind](#bodyprimitivekind) · [RenderLayer](#renderlayer) · [PickLayer](#picklayer)
+- [TriangleStyle](#trianglestyle) · [AuthoredColorSpace](#authoredcolorspace)
+- [BodyPrimitiveKind](#bodyprimitivekind) · [VertexColorMode](#vertexcolormode) · [RenderLayer](#renderlayer) · [PickLayer](#picklayer)
 
 ---
 
@@ -54,7 +54,12 @@ public init(
     vertices: [SIMD3<Float>] = [],
     vertexIndices: [Int32] = [],
     vertexColors: [SIMD4<Float>] = [],
+    vertexColorMode: VertexColorMode = .ignored,
+    vertexColorSpace: AuthoredColorSpace = .sRGB,
     triangleStyles: [TriangleStyle] = [],
+    edgeColors: [SIMD4<Float>] = [],
+    edgeDrawRange: Range<Int>? = nil,
+    edgeColorSpace: AuthoredColorSpace = .sRGB,
     color: SIMD4<Float>,
     roughness: Float = 0.5,
     metallic: Float = 0.0,
@@ -65,7 +70,9 @@ public init(
     isPickable: Bool = true,
     renderLayer: RenderLayer = .geometry,
     pickLayer: PickLayer = .userGeometry,
-    transform: simd_float4x4 = matrix_identity_float4x4
+    transform: simd_float4x4 = matrix_identity_float4x4,
+    meshPositions: [Float] = [],
+    meshNormals: [Float] = []
 )
 ```
 
@@ -82,8 +89,13 @@ Creates a body and assigns it the next unique `generation` value. The two requir
 | `edgeIndices` | Per-segment source-edge index, parallel to the flattened edge segment list across all `edges` polylines. Enables edge-pick mapping. Default `[]` — body is not edge-pickable. |
 | `vertices` | Point list for vertex-pick sprites. Default `[]` — body is not vertex-pickable. |
 | `vertexIndices` | Per-point source-vertex index, parallel to `vertices`. Default `[]` — pick reports the raw vertex array index. |
-| `vertexColors` | Per-point RGBA colors, parallel to `vertices`. Only consumed by the `.point` point-cloud pass. Default `[]`. |
+| `vertexColors` | Per-vertex RGBA colour, as sRGB (display) values unless `vertexColorSpace` says linear. For `.point` bodies: one per point, parallel to `vertices`. For mesh bodies: one per mesh vertex, applied per `vertexColorMode`. Default `[]`. See [per-vertex colours](#per-vertex-colours-on-mesh-bodies). |
+| `vertexColorMode` | How a mesh body's `vertexColors` combine with its base colour: `.ignored` (default, the body colour alone), `.multiply` or `.replace`. See [`VertexColorMode`](#vertexcolormode). |
+| `vertexColorSpace` | The colour space `vertexColors` are authored in, for mesh and point-cloud bodies: `.sRGB` (default, display values drawn as given) or `.linear` (linear light, encoded for display when drawn). See [`AuthoredColorSpace`](#authoredcolorspace). |
 | `triangleStyles` | Per-triangle highlight overrides, parallel to triangle count. Default `[]` (no highlight pass). |
+| `edgeColors` | Per-segment edge colours, RGBA in the space `edgeColorSpace` names (sRGB by default), parallel to the flattened `edges` segments (`edgeSegmentCount`). A cheap update: does not change `generation`. Default `[]` (every segment in the body's usual edge colour). |
+| `edgeDrawRange` | The flattened `edges` segments that are drawn and picked. A cheap update: does not change `generation`. Default `nil` (all). |
+| `edgeColorSpace` | How `edgeColors` are interpreted: [`AuthoredColorSpace`](#authoredcolorspace) `.sRGB` (display values drawn as given) or `.linear` (converted for display). A cheap update: does not change `generation`. Default `.sRGB`. |
 | `color` | Base RGBA colour, as sRGB (display) values. Used as `effectiveMaterial.baseColor + opacity` when `material` is `nil`. |
 | `roughness` | PBR roughness 0–1. Default `0.5`. Ignored when `material` is set. |
 | `metallic` | PBR metallic factor 0–1. Default `0.0`. Ignored when `material` is set. |
@@ -112,7 +124,7 @@ let body = ViewportBody(
     roughness: 0.4,
     metallic: 0.8
 )
-viewportController.bodies["bracket"] = body
+bodies.append(body)   // `bodies` is the app's @State [ViewportBody], passed to MetalViewportView
 ```
 
 ---
@@ -128,6 +140,9 @@ public static func directMesh(
     color: SIMD4<Float>,
     faceIndices: [Int32] = [],
     edges: [[SIMD3<Float>]] = [],
+    vertexColors: [SIMD4<Float>] = [],
+    vertexColorMode: VertexColorMode = .ignored,
+    vertexColorSpace: AuthoredColorSpace = .sRGB,
     material: PBRMaterial? = nil,
     transform: simd_float4x4 = matrix_identity_float4x4
 ) -> ViewportBody
@@ -144,6 +159,9 @@ Use this when your geometry source **already hands you flat, contiguous position
 | `indices` | Triangle index list, indexing *vertices* (not floats). |
 | `faceIndices` | Per-triangle B-Rep face index, for face pick mapping. Default `[]`. |
 | `edges` | Wireframe polylines, as on `init`. Default `[]`. |
+| `vertexColors` | One RGBA colour per vertex, parallel to `positions`, in `vertexColorSpace` (sRGB by default). Default `[]`. See [per-vertex colours](#per-vertex-colours-on-mesh-bodies). |
+| `vertexColorMode` | How `vertexColors` combine with `color`. Default `.ignored`. |
+| `vertexColorSpace` | The colour space of `vertexColors`. Default `.sRGB`. |
 
 ```swift
 // positions/normals come straight from the kernel — no interleaving
@@ -177,7 +195,7 @@ All render passes support direct bodies: shaded (opaque + transparent), shadow c
 
 #### `id: String`
 
-Unique identifier for this body. Used as the dictionary key in `ViewportController.bodies`.
+Unique identifier for this body. Keys the renderer's per-body buffer cache, selection (`selectedBodyIDs`), and pick results (`PickResult.bodyID`); keep it stable across updates.
 
 #### `generation: UInt64`
 
@@ -189,7 +207,7 @@ body.vertexData = deformed   // new generation
 bodies[0] = body             // next frame re-uploads this body's buffers
 ```
 
-Appearance and placement fields (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, ...) leave it unchanged, since they are read every frame. Copies share a generation until one of them is mutated. Read-only (`public private(set)`); the counter is thread-safe, so bodies can be built and mutated off the main actor.
+Appearance and placement fields (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, `edgeColors`, `edgeDrawRange`, `edgeColorSpace`, ...) leave it unchanged, since they are read every frame or re-upload only their own small buffer. Copies share a generation until one of them is mutated. Read-only (`public private(set)`); the counter is thread-safe, so bodies can be built and mutated off the main actor.
 
 #### `vertexData: [Float]`
 
@@ -211,9 +229,46 @@ Analytic arc/circle feature edges in body-local space. Renderer samples these to
 
 Per-triangle source face index, parallel to `indices.count / 3`. Maps GPU face picks back to B-Rep face IDs for sub-body selection. Empty if not applicable. Rendering never needs it: `.enhanced` tessellation and `.maximum` mesh shading apply to bodies without it too (#161).
 
+#### `edgeSegmentCount: Int`
+
+Number of line segments in `edges` once flattened: a polyline of `n` points has `n - 1`, and one with fewer than two points has none. This is the length `edgeIndices` and `edgeColors` need and the bound of `edgeDrawRange`.
+
 #### `edgeIndices: [Int32]`
 
 Per-segment source-edge index, parallel to the flattened segments across all `edges` polylines. Empty if not applicable, in which case the body is not edge-pickable. Overlay-layer bodies are the exception: their drawn edges are always pickable (#170).
+
+#### `edgeColors: [SIMD4<Float>]`
+
+Per-segment edge colour, parallel to the flattened segments of `edges`: segment `k` of polyline `p` is entry `(segments in polylines before p) + k`, the same order as `edgeIndices`. Needs exactly `edgeSegmentCount` entries. Empty (the default), or any other count, is ignored and every segment keeps the body's usual edge colour (the body `color` for an edge-only body, the contrast-adaptive edge colour for a meshed one), the rule `vertexColors` follows for points.
+
+- **Colour space.** Chosen by [`edgeColorSpace`](#edgecolorspace-authoredcolorspace), **sRGB (display) by default**: drawn as given, like `color`, `vertexColors` and `TriangleStyle.color`, so mid-grey `(0.5, 0.5, 0.5)` reads 128 in the output. Edges and the other passes that only draw an authored colour never decode and re-encode it (see [Colour pipeline](Display-Lighting.md#colour-pipeline)). Set `edgeColorSpace = .linear` for linear-light data.
+- **Where it applies.** The `edges` polylines of geometry and overlay bodies, in both edge paths (quad-expanded and native 1 px lines) and in the live and offscreen renderers. Arcs (`arcs`) keep the body colour.
+- **On a meshed body** the segment colour replaces the contrast-adaptive edge colour; the depth fade and `edgeIntensity` still scale it, and the colour's alpha scales it further. So `edgeIntensity == 0` hides every edge, and alpha 0 hides that segment's drawing. A fully transparent segment stays pickable: hide segments you do not want picked with `edgeDrawRange`.
+- **On an edge-only body** the colour, alpha included, is the fragment colour, so alpha blends over what is behind it.
+- **Cost.** Assigning it (or mutating it in place) leaves `generation` unchanged and re-uploads only its own buffer on the next frame, 16 bytes per segment: about 192 KB for a 12,000-segment path. The edge vertex buffers are not touched. `OffscreenRenderer` builds the buffer per render.
+
+```swift
+// `bodies` is the array bound to MetalViewportView; `palette` maps a move kind to a colour.
+// Recolour a path by move kind without rebuilding it.
+bodies[pathIndex].edgeColors = moves.map { palette[$0.kind] }
+```
+
+#### `edgeColorSpace: AuthoredColorSpace`
+
+How `edgeColors` are interpreted. `.sRGB` (the default) draws them as given; `.linear` encodes them to sRGB when drawn, so mid-grey `(0.5, 0.5, 0.5)` reads about 188 instead of 128. Only the colour channels are converted: alpha is coverage and is never encoded. The conversion runs in the fragment shader on every edge pass (quad-expanded and native, geometry and overlay, live and offscreen), so changing it leaves `generation` alone and uploads nothing, not even the colour buffer. It has no effect on picking, and none while `edgeColors` is empty or mismatched.
+
+#### `edgeDrawRange: Range<Int>?`
+
+The slice of flattened `edges` segments that is drawn and picked, in the same numbering as `edgeColors` and `edgeIndices`; `nil` (the default) shows them all. The range is clamped to `0..<edgeSegmentCount`, so a playhead may run past the end or start below zero, and an empty or out-of-range range draws and picks nothing.
+
+- **Cheap.** Assigning it leaves `generation` unchanged and uploads nothing; the renderers read it every frame and draw that slice of the existing edge buffer, so it can change 60 times a second. Dash patterns keep their phase, as the arc length is baked into the segments.
+- **Picking.** Segments outside the range are not written to the pick buffer, so they cannot be picked; segments inside it report their absolute index.
+- **Not affected.** `arcs`, and `boundingBox` (so revealing a path does not move the camera fit or the clip planes).
+
+```swift
+// Reveal the first `playhead` segments of the path.
+bodies[pathIndex].edgeDrawRange = 0..<playhead
+```
 
 #### `vertices: [SIMD3<Float>]`
 
@@ -225,7 +280,20 @@ Per-point source-vertex index, parallel to `vertices`. Empty defaults to identit
 
 #### `vertexColors: [SIMD4<Float>]`
 
-Per-point RGBA colors, parallel to `vertices`. Only used by the `.point` point-cloud render pass. Empty means all points use `color`.
+Per-vertex RGBA colour, as **sRGB (display) values** like `color` unless [`vertexColorSpace`](#vertexcolorspace-authoredcolorspace) is `.linear`. Two readers:
+
+- **`.point` bodies:** one colour per point, parallel to `vertices`, always used when the count matches.
+- **Mesh bodies:** one colour per *mesh* vertex (`vertexData.count / 6` for an interleaved body, `meshPositions.count / 3` for a direct-mesh one), interpolated across each triangle and applied per [`vertexColorMode`](#vertexcolormode). See [per-vertex colours](#per-vertex-colours-on-mesh-bodies).
+
+Empty, or any count that does not match, means every point or vertex uses `color`. Assigning it takes a fresh `generation`, so the renderers re-upload the body.
+
+#### `vertexColorSpace: AuthoredColorSpace`
+
+The colour space `vertexColors` are authored in, for mesh bodies on every path and for point clouds alike. `.sRGB` (the default) takes them as display values, like `color`, so every existing render is unchanged. `.linear` takes them as linear light. See [`AuthoredColorSpace`](#authoredcolorspace). Read per frame, so changing it leaves `generation` unchanged. It does not affect `color`, which is always an sRGB value.
+
+#### `vertexColorMode: VertexColorMode`
+
+How a mesh body's `vertexColors` combine with its base colour in the shaded pass. Defaults to `.ignored`, so setting `vertexColors` alone changes nothing about how a mesh draws. No effect on `.point` bodies. Read per frame, so changing it leaves `generation` unchanged (the colours upload the first time a body needs them). See [`VertexColorMode`](#vertexcolormode).
 
 #### `pointRadius: Float`
 
@@ -237,7 +305,7 @@ Selects the render pass: `.mesh` (shaded + wireframe), `.point` (point-cloud spr
 
 #### `triangleStyles: [TriangleStyle]`
 
-Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles straight after the surface they style, with `.lessEqual` depth, preventing silhouette flicker. On a translucent body (opacity below 1, or any body in `.xray`) they are drawn inside the sorted translucent pass, the far-facing half before the camera-facing half, so a highlight is seen through the surfaces in front of it rather than painted over them (#171). Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
+Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles straight after the surface they style, with `.lessEqual` depth, preventing silhouette flicker. On a translucent body (opacity below 1, or any body in `.xray`) they are drawn inside the sorted translucent pass, the far-facing half before the camera-facing half, so a highlight is seen through the surfaces in front of it rather than painted over them (#171). Over a mesh-shader surface (`.maximum` quality) the highlight is drawn through the plain vertex pipeline with a depth bias of a few depth units toward the viewer, so it keeps winning its `.lessEqual` tie with the meshlet surface even if the two stages round the position differently in the last bit (#213). Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
 
 #### `color: SIMD4<Float>`
 
@@ -274,6 +342,8 @@ When `false`, the body is drawn normally but excluded from the GPU pick buffer. 
 #### `transform: simd_float4x4`
 
 Per-body model matrix. Applied in the vertex shader on top of the scene model matrix. Lets the renderer reposition a body (e.g., during a manipulator drag) without re-uploading vertex data. Default `matrix_identity_float4x4`.
+
+Positions go through the matrix; normals go through the inverse transpose of its upper 3×3 (the shaders' `Uniforms.normalMatrix`, kept in step with `transform`), so a body with a non-uniform scale or a shear is lit exactly like the same geometry with the transform baked into its vertices, on the shaded, direct-mesh, tessellated and mesh-shader paths alike (issue #213). Transforming a normal by the matrix itself tilts it off the surface under such a transform. A mirroring transform keeps its normals pointing out of the surface.
 
 ---
 
@@ -762,7 +832,8 @@ Pre-built no-highlight style (`color = .zero`). Use to clear individual entries 
 **Example — highlight triangles belonging to a selected face:**
 
 ```swift
-guard var body = viewportController.bodies["bracket"] else { return }
+guard let index = bodies.firstIndex(where: { $0.id == "bracket" }) else { return }
+var body = bodies[index]
 let triangleCount = body.indices.count / 3
 var styles = Array(repeating: TriangleStyle.none, count: triangleCount)
 // faceIndices maps triangle → face ID; highlight face 3
@@ -770,7 +841,7 @@ for i in 0..<triangleCount where body.faceIndices[i] == 3 {
     styles[i] = TriangleStyle(color: SIMD4<Float>(0.2, 0.6, 1.0, 0.5))
 }
 body.triangleStyles = styles
-viewportController.bodies["bracket"] = body
+bodies[index] = body   // `bodies` is the app's @State [ViewportBody]
 ```
 
 ---
@@ -804,6 +875,66 @@ let body = ViewportBody(
     primitiveKind: .point
 )
 ```
+
+---
+
+## VertexColorMode
+
+```swift
+public enum VertexColorMode: UInt32, Sendable, Hashable, CaseIterable
+```
+
+How a mesh body's [`vertexColors`](#vertexcolors-simd4float) combine with its base colour (`color`, or `material.baseColor`) in the shaded pass. Set it on [`ViewportBody.vertexColorMode`](#vertexcolormode-vertexcolormode).
+
+| Case | Behaviour |
+|---|---|
+| `.ignored` | Default. The surface uses the body colour alone, whether or not `vertexColors` is populated. Every existing render is unchanged. |
+| `.multiply` | The base colour times the interpolated vertex colour, per channel. A white body shows the vertex colours as authored; a coloured body tints them. |
+| `.replace` | The interpolated vertex colour replaces the base colour as the albedo. |
+
+`.point` bodies always use their `vertexColors` and ignore this setting.
+
+### Per-vertex colours on mesh bodies
+
+```swift
+// A scalar field (say, distance from a plane) as a colour ramp over the mesh vertices.
+var body = ViewportBody.directMesh(
+    id: "part", positions: mesh.vertexData, normals: mesh.normalData, indices: mesh.indices,
+    color: SIMD4<Float>(1, 1, 1, 1))
+body.vertexColors = field.map { t in SIMD4<Float>(t, 0, 1 - t, 1) }   // one per vertex
+body.vertexColorMode = .replace
+```
+
+- **Colour space.** Set by [`vertexColorSpace`](#vertexcolorspace-authoredcolorspace), `.sRGB` by default: display values, exactly like `color`, `PBRMaterial.baseColor` and the point-cloud colours (the library's authored colours are display values, and lit surfaces decode to linear for lighting; see [Colour pipeline](Display-Lighting.md#colour-pipeline)). The colour is interpolated across the triangle as stored (sRGB), combined with the body colour (`.multiply` or `.replace`), then decoded for lighting, so a ramp looks like the same ramp drawn in any image tool, and `.unlit` shows the combined colour as is. With `.linear` the colours are linear light: they interpolate in linear light, `.multiply` combines them with the decoded body colour in linear light, lit surfaces use the result as linear albedo (no sRGB decode), and `.unlit` encodes it for display. Values outside `0...1` are clamped either way.
+- **Where it applies.** The shaded pass on every mesh path: interleaved, [`directMesh`](#directmesh-direct-mesh-path), PN tessellation (`renderingQuality = .enhanced`, each patch blends its triangle's three corner colours with the patch's barycentric weights) and mesh shaders (`.maximum` on Apple9; other GPUs draw `.maximum` through tessellation, which supports it too). Also the translucent and x-ray passes, `.unlit` and `.flat` display modes, matcap, overlay-layer bodies, and `OffscreenRenderer` as well as `ViewportRenderer`. Lighting, `roughness`, `metallic`, clearcoat, emission, shadows and the selection tint still come from the material, and `triangleStyles` highlights still composite over the result.
+- **What ignores it.** The shadow, depth-prepass, selection-mask and pick passes draw no colour. Edges, arcs and the selection outline keep their own colours.
+- **Alpha is not read.** Only the RGB channels are used. Opacity still comes from `color.w` / `material.opacity` (and x-ray), because a body's opaque-versus-translucent pass is chosen per body, not per vertex.
+- **Fallback.** An empty `vertexColors`, or one whose count does not match the mesh's vertex count, falls back to the body colour (nothing is read out of bounds). A mismatch is silent.
+- **Cost.** One RGBA `Float` per vertex (16 bytes), uploaded in a buffer parallel to the vertices (the interleaved 6-float layout is unchanged), only for a body whose `vertexColorMode` is not `.ignored`. Assigning `vertexColors` takes a fresh `generation`, so the whole body re-uploads (vertex, index, tessellation patches and meshlets as well as the colours). To animate a field every frame, expect that cost on large meshes.
+
+---
+
+## AuthoredColorSpace
+
+```swift
+public enum AuthoredColorSpace: Sendable, Hashable, CaseIterable
+```
+
+How a body's authored per-element colours (`vertexColors`, `edgeColors`) are interpreted. Set on [`ViewportBody.vertexColorSpace`](#vertexcolorspace-authoredcolorspace) and `ViewportBody.edgeColorSpace`.
+
+| Case | Meaning |
+|---|---|
+| `.sRGB` | Display (sRGB-encoded) values, drawn as given. The default. |
+| `.linear` | Linear-light values; converted to display encoding when drawn. |
+
+`ViewportBody.vertexColorSpace` takes one for `vertexColors`, `ViewportBody.edgeColorSpace` for `edgeColors`. Authored colours in the viewport are sRGB unless stated otherwise (see [Colour pipeline](Display-Lighting.md#colour-pipeline)). Also exported as `_AuthoredColorSpace` from the module.
+
+For `vertexColors` the space applies to mesh bodies (all paths, both renderers) and to `.point` bodies:
+
+- **Mesh, lit:** `.linear` skips the sRGB decode, so the colour is the linear albedo directly. 0.5 linear is much brighter than 0.5 sRGB (which decodes to about 0.21).
+- **Mesh, `.unlit`, and point clouds:** `.linear` colours are encoded to sRGB for display (0.5 linear shows as about 0.735, a stored value of 188). Pure 0 and 1 channels look the same in both spaces.
+- **Interpolation** happens in the stated space: a red-green-blue triangle in `.linear` has a lighter centre (a third of each channel is about 156 once encoded) than the same colours as `.sRGB` (85).
+- **Fallbacks are unaffected.** Without usable `vertexColors`, or with `vertexColorMode == .ignored`, the body draws with `color` (always an sRGB value) exactly as before, whatever the space.
 
 ---
 

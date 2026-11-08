@@ -11,7 +11,7 @@ These types control viewport appearance, rendering fidelity, and picking. `Viewp
 
 ## Topics
 
-- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
+- [ViewportConfiguration](#viewportconfiguration) · [RenderingQuality](#renderingquality) · [UniformTessellationFactor](#uniformtessellationfactor-1) · [RenderLayer](#renderlayer) · [SelectionOutlineStyle](#selectionoutlinestyle) · [SelectionTintStyle](#selectiontintstyle) · [EdgeLineConfiguration](#edgelineconfiguration) · [EdgeLineDashPattern](#edgelinedashpattern) · [EdgeLineDashKind](#edgelinedashkind) · [AxisStyle](#axisstyle) · [GridStyle](#gridstyle) · [ViewCubePosition](#viewcubeposition) · [PickingConfiguration](#pickingconfiguration) · [ClipPlane](#clipplane)
 
 ---
 
@@ -401,6 +401,36 @@ Outline for `ViewportController.hoveredBodyID` when that body is not also select
 
 ---
 
+#### `selectionTint`
+
+```swift
+public var selectionTint: SelectionTintStyle  // default: .selection
+```
+
+Colour and strength of the surface wash mixed into bodies in `ViewportController.selectedBodyIDs`, separate from the outline ring around them. The default is the faint blue (15 % of `(0.3, 0.5, 1.0)`) the shaded pass has always used. Set it to the outline colour so an orange outline does not sit around a blue-tinted body, or to `.off` (or any style with `strength` 0) for outline-only selection. Applies in every display mode, `.unlit` included. Not an `init` parameter; assign it on the value. See [`SelectionTintStyle`](#selectiontintstyle).
+
+```swift
+var config = ViewportConfiguration.cad
+let orange = SIMD3<Float>(1.0, 0.6, 0.1)
+config.selectionOutline = SelectionOutlineStyle(color: orange, width: 4)
+config.selectionTint = SelectionTintStyle(color: orange, strength: 0.25)
+// or outline-only selection:
+config.selectionTint = .off
+config.hoverTint = .off
+```
+
+---
+
+#### `hoverTint`
+
+```swift
+public var hoverTint: SelectionTintStyle  // default: .hover
+```
+
+Tint for `ViewportController.hoveredBodyID` when that body is not also selected (a selected body uses `selectionTint`). Not an `init` parameter.
+
+---
+
 ### Edge lines
 
 #### `edgeLineConfiguration`
@@ -501,7 +531,7 @@ Simulated f-number. Smaller values produce a shallower (stronger) blur.
 public var dofFocalDistance: Float  // default: 0
 ```
 
-Focus distance in world units from the camera, measured along the line of sight (in orthographic, from a reference eye in front of the pivot; see below). `0` activates autofocus on the scene centre: the view depth of the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied). It used to be the straight-line distance from the eye, which put an off-axis centre out of focus (issue #215). In orthographic the composite pass still decodes depth as perspective depth, so the blur there does not yet follow these distances. In orthographic it is measured from a reference eye in front of the pivot, at the distance a perspective camera showing the same height would sit (`orthographicScale / (2 · tan(fieldOfView / 2))`), not from the eye, which is only placed in front of the scene and moves back whenever the scene grows; so the focal plane stays put as the eye moves, follows the pivot, and matches the same framing in perspective (issue #217). Following the pivot, it moves when the dynamic pivot slides along the line of sight, by the depth slid; a focal distance equal to that reference distance focuses on the pivot.
+Focus distance in world units from the camera, measured along the line of sight (in orthographic, from a reference eye in front of the pivot; see below). `0` activates autofocus on the scene centre: the view depth of the mean of the visible geometry-layer bodies' world-space bounding-box centres (each body's `transform` applied). It used to be the straight-line distance from the eye, which put an off-axis centre out of focus (issue #215). In orthographic it is measured from a reference eye in front of the pivot, at the distance a perspective camera showing the same height would sit (`orthographicScale / (2 · tan(fieldOfView / 2))`), not from the eye, which is only placed in front of the scene and moves back whenever the scene grows; so the focal plane stays put as the eye moves, follows the pivot, and matches the same framing in perspective (issue #217). Following the pivot, it moves when the dynamic pivot slides along the line of sight, by the depth slid; a focal distance equal to that reference distance focuses on the pivot.
 
 ---
 
@@ -680,10 +710,8 @@ Turntable orbit, shadows disabled, SSAO disabled, MSAA disabled (`msaaSampleCoun
 **Example:**
 
 ```swift
-MetalViewportView(
-    bodies: heavyScene,
-    configuration: .performance
-)
+let controller = ViewportController(configuration: .performance)
+MetalViewportView(controller: controller, bodies: $heavyScene)   // @State var heavyScene: [ViewportBody]
 ```
 
 ---
@@ -815,7 +843,30 @@ Colour and width of the outline ring the live renderer draws around a selected o
 | `.selection` | `(0.1, 0.5, 1.0)` bright blue | 3 px |
 | `.hover` | `(0.4, 0.7, 1.0)` light blue | 3 px |
 
-The faint blue tint the shaded pass mixes into selected (15 %) and hovered (8 %) bodies is separate and fixed.
+The faint tint the shaded pass mixes into selected and hovered bodies is separate: see [`SelectionTintStyle`](#selectiontintstyle).
+
+---
+
+## SelectionTintStyle
+
+```swift
+public struct SelectionTintStyle: Sendable, Hashable
+```
+
+Colour and strength of the surface tint blended into a selected or hovered body. Used by `ViewportConfiguration.selectionTint` and `.hoverTint`, and mirrored by `OffscreenRenderOptions.selectionTint` / `.hoverTint`. The result is `mix(displayedColour, color, strength)`, applied to the colour the body is displayed in (after lighting, tone mapping and sRGB encoding, or to the flat colour in `.unlit`), so it reads the same in every display mode. It tints the body only; the ring around it is the [`SelectionOutlineStyle`](#selectionoutlinestyle), and the two are independent.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `color` | `SIMD3<Float>` | — | Tint colour, sRGB (display) RGB, clamped to `0...1`. |
+| `strength` | `Float` | — | Share of `color` mixed in, `0...1` (clamped). `0` turns the tint off. |
+
+| Preset | Colour | Strength |
+|---|---|---|
+| `.selection` | `(0.3, 0.5, 1.0)` blue | 0.15 |
+| `.hover` | `(0.4, 0.6, 1.0)` light blue | 0.08 |
+| `.off` | — | 0 |
+
+The defaults are the values the shader used to hard-code, so a configuration that does not touch the tint renders exactly as before.
 
 ---
 
@@ -829,7 +880,7 @@ Controls how body edges are drawn: polyline `edges`, analytic `arcs` (sampled ea
 
 Quad edges are shaded like native ones: `ViewportController.edgeIntensity` (or `OffscreenRenderOptions.edgeIntensity`) dims and depth-fades them (the fade is linear in view distance from the near to the far clip plane), and they are depth-biased toward the viewer so an edge lying on a face is not lost to it. The bias grows with the line width: each edge vertex is pulled toward the viewer by twice (half the width + 1 px), measured as world distance per pixel at its depth, so a wide edge keeps its full width on faces tilted up to about 63° from the view plane. Only a face less than that distance in front of an edge can let it show through.
 
-Native edges (`useQuadExpansion` off) are biased the same way, by a fixed 0.6% of the NDC height (about 3 px at 1000 px tall) in world units at each vertex's depth, because the shader has no viewport size. Neither path uses a constant NDC depth offset, whose world-space size depends on the near/far range: under a wide range it let hidden back edges show through faces (issue #157). Neither bias can push an edge past the near plane. The 1x pick pass applies the same bias to native edge and arc picks as to the drawn edges, so an edge drawn over a tilted face picks as the edge, not the face (issue #182).
+Native edges (`useQuadExpansion` off) are biased the same way, by a fixed 3 px (what a quad edge gets for a 1 px line) in world units at each vertex's depth, so a native edge also keeps winning over faces tilted up to about 63° from the view plane. The 3 px are pixels of the render target (the drawable, or the offscreen image), not a fraction of its height: the shader used to pull by 0.6% of the NDC height, which is about 3 px at 1000 px tall but under one pixel's depth on a drawable under about 256 px tall, where the face then won, for the drawn edge and its pick alike (issue #193). Neither path uses a constant NDC depth offset, whose world-space size depends on the near/far range: under a wide range it let hidden back edges show through faces (issue #157). Neither bias can push an edge past the near plane. The 1x pick pass applies the same bias to native edge and arc picks as to the drawn edges, so an edge drawn over a tilted face picks as the edge, not the face (issue #182).
 
 With `PickingConfiguration.isEnabled`, edge and arc picks cover the same width as the drawn edge (at least 1 pt), so a wide edge is clickable across its whole width. Dash gaps are pickable too. See [Picking](Picking.md#pick-footprints).
 

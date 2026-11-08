@@ -250,32 +250,68 @@ extension RendererSharedSetup {
     /// Binds the per-patch factor buffer, the patch data at vertex buffer 0 and `uniforms` at
     /// vertex buffer 1 (`Uniforms` for the shaded and depth paths, `ShadowUniformsSwift` for the
     /// shadow map). The caller sets fragment state and the depth-stencil state.
+    ///
+    /// The shaded pipeline passes `vertexColors` (#142), which adds the triangle indices at vertex
+    /// buffer 2, the colours at 3 and their mode at 4. Every other pipeline leaves it `nil`.
     static func encodeTessellatedDraw<U>(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         tessellation: TessellationBuffers,
-        uniforms: inout U
+        uniforms: inout U,
+        vertexColors: VertexColorBinding? = nil
     ) {
         encoder.setRenderPipelineState(pipeline)
         encoder.setTessellationFactorBuffer(
             tessellation.tessFactorBuffer, offset: 0, instanceStride: 0)
         encoder.setVertexBuffer(tessellation.patchDataBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<U>.size, index: 1)
+        if let vertexColors {
+            encoder.setVertexBuffer(vertexColors.indices, offset: 0, index: 2)
+            encodeVertexColors(encoder: encoder, binding: vertexColors)
+        }
         encoder.drawPatches(
             numberOfPatchControlPoints: 3, patchStart: 0, patchCount: tessellation.patchCount,
             patchIndexBuffer: nil, patchIndexBufferOffset: 0, instanceCount: 1, baseInstance: 0)
+    }
+
+    /// The constant depth bias, in units of the smallest resolvable depth, a per-triangle highlight
+    /// draws with over a mesh-shader surface.
+    ///
+    /// A body's meshlets are drawn by the mesh pipeline (`meshlet_mesh`), but its highlight by the
+    /// plain vertex pipeline (`highlight_vertex`), with `.lessEqual` so it wins the tie with the
+    /// surface underneath. The two stages compute the same clip position, yet separate shader
+    /// functions are not guaranteed to round it identically, and a last-bit difference would make
+    /// the highlight lose the tie in places (#213). A few units of depth toward the viewer settles
+    /// it: far below anything visible (a ~1e-7 fraction of the depth range) and only applied to
+    /// highlights over meshlet surfaces.
+    static let meshletHighlightDepthBias: Float = -8
+
+    /// Sets the depth bias a per-triangle highlight is drawn with: `meshletHighlightDepthBias` over
+    /// a mesh-shader surface, none over any other (whose surface and highlight go through the same
+    /// vertex path or the same patch evaluation).
+    ///
+    /// Call with `overMeshletSurface: false` after the highlight to restore the encoder.
+    static func setHighlightDepthBias(
+        on encoder: MTLRenderCommandEncoder, overMeshletSurface: Bool
+    ) {
+        encoder.setDepthBias(
+            overMeshletSurface ? meshletHighlightDepthBias : 0, slopeScale: 0, clamp: 0)
     }
 
     /// Draws a body's meshlets with the mesh-shader `pipeline`.
     ///
     /// `vertexBuffer` is the body's interleaved (stride 6) vertex buffer; `uniforms` is bound at
     /// object buffer 1 and mesh buffer 4. The caller sets fragment state.
+    ///
+    /// The shaded pipeline passes `vertexColors` (#142), which adds the colours at mesh buffer 5
+    /// and their mode at 6. The shadow and depth pipelines leave it `nil`.
     static func encodeMeshletDraw<U>(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         meshlets: MeshletBuffers,
         vertexBuffer: MTLBuffer,
-        uniforms: inout U
+        uniforms: inout U,
+        vertexColors: VertexColorBinding? = nil
     ) {
         encoder.setRenderPipelineState(pipeline)
         encoder.setObjectBuffer(meshlets.descriptorBuffer, offset: 0, index: 0)
@@ -285,6 +321,11 @@ extension RendererSharedSetup {
         encoder.setMeshBuffer(meshlets.vertexIndexBuffer, offset: 0, index: 2)
         encoder.setMeshBuffer(meshlets.triangleIndexBuffer, offset: 0, index: 3)
         encoder.setMeshBytes(&uniforms, length: MemoryLayout<U>.size, index: 4)
+        if let vertexColors {
+            var mode = vertexColors.mode
+            encoder.setMeshBuffer(vertexColors.colors, offset: 0, index: 5)
+            encoder.setMeshBytes(&mode, length: MemoryLayout<UInt32>.size, index: 6)
+        }
         encoder.drawMeshThreadgroups(
             MTLSize(width: meshlets.meshletCount, height: 1, depth: 1),
             threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),

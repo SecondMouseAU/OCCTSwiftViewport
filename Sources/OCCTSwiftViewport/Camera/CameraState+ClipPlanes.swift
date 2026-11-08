@@ -16,9 +16,12 @@ extension CameraState {
     ///   when unknown (e.g. an empty scene or before the first frame's buffers
     ///   exist), in which case a wide default is returned.
     /// - Returns: A `(near, far)` pair with a bounded ratio, so perspective depth
-    ///   precision stays usable regardless of model scale.
+    ///   precision stays usable regardless of model scale. In orthographic the pair is
+    ///   fitted to the scene's depth and is the same distance from the scene for every eye
+    ///   position (`near` may be negative: see `orthographicClipPlanes`).
     public func clipPlanes(sceneBounds: BoundingBox?) -> (near: Float, far: Float) {
         guard let bounds = sceneBounds else { return (0.01, 10_000) }
+        if isOrthographic { return orthographicClipPlanes(for: bounds) }
 
         let center = bounds.center
         let radius = max(bounds.diagonalLength * 0.5, 1e-4)
@@ -46,6 +49,33 @@ extension CameraState {
         return (near, far)
     }
 
+    /// How far past the front of the scene an orthographic far plane is, in scene diagonals.
+    ///
+    /// Three diagonals puts the back of a scene that is as deep as it is wide about a third of the
+    /// way through the range, which is where a perspective view puts it, so the edge depth fade
+    /// (and the SSAO and silhouette thresholds measured against the range) look as they do there.
+    static let orthographicDepthSpan: Float = 3
+
+    /// The orthographic near/far planes: fitted to the scene's own depth, not to the eye.
+    ///
+    /// An orthographic view looks the same wherever the eye is on the line of sight, and its
+    /// depth is linear, so none of perspective's reasons for a far/near ratio apply and neither
+    /// plane has to be in front of the eye. `near` sits `nearPlaneMargin` of the scene's radius in
+    /// front of its nearest corner and `far` a fixed `orthographicDepthSpan` scene diagonals
+    /// behind that. Both depend on the scene alone: the distance from the front of the scene to
+    /// each plane is the same for every eye, so the edge depth fade and the SSAO / silhouette
+    /// thresholds are too (they used to follow `far = 2 * (eyeDistance + radius)`, and a
+    /// dragged eye changed them, #217). `near` is negative when the eye is inside the scene,
+    /// which a projection matrix allows: nothing is cut away, and the eye needn't be moved back
+    /// out of the model to avoid it (`placingOrthographicEye` still does, for a camera built
+    /// before this fit).
+    private func orthographicClipPlanes(for bounds: BoundingBox) -> (near: Float, far: Float) {
+        let diagonal = max(bounds.diagonalLength, 2e-4)
+        let nearest = Self.nearestDepth(of: bounds, from: position, along: viewDirection)
+        let near = nearest - diagonal * 0.5 * Self.nearPlaneMargin
+        return (near, near + diagonal * Self.orthographicDepthSpan)
+    }
+
     /// Fraction of the camera-to-scene distance the near plane is pulled back from the front of
     /// the scene bounds, so geometry on the AABB's camera-facing face sits at a small positive
     /// depth rather than exactly on the near plane. 1% costs a negligible share of depth
@@ -56,12 +86,13 @@ extension CameraState {
     /// behind the eye or near-clipped (issue #211).
     ///
     /// An orthographic view does not depend on where the eye is along the view axis: it shows
-    /// `orthographicScale` wherever the eye is. Only the clip planes do, since the near plane
-    /// cannot go behind the eye, so an eye inside the scene cut away everything between it and
-    /// the camera's side of the scene. This moves the eye back along the line of sight, by
-    /// raising `distance` with the pivot and rotation kept, until the nearest corner of `bounds`
-    /// is one scene radius (half the box's diagonal) in front of it. The picture is the same;
-    /// only the clip planes `clipPlanes(sceneBounds:)` fits change, to take in the whole scene.
+    /// `orthographicScale` wherever the eye is. The clip planes `clipPlanes(sceneBounds:)` fits
+    /// no longer depend on it either (they follow the scene, and `near` may sit behind the eye,
+    /// #217), but an eye inside the scene is still a bad place for everything else that reads
+    /// `position`, such as a ray that starts at the eye. This moves the eye back along the line
+    /// of sight, by raising `distance` with the pivot and rotation kept, until the nearest
+    /// corner of `bounds` is one scene radius (half the box's diagonal) in front of it. The
+    /// picture and the depth range are the same.
     ///
     /// An eye already that far in front, a perspective camera (whose eye is the view) or `nil`
     /// bounds return the camera unchanged. The eye is only ever moved back, never forward.

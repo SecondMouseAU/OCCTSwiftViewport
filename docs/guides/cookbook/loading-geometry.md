@@ -159,6 +159,60 @@ A body may mix `edges` and `arcs`, but note that a tap on either reports `PickRe
 
 ---
 
+## Per-segment edge colour and a visible range
+
+A long path (a toolpath, a trajectory, a survey line) is one body with a polyline in `edges`. Two optional fields style it without splitting it into several bodies or rebuilding it every frame:
+
+- `edgeColors` gives each flattened segment its own colour. It needs one entry per segment, `body.edgeSegmentCount`; any other count is ignored and the edges keep the body's usual colour.
+- `edgeDrawRange` limits which segments are drawn, and picked, so a playhead can reveal the path.
+
+Colours are **sRGB (display) RGBA, drawn as given**, by default, like `color`, `vertexColors` and `TriangleStyle.color`. If your data is linear-light, set `body.edgeColorSpace = .linear` and the colours are converted for display (mid-grey 0.5 reads about 188 instead of 128); changing it costs nothing, as it re-uploads no buffer.
+
+```swift
+import simd
+
+enum MoveKind { case rapid, cut, plunge }
+
+// One long polyline; segment `i` is the move from points[i] to points[i + 1].
+let points: [SIMD3<Float>] = toolpathPoints
+let moves: [MoveKind] = toolpathMoves   // points.count - 1 entries
+
+let palette: [MoveKind: SIMD4<Float>] = [
+    .rapid: SIMD4<Float>(0.55, 0.55, 0.60, 1),
+    .cut: SIMD4<Float>(0.15, 0.75, 0.35, 1),
+    .plunge: SIMD4<Float>(0.90, 0.30, 0.15, 1),
+]
+
+var path = ViewportBody(
+    id: "toolpath",
+    vertexData: [], indices: [],
+    edges: [points],
+    color: SIMD4<Float>(0.8, 0.8, 0.8, 1)   // the fallback colour
+)
+path.edgeColors = moves.map { palette[$0] ?? path.color }
+assert(path.edgeColors.count == path.edgeSegmentCount)
+```
+
+Both are cheap to change on a body that is already on screen. Assigning either leaves `generation` alone and never re-uploads the polyline: `edgeColors` re-uploads only its own 16 bytes per segment (about 192 KB for 12,000 segments), and `edgeDrawRange` uploads nothing, so it can move every frame:
+
+```swift
+// `bodies` is the array bound to MetalViewportView; `index` is the path's position in it.
+func show(upTo playhead: Int) {
+    bodies[index].edgeDrawRange = 0..<playhead
+}
+
+// Dim what has been played: fade the colours of the first `playhead` segments.
+func dimPlayed(upTo playhead: Int) {
+    var colors = bodies[index].edgeColors
+    for i in 0..<min(playhead, colors.count) { colors[i].w = 0.35 }
+    bodies[index].edgeColors = colors
+}
+```
+
+The range is clamped, so a playhead may run past the end (`0..<Int.max` shows everything) and `0..<0` shows nothing. On a meshed body the segment colour replaces the contrast edge colour and `edgeIntensity` still applies; alpha 0 hides a segment's drawing but leaves it pickable, so use `edgeDrawRange` to take segments out of picking too. `OffscreenRenderer` honours both fields, so a render of frame *n* of an animation is the same data. Arcs are not affected, and neither is `boundingBox`, so the camera fit does not change as the path is revealed. See the [`ViewportBody` reference](../../reference/ViewportBody.md#edgecolors-simd4float).
+
+---
+
 ## `faceIndices` for sub-body face selection
 
 When `faceIndices` is populated it must be **parallel to the triangle count** (`indices.count / 3`). Each element maps the corresponding triangle back to an integer face ID (e.g., a B-Rep face index). The GPU pick texture encodes `objectIndex | (triangleIndex << 16)`; the controller uses `faceIndices[triangleIndex]` to resolve which logical face was tapped.
@@ -245,6 +299,34 @@ let cloud = ViewportBody(
 ```
 
 `boundingBox` falls back to the `vertices` array when `vertexData` is empty, so `CameraState.fit(to:)` and frustum culling work correctly for point clouds.
+
+---
+
+## Per-vertex colours on a mesh (scalar fields, analysis maps)
+
+`vertexColors` also colours a *mesh*: one RGBA per mesh vertex, interpolated across each triangle. It is opt-in, so existing bodies draw as before: set `vertexColorMode` to `.replace` (the vertex colour is the surface colour) or `.multiply` (it tints the body `color`).
+
+```swift
+// Colour each vertex of a mesh by its height: blue at the bottom, red at the top.
+var body = ViewportBody(id: "part", vertexData: vertexData, indices: indices, edges: [],
+                        color: SIMD4<Float>(1, 1, 1, 1))
+let zs = stride(from: 0, to: vertexData.count, by: 6).map { vertexData[$0 + 2] }
+let (lo, hi) = (zs.min() ?? 0, zs.max() ?? 1)
+body.vertexColors = zs.map { z in
+    let t = (z - lo) / max(hi - lo, .leastNonzeroMagnitude)
+    return SIMD4<Float>(t, 0, 1 - t, 1)        // parallel to the mesh vertices
+}
+body.vertexColorMode = .replace               // the default, .ignored, leaves the body colour
+```
+
+The same two properties are parameters of `ViewportBody.directMesh(...)`, so a kernel's flat position/normal arrays take a flat colour array too (`vertexColors` must have one entry per position, so `positions.count / 3`).
+
+Things to know:
+
+- **Colour space.** sRGB (display) values by default, like `color`, so a ramp built from an sRGB colour table looks as it does in an image tool. If your field is linear light, set `body.vertexColorSpace = .linear` instead (it applies to point clouds too): lit surfaces then use the values as linear albedo and unlit surfaces and points encode them for display. Only RGB is read; opacity still comes from `color.w`.
+- **Fallback.** An empty array, or one whose count differs from the mesh's vertex count, is ignored and the body keeps its colour.
+- **Everywhere the surface is drawn.** All rendering qualities (including PN tessellation and mesh shaders), the x-ray and translucent passes, the `.unlit` display mode (which shows the ramp exactly, with no lighting), overlay bodies, and `OffscreenRenderer`.
+- **Cost.** Assigning `vertexColors` counts as a geometry change (new `generation`), so the body re-uploads. Switching `vertexColorMode` alone does not.
 
 ---
 

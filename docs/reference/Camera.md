@@ -57,7 +57,7 @@ View rotation as a normalized quaternion mapping camera space into world space (
 
 Distance from the pivot point along the view direction. Must be positive. Use `CameraController.minDistance` / `maxDistance` to enforce limits during interaction.
 
-In perspective it sets how large the view is. In orthographic `orthographicScale` does that, and `distance` only places the eye along the line of sight, which moves the clip planes but not the picture. Orthographic zoom leaves it alone, and `placingOrthographicEye(inFrontOf:)` raises it to keep the eye in front of the scene (issue #211).
+In perspective it sets how large the view is. In orthographic `orthographicScale` does that, and `distance` only places the eye along the line of sight, which changes neither the picture nor, since the orthographic clip planes follow the scene rather than the eye, the depth range (issue #217). Orthographic zoom leaves it alone, and `placingOrthographicEye(inFrontOf:)` raises it to keep the eye in front of the scene (issue #211).
 
 ---
 
@@ -153,6 +153,8 @@ Measuring `near` against the box rather than the sphere matters for non-cubic sc
 
 Depth, not straight-line distance, is what the near plane cuts at. Earlier releases set `near` from the Euclidean camera-to-box distance, which only equals the depth straight ahead: a box viewed obliquely, with its nearest corner off the view axis, is nearer in depth than in distance, so its front was clipped.
 
+**Orthographic cameras** get planes fitted to the scene's own depth, not to the eye. Orthographic depth is linear and the picture does not depend on where the eye is on the line of sight, so `near` is the nearest corner's depth pulled back by 1% of the scene radius, and `far` is a fixed three scene diagonals behind `near`. The distance from the front of the scene to each plane is therefore the same for every eye position: dragging the eye along the view axis (or `placingOrthographicEye` moving it) leaves the edge depth fade (`edgeIntensity` below `1`) and the SSAO and silhouette thresholds exactly as they were. `near` goes negative when the eye is inside the scene, which an orthographic projection allows, so nothing is cut away. The old orthographic planes (`far = 2 * (eyeDistance + radius)`, `near` floored above zero) made all of those depend on the eye (issue #217).
+
 The 1% margin keeps geometry on the box's camera-facing face (the top face in a top view, a flat panel, an edge-only sketch, which since #135 defines the box itself) at a small positive depth. With `near` exactly on the box, that geometry sat at NDC z = 0 and rounding could clip it away (issue #156). The margin raises the `far/near` ratio by about 1%, a negligible share of depth precision.
 
 `ViewportRenderer` fits these planes on every frame, including a body's first one: it uses the body's cached bounds when they are current and computes them from the body otherwise, so a frame never falls back to the wide `(0.01, 10_000)` range just because a body is new (issue #157). `OffscreenRenderer` computes them from the bodies on every render.
@@ -170,7 +172,7 @@ let proj = state.projectionMatrix(aspectRatio: aspect, near: near, far: far)
 public func placingOrthographicEye(inFrontOf bounds: BoundingBox?) -> CameraState
 ```
 
-Returns an orthographic copy whose eye sits in front of `bounds`. An orthographic picture does not depend on where the eye is along the view axis, but the near plane cannot go behind the eye, so an eye inside the model cut away everything between it and the front of the model. This raises `distance`, keeping the pivot, rotation and `orthographicScale`, until the nearest corner of `bounds` is one scene radius (half the box's diagonal) in front of the eye. The picture is unchanged; `clipPlanes(sceneBounds:)` then takes in the whole scene. A perspective camera, `nil` bounds, or an eye already that far in front come back unchanged, and the eye is only ever moved back (issue #211).
+Returns an orthographic copy whose eye sits in front of `bounds`. An orthographic picture does not depend on where the eye is along the view axis. The fitted clip planes no longer need the eye placed (`clipPlanes(sceneBounds:)` lets `near` go behind it, issue #217), but the placement still keeps the eye out of the model for everything else that reads `position`: rays that start at the eye, pivot and measurement code that treat the eye as a point in front of the scene. This raises `distance`, keeping the pivot, rotation and `orthographicScale`, until the nearest corner of `bounds` is one scene radius (half the box's diagonal) in front of the eye. The picture is unchanged; `clipPlanes(sceneBounds:)` then takes in the whole scene. A perspective camera, `nil` bounds, or an eye already that far in front come back unchanged, and the eye is only ever moved back (issue #211).
 
 `CameraController` applies it after every camera change when it has a `sceneBoundsProvider`, which `MetalViewportView` sets, and `fit(to:aspectRatio:padding:)` applies it in orthographic. `OffscreenRenderer` applies it to the camera it renders, with the bounds of its bodies, overlay bodies and axes (also with `explicitOrthoBounds` on a perspective camera), so a headless orthographic render is not near-clipped (issue #215). Call it yourself on a camera you use some other way:
 
