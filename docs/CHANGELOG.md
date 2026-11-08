@@ -4,6 +4,224 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-08
+
+The medium and low findings from the hard-coded values audit (issue #136), the linear colour pipeline
+(H6), a Z-up pass over the whole library, a camera and gesture feel pass, and an orthographic pass.
+**Several defaults change; read "Changed" before upgrading.** This is a minor bump because a few
+properties became optional (source-incompatible for code that reads them) and several behaviours changed.
+
+### Changed (read before upgrading)
+- **Linear colour pipeline with tone mapping on every frame** (#136, H6). Lit surfaces decode their sRGB
+  inputs, are lit and ACES tone mapped (`exposure` / `whitePoint`) in linear space, and are encoded to
+  sRGB once. This now applies in every live configuration, including `.performance` and SSAO/silhouettes
+  off, and in `OffscreenRenderer`. Before, tone mapping ran only in the SSAO/silhouette composite, after
+  the image had clipped. Highlights and `emissiveStrength > 1` compress instead of clipping, `exposure`
+  always applies, display-mode switches no longer change brightness, and offscreen surface colours match
+  the live viewport. Unlit bodies, edges, grid, axes, background and overlays keep their authored colours.
+  Every shaded image looks different; re-baseline screenshot tests. All authored colours
+  (`ViewportBody.color`, `PBRMaterial.baseColor`, light, ambient, background, grid, edge and outline
+  colours, `TriangleStyle`) are documented as sRGB values; `PBRMaterial.emissive` and HDR environment maps
+  are linear.
+- **One-finger and mouse drag rotates the object on both axes** (new `GestureConfiguration.dragRotation`,
+  `.rotateObject` by default, or `.orbitCamera`). Before, the horizontal drag orbited the camera, so the
+  model turned against the finger. Apps that set `invertOrbitHorizontal = true` to get this feel should
+  remove it. Momentum and the navigation cube follow the same convention; the cube's vertical drag
+  direction changes.
+- **Pan is 1:1 with the pointer.** `panSensitivity` is now a multiplier of the 1:1 speed (default `1`); it
+  used to be world units per point scaled by distance (default `0.005`, about 5x the finger in an 800 pt
+  view). A configuration that sets `panSensitivity: 0.005` explicitly now pans 200x slower than 1:1, so
+  change it to `1`. `minPanSpeed` defaults to `0` (was `0.001`).
+- **Nothing resets the view by default.** An iOS double-tap no longer resets the camera, and
+  `GestureConfiguration.doubleTap` / `doubleClick` default to `.none` (was `.focusOnPoint`, which was never
+  read). Opt in with `GestureConfiguration.resetViewTriggers`, for example `[.doubleTap]`.
+- **Z-up throughout.** The grid lies in the XY ground plane (it stood vertical in XZ), and the hemisphere
+  ambient, procedural sky, IBL and skybox put the sky above +Z. `ClipPlane()` now defaults to a +Z normal
+  and `ClipPlane.groundPlane` cuts at Z = 0; the new `ClipPlane.yPlane` keeps the old Y = 0 cut.
+- **X-ray opacity defaults to 0.2** (`DisplayMode.defaultXRayOpacity`, was 0.4 in the first x-ray
+  implementation), live and offscreen.
+- **`OffscreenRenderOptions` defaults follow a default `ViewportController`**: `.shaded`, grid and axes on,
+  isometric camera, and the SSAO / silhouette / tone-map composite on. For the previous output, pass
+  `displayMode: .shadedWithEdges`, `showGrid: false`, `showAxes: false`, `cameraState: CameraState()`,
+  `enableSilhouettes: false` and `lightingConfiguration.enableSSAO = false`.
+- **Source compatibility:** `axisLength`, `axisRadius` (on `ViewportConfiguration` and
+  `OffscreenRenderOptions`) and `ViewportConfiguration.defaultFieldOfView` are now optional. Assignments
+  still compile; code that reads them as `Float` needs `?? value`.
+- **Axes scale to the scene.** With `axisLength == nil` (the default) they are sized from the visible
+  geometry (`max(1.5 x reach, 0.5 x diagonal)`, or 2 units for an empty scene); `axisRadius == nil` makes
+  `.cylinder` axes 1% of their length thick. Explicit values win.
+- **`LightingConfiguration.flat`** `ambientIntensity` is 0.3 (was 0.6, never read). `specularIntensity` now
+  scales the GGX highlights, so `.flat` shows none.
+- **`DisplayMode.flat` and `.xray` are real modes.** `.flat` lights each triangle with its face normal;
+  `.xray` draws every surface see-through. Both were identical to `.shaded` / `.shadedWithEdges`.
+  `.rendered` is documented as identical to `.shaded`.
+- **Picking follows the display mode.** Faces are not pickable in `.wireframe`, and the edges of mesh
+  bodies are not pickable in modes that hide them (`.shaded`, `.flat`, `.unlit`, `.rendered`); bodies that
+  must stay selectable in `.wireframe` need `edgeIndices`. An overlay body's edges are pickable even with
+  empty `edgeIndices`, reporting `.edge` with the raw segment index, so code indexing
+  `edgeIndices[primitiveIndex]` must handle an empty array.
+- **`RotationStyle.firstPerson` looks around in place**, moving the pivot with the camera. The dynamic
+  pivot and release snap are skipped in that style.
+- **`ViewportConfiguration.preferredFramesPerSecond` defaults to 120** and drives both the `MTKView` and
+  the camera animation and inertia timer (both were fixed at 60). Inertia decay is frame-rate independent.
+- **Orthographic lit shading uses a parallel view vector**, so it no longer depends on where the eye sits.
+- **`SceneRaycast.cast` skips widgets and non-pickable bodies by default** (`includeWidgets:`,
+  `includeNonPickable:` opt back in), and honours `body.transform`, returning world-space hits.
+- **Standalone `CameraController` defaults** match `GestureConfiguration.default`
+  (`scrollZoomSensitivity` 0.25, was 0.1).
+
+### Added
+- **Input and camera:**
+  - `GestureConfiguration.resetViewTriggers` (`ViewResetTrigger`: `.keyCombination(key:modifiers:)`,
+    `.doubleClick(modifiers:)`, `.doubleTap`); `ViewportController.handleKeyCombination(_:modifiers:)`.
+  - `ViewportController.handleKeyPress(_:modifiers:) -> Bool`: the view and display-mode shortcuts ignore
+    presses with command, control or option held, so app shortcuts such as command-F no longer switch
+    view. `handleKeyPress(_:)` remains and means "no modifiers".
+  - `GestureConfiguration.dragRotation`, `momentumScale` (default 0.06, which keeps the existing feel) and
+    `orbitRollSign`; `CameraController.beginOrbitDrag(at:signs:)`, `endOrbitDrag()`, `stopInertia()`,
+    `isOrbitDragActive`; `ViewportController.setDragOrigin(offsetFromCenter:)` and
+    `setTwoFingerDragOrigin(offsetFromCenter:)` (a two-finger drag with `.orbit` and `.arcball` starts at
+    the touches' centroid and can roll).
+  - `CameraController.pinchZoom(magnification:cursorNormalized:aspectRatio:)`, `homeCameraState`,
+    `viewportHeight`, `orthographicScaleRange` and `ViewportController.updateViewportSize(_:)`.
+  - `.focusOnPoint` on `doubleTap` / `doubleClick` now works: it raycasts under the tap and animates the
+    pivot onto the surface.
+  - Orthographic eye placement: `CameraState.placingOrthographicEye(inFrontOf:)`,
+    `CameraController.sceneBoundsProvider` and `placeOrthographicEyeInFrontOfScene()`;
+    `Ray.fromCamera(...sceneBounds:)` and `throughViewCenter(...sceneBounds:)`.
+  - `SceneRaycast.cast(ray:bodies:clipPlanes:)`, and `PivotStrategy.computePivot(...clipPlanes:)`.
+- **Rendering configuration:**
+  - `SelectionOutlineStyle`, `ViewportConfiguration.selectionOutline` and `.hoverOutline`: colour and
+    screen-pixel width (default 3) of the selection and hover outlines, which used to be a fixed 0.015
+    body-local units.
+  - `ViewportConfiguration.xrayOpacity`, `ViewportController.xrayOpacity` (live, `@Published`) and
+    `OffscreenRenderOptions.xrayOpacity`, clamped to `0...1`.
+  - `ViewportConfiguration.uniformTessellationFactor` (`UniformTessellationFactor`): with adaptive
+    tessellation off, `.loadAdaptive(minimum:)` (default) scales the uniform factor from GPU frame time,
+    thermal state and Low Power Mode; `.fixed(_:)` pins it.
+  - `ViewportConfiguration.darkModeBackgroundColor`, `.defaultDarkModeBackgroundColor`,
+    `resolvedBackgroundColor(isDark:)`, `effectiveInitialCameraState` and `ClipPlane.maxActivePlanes` (4).
+  - `ViewportRenderer.effectiveRenderingQuality` and `ViewportController.effectiveRenderingQuality`: the
+    quality in effect after any fallback.
+- **Offscreen rendering:**
+  - `OffscreenRenderOptions.clipPlanes`, `selectedBodyIDs`, `hoveredBodyID`, `selectionOutline`,
+    `hoverOutline`, `autoSmoothNormals`, `normalSmoothingCreaseAngle`, `enableSilhouettes`,
+    `silhouetteThickness`, `silhouetteIntensity`, `edgeIntensity`, and `init(matching:width:height:)` to
+    copy a `ViewportController`'s settings.
+  - `appearance` (`RenderAppearance`: `.system`, `.light`, `.dark`), `darkModeBackgroundColor`,
+    `resolvedBackgroundColor`, `gridStyle`, `gridSize`, `axisLength`, `axisRadius`, `axisStyle`. Pin
+    `.light` or `.dark` for reproducible CI baselines.
+  - `renderingQuality`, `tessellationMaxFactor`, `adaptiveTessellation`, `uniformTessellationFactor`:
+    `OffscreenRenderer` now does PN-triangle tessellation at `.enhanced` and mesh shaders at `.maximum`.
+- **Geometry:** `up: PrimitiveUpAxis` (`.x` / `.y` / `.z`) on `ViewportBody.box`, `.cylinder` and `.sphere`
+  (default `.y`, unchanged); `DisplayMode.clampedXRayOpacity(_:)`, `surfaceOpacity(forMaterialOpacity:xrayOpacity:)`
+  and `drawsEdges(bodyHasMesh:)`.
+
+### Fixed
+- **Lighting and environment:** `ambientIntensity` and `ambientColor` now affect shading; `environmentMapURL`
+  and `environmentMapData` load automatically in both renderers (and clear when set to nil), so
+  `OffscreenRenderer` renders image-based lighting. Equirectangular HDR maps were sampled upside down.
+- **SSAO** no longer darkens flat, sloped or convex surfaces: occlusion comes only from geometry in front of
+  the surface's tangent plane. The sample radius is `ssaoRadius` world units projected to pixels (it was a
+  fraction of a pixel), off-screen taps are ignored, distant occluders fade, and orthographic depth is
+  linearised correctly. With silhouettes on and SSAO off, the live composite no longer applies occlusion.
+- **Translucency:** a body's far wall seen through its near wall is no longer lit as a Fresnel rim, and glass
+  keeps its specular highlight. Translucent surfaces no longer lower the image alpha, so `PBRMaterial.glass`
+  (any `opacity < 1`) no longer renders as a flat white disc in PNGs and CGImages. Translucent bodies keep
+  their edges (they vanished in `.wireframe`), and draw their far half before their near half.
+- **Selection and highlights:** the selection and hover outline no longer fills the hidden part of a body over
+  nearer geometry; it is a ring around the silhouette. A selected translucent body or one in `.wireframe`
+  gets the tint and ring instead of a solid blob. `triangleStyles` highlights on translucent and `.xray`
+  bodies composite in depth order. Reassigning `triangleStyles` updates the highlight. On the tessellated
+  surface, highlights, the stencil mask and the outline follow the PN-tessellated shape.
+- **Section clip planes** now apply to the shadow map (all four shadow paths), and no longer leave a
+  one-pixel ghost of a clipped wall under MSAA. `SceneRaycast.cast` and the dynamic pivot honour them too.
+- **Near/far fitting:** the near plane sits 1% in front of the scene's smallest view-space depth, so
+  geometry square-on to the camera (a top-view face, a flat panel, edge-only bodies) is no longer clipped.
+  The live renderer fits near/far on a body's first frame instead of using 0.01/10000 for one frame, and
+  overlays inside the view widen the fit. The grid and axes are no longer clipped.
+- **Edges:** quad-expanded edges honour `edgeIntensity` and are depth-biased by their width, so a wide edge
+  on a tilted face is no longer half hidden. Arcs and overlay edges honour `EdgeLineConfiguration` width and
+  dash. Native 1 px edges no longer show hidden back edges through faces when near/far is wide, and edge
+  depth fade is linear in view distance. Arc buffers are no longer rewritten while the GPU reads them.
+  Edge and arc picks cover the visible width, the vertex pick sprite is 8 pt (was 8 pixels), and native
+  edge picks carry the same depth bias as the drawn edges.
+- **Overlay layer:** overlay surfaces draw in every display mode and receive no shadows; their arcs draw on
+  top; their edges, arcs and vertices pick over geometry in front of them. Overlay bodies no longer pick up
+  SSAO or silhouettes, nor the depth-tested outline, and the live viewport draws overlay `.point` bodies.
+- **Tessellation and mesh shaders:** tessellation factors use each body's `transform`;
+  `adaptiveTessellation = false` tessellates uniformly; `tessellationMaxFactor` is clamped to 2...64 and
+  rounded to even (odd or large values silently disabled tessellation); `.maximum` culls meshlets in world
+  space without backface culling; `.enhanced` and `.maximum` refine bodies without `faceIndices` (STL/OBJ
+  imports, primitives); mesh-shader pipeline failures are reported and a quality fallback is logged once;
+  the PN crease threshold follows `normalSmoothingCreaseAngle`.
+- **Shadows:** the shadow pass culls nothing, so one-sided sheets facing away from the light, or under a
+  mirroring transform, cast a shadow. The shadow frustum uses cached world-space bounds of visible geometry
+  bodies instead of rescanning vertices every frame.
+- **Offscreen parity:** `OffscreenRenderer` matches the live viewport for clip planes, analytic arcs,
+  `triangleStyles`, the selection and hover outline, the overlay layer, `autoSmoothNormals`, the SSAO /
+  silhouette / tone-map composite and the HDR skybox (`drawBackground`). It drops buffers for bodies it is
+  no longer given, fits near/far to the overlays that `explicitOrthoBounds` and `pixelPan` show, and places
+  an orthographic eye in front of the scene. Headless `.system` appearance follows `NSApp.effectiveAppearance`.
+- **Geometry mutation:** mutating a `ViewportBody`'s geometry in place now bumps `generation` (now
+  `public private(set) var`, with a thread-safe counter), so changes reach the GPU and the pivot bounds. A
+  body that keeps its `id` but loses all its geometry stops drawing its old buffers. `boundingBox` covers
+  `meshPositions` for direct-mesh bodies, and `SceneRaycast` no longer crashes on them.
+- **Input, iOS and visionOS:** a cancelled pinch or twist no longer skews the next one (pinch and roll use
+  UIKit recognizers), pinch follows the fingers' current centroid, a drag interrupted by a second finger or a
+  cancel no longer snaps to an axis view or coasts, and a two-finger pan no longer swallows the next
+  one-finger drag.
+- **Input, all platforms:** turntable and first-person horizontal drags no longer reverse after tilting over
+  the pole; the arcball is a true Shoemake arcball (a drag outside the sphere rolls the view) and no longer
+  turns about a world axis; momentum converts points per second correctly; a new drag stops coasting; a
+  slow release near an axis view no longer switches a perspective camera to orthographic; `roll(deltaAngle:)`
+  turns the same way in every style; `zoomToward` stops sliding once the distance is clamped; a view
+  animation no longer overwrites a gesture made during it.
+- **Gesture settings are honoured:** `twoFingerDrag`, `pinchGesture`, `trackpadPinch`, `scrollWheel`,
+  `doubleTap` and `doubleClick` now drive the input router (two fingers always panned, pinch and scroll
+  always zoomed, and double-tap always reset). `zoomSensitivity` scales pinch and drag zoom, and a fast
+  zoom-out drag no longer collapses to `minDistance`. `reset()` returns to `initialCameraState` and the
+  effective field of view, `defaultFieldOfView` works, and the first turntable orbit no longer snaps.
+- **Dynamic pivot:** it moves only along the line of sight, so releasing a pan while zoomed out no longer
+  re-centres the view; `adjustPivot(to:duration:)` keeps the camera's depth, so there is no zoom jump after a
+  gesture; it ignores hidden and overlay bodies, measures orthographic zoom by `orthographicScale`, and reads
+  the scene when it fires.
+- **Orthographic:** zoom changes only `orthographicScale` (clamped to `orthographicScaleRange`), so the eye
+  no longer moves into the model; the eye is kept in front of the scene, overlays and constant-width axes;
+  rays, focus-on-point and measurement picks start in front of the scene; `focusOn(point:distance:)` zooms an
+  orthographic camera; `ProjectionUtility` no longer projects points behind an orthographic camera; a
+  measurement with one end behind the camera is cut where it leaves the view; grid spacing and dot size
+  follow `orthographicScale`; translucent sorting and depth-of-field autofocus use view depth; the grid is
+  depth-clamped; a manual `dofFocalDistance` no longer moves with the eye.
+- **Projection and framing:** `CameraState.fit(to:)` frames bodies where they are drawn (with `transform`)
+  and leaves out overlay widgets; `toggleProjection()` and projection-switching animations keep the view's
+  size at the pivot; the measurement overlay projects with the renderer's fitted near/far.
+- **Primitives:** `ViewportBody.cylinder` and `.sphere` triangles wound clockwise seen from outside
+  (inverted relative to `box` and OCCT meshes), so the shadow pass treated them backwards; they now wind
+  counter-clockwise.
+- `Picking.md`'s `SceneRaycast` example no longer references the nonexistent `controller.boundingBoxCache`.
+- The point-to-pixel scale used before the first frame comes from the screen's `displayScale`.
+- An unsupported `ViewportConfiguration.msaaSampleCount` is clamped to one the device supports instead of
+  making `ViewportRenderer` fail.
+- Depth-of-field autofocus and the dynamic pivot use world-space bounds, so bodies placed by `transform` are
+  focused and orbited where they are drawn.
+
+### Deprecated
+- `LightingConfiguration.specularPower` (ignored; shading is Cook-Torrance GGX, use `roughness`) and
+  `shadowSoftness` (ignored; use `shadowLightSize`).
+- `CameraController.minPhi` / `maxPhi` (never read; the turntable tilt is unclamped by design).
+- `CameraState.panOffset` and `CameraState.init(..., panOffset:)` (never applied to the view; move `pivot`
+  to pan). Still encoded, so saved states round-trip.
+
+### Docs and tooling
+- The Z-up cookbook figures are regenerated, the primitive-factory reference and cookbook are Z-up, and the
+  non-existent `ViewportBody.box(size:)` and id-less `.box()` are gone from the README and cookbook.
+- Example packages (`DocFigures`, `DirectMeshLiveDemo`) build from any checkout directory name. A new
+  `project-verify.yml` workflow generates the OCCT-free `DirectMeshVerify` rig, and `Samples/CADInterface`
+  now compiles against the library and builds in CI.
+- `ViewportRenderer` and `OffscreenRenderer` share their tessellation and mesh-shader pipelines, buffers and
+  draw code (`RendererSurfaceRefinement.swift`).
+
 ## [1.2.3] - 2026-10-23
 
 The high-severity findings from the hard-coded values audit (issue #136), plus #134 and #135.
