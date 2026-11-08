@@ -214,8 +214,9 @@ private func pick(_ renderer: ViewportRenderer, at pixel: SIMD2<Int>) async -> P
 @Suite("Native edge picks win over the tilted face they lie on (#182)")
 struct NativeEdgePickBiasTests {
 
-    /// Large enough that the bias, a fixed fraction of the NDC height, covers the half-pixel
-    /// depth spread of this face's slope; at 128 px it does not, for the drawn edge either.
+    /// The native edge bias is a number of pixels (#193), so this holds at any size; it used to
+    /// be a fraction of the NDC height and needed a drawable this large to cover the half-pixel
+    /// depth spread of this face's slope. `NativeEdgeBiasPixelTests` covers the small sizes.
     static let size = 512
 
     @Test("Along a native edge on a steeply tilted face, the pick resolves to the edge")

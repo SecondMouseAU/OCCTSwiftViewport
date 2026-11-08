@@ -38,6 +38,9 @@ struct Uniforms {
                                        // 2 = faceted (light with per-triangle face normals)
     float    toneMapExposure;          // LightingConfiguration.exposure
     float    toneMapWhitePoint;        // LightingConfiguration.whitePoint
+    float4   viewportParams;           // xy = render target size in pixels, zw unused
+    float3x3 normalMatrix;             // inverse transpose of modelMatrix's upper 3x3: the matrix
+                                       // normals are transformed with (not modelMatrix itself)
 };
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/ViewportRenderer.swift `struct BodyUniforms`).
@@ -228,10 +231,12 @@ vertex ShadedVertexOut shaded_vertex(
     ShadedVertexOut out;
     float4 worldPos = uniforms.modelMatrix * float4(in.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-    out.worldNormal = normalize((uniforms.modelMatrix * float4(in.normal, 0.0)).xyz);
+    // Normals use the inverse transpose of the model matrix, not the matrix itself, which tilts
+    // them off the surface under non-uniform scale (#213).
+    out.worldNormal = normalize(uniforms.normalMatrix * in.normal);
     out.worldPosition = worldPos.xyz;
     // View-space normal for matcap
-    out.viewNormal = normalize((uniforms.viewMatrix * uniforms.modelMatrix * float4(in.normal, 0.0)).xyz);
+    out.viewNormal = normalize((uniforms.viewMatrix * float4(out.worldNormal, 0.0)).xyz);
     out.clipPositionCopy = out.clipPosition;
     return out;
 }
@@ -640,11 +645,17 @@ inline bool isClippedBySectionPlanes(float3 worldPosition, constant Uniforms &un
 // depends on the near/far range, so with a wide range (the unfitted 0.01/10000 fallback, or near
 // at its far * 1e-4 floor) a constant bias let hidden back edges show through faces (#157).
 // Instead, like quad_edge_vertex, pull the vertex toward the viewer along its own view ray
-// (screen position unchanged) by a fixed fraction of the NDC extent, measured in world units at
-// this depth. The Uniforms carry no viewport size, so the pull is EDGE_BIAS_NDC of NDC height
-// (~3 px at 1000 px tall).
+// (screen position unchanged) by EDGE_BIAS_PX pixels, measured in world units at this depth.
+// The pull is a number of pixels of the drawable (Uniforms.viewportParams), not a fixed fraction
+// of NDC: how much depth a pixel spans on a tilted face does not change with the drawable's
+// size, so a fraction of NDC height (0.006, ~3 px at 1000 px tall) fell below one pixel's depth
+// on a drawable under ~256 px tall and the face won (#193). 3 px is quad_edge_vertex's pull for
+// a 1 px line (EDGE_BIAS_SLOPE * (half width + 1 px)): enough for faces tilted up to ~63 degrees.
 inline float4 edgeBiasedClipPosition(float4 worldPos, constant Uniforms &uniforms) {
-    constexpr float EDGE_BIAS_NDC = 0.006;
+    constexpr float EDGE_BIAS_PX = 3.0;
+    // An unset size (0) keeps the 1000 px reference the old constant was tuned for.
+    float viewportHeight = uniforms.viewportParams.y > 1.0 ? uniforms.viewportParams.y : 1000.0;
+    float edgeBiasNDC = EDGE_BIAS_PX * 2.0 / viewportHeight;
     float4x4 vp = uniforms.viewProjectionMatrix;
     float4 clipPosition = vp * worldPos;
     float4x4 viewMatrix = uniforms.viewMatrix;
@@ -658,7 +669,7 @@ inline float4 edgeBiasedClipPosition(float4 worldPos, constant Uniforms &uniform
         float3 towardViewer = orthographic
             ? cameraBack
             : normalize(uniforms.cameraPosition.xyz - worldPos.xyz);
-        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * (EDGE_BIAS_NDC / ndcPerWorld), 0.0));
+        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * (edgeBiasNDC / ndcPerWorld), 0.0));
         if (pulledClipPos.w > 1e-6) {
             float unbiasedDepth = clipPosition.z / baseW;
             // Never let the bias alone push a vertex in front of the near plane: the near plane
@@ -1468,6 +1479,14 @@ fragment float4 ssao_fragment(
     }
 
     float linearDepth = linearizeDepth(depth, params.nearPlane, params.farPlane, params.orthographic);
+    // The length the depth thresholds below are relative to ("a step of 5% of the distance"). In
+    // perspective that is the view distance. An orthographic eye can sit anywhere on the line of
+    // sight without changing the picture, so its distance to the surface says nothing about how
+    // big a depth step is on screen; the height of the view in world units does, and is what
+    // zooming changes, as moving closer does in perspective (#217).
+    float depthScale = params.orthographic > 0.5
+        ? 1.0 / max(params.pixelsPerUnit * params.texelSize.y, 1e-6)
+        : linearDepth;
     float result_ao = 1.0;
     float result_edge = 0.0;
 
@@ -1511,7 +1530,7 @@ fragment float4 ssao_fragment(
         float gradX = (abs(depth - dL) < abs(dR - depth)) ? (depth - dL) : (dR - depth);
         float gradY = (abs(depth - dD) < abs(dU - depth)) ? (depth - dD) : (dU - depth);
         // Tolerance for depth-buffer precision and tessellation facets, relative to distance.
-        float planeBias = 0.005 * linearDepth;
+        float planeBias = 0.005 * depthScale;
         // Per-pixel kernel rotation and radius from a 4×4 ordered (Bayer) pattern, so the 16
         // fixed taps don't print their octagon outline onto the occlusion as hard-edged bands.
         // An ordered pattern reads as a fine, even dither rather than random grain.
@@ -1566,7 +1585,7 @@ fragment float4 ssao_fragment(
         float sobelY = -d00 - 2.0*d10 - d20 + d02 + 2.0*d12 + d22;
 
         // Normalize by center depth to make edges depth-invariant
-        float edgeMag = sqrt(sobelX * sobelX + sobelY * sobelY) / max(linearDepth, 0.01);
+        float edgeMag = sqrt(sobelX * sobelX + sobelY * sobelY) / max(depthScale, 0.01);
 
         // Threshold: raised to ignore subtle tessellation sub-triangle depth steps.
         // Only major feature edges (creases, silhouettes against background) trigger.
@@ -1595,14 +1614,14 @@ fragment float4 ssao_fragment(
             if (rawDepth > 0.9999) continue;
             float sd = linearizeDepth(rawDepth, params.nearPlane, params.farPlane, params.orthographic);
             // Skip samples at very different depths (silhouette boundary)
-            if (abs(sd - linearDepth) / max(linearDepth, 0.01) > 0.3) continue;
+            if (abs(sd - linearDepth) / max(depthScale, 0.01) > 0.3) continue;
             blurredDepth += sd;
             validSamples += 1.0;
         }
 
         if (validSamples > 2.0) {
             blurredDepth /= validSamples;
-            float spatialImportance = (linearDepth - blurredDepth) / max(linearDepth, 0.01);
+            float spatialImportance = (linearDepth - blurredDepth) / max(depthScale, 0.01);
             depthContrast = 1.0 + spatialImportance * 0.2;
             depthContrast = clamp(depthContrast, 0.85, 1.15);
         }
@@ -2144,9 +2163,9 @@ vertex ShadedVertexOut tessellated_vertex(
 
     ShadedVertexOut out;
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-    out.worldNormal = normalize((uniforms.modelMatrix * float4(normal, 0.0)).xyz);
+    out.worldNormal = normalize(uniforms.normalMatrix * normal);
     out.worldPosition = worldPos.xyz;
-    out.viewNormal = normalize((uniforms.viewMatrix * uniforms.modelMatrix * float4(normal, 0.0)).xyz);
+    out.viewNormal = normalize((uniforms.viewMatrix * float4(out.worldNormal, 0.0)).xyz);
     out.clipPositionCopy = out.clipPosition;
     return out;
 }
@@ -2383,9 +2402,9 @@ void meshlet_mesh(
 
         MeshVertex v;
         v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-        v.worldNormal = normalize((uniforms.modelMatrix * float4(nrm, 0.0)).xyz);
+        v.worldNormal = normalize(uniforms.normalMatrix * nrm);
         v.worldPosition = worldPos.xyz;
-        v.viewNormal = normalize((uniforms.viewMatrix * uniforms.modelMatrix * float4(nrm, 0.0)).xyz);
+        v.viewNormal = normalize((uniforms.viewMatrix * float4(v.worldNormal, 0.0)).xyz);
         v.clipPositionCopy = v.clipPosition;
         output.set_vertex(tid, v);
     }

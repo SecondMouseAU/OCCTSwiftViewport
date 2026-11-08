@@ -18,7 +18,11 @@ struct LightDataSwift {
 
 struct Uniforms {
     var viewProjectionMatrix: simd_float4x4
-    var modelMatrix: simd_float4x4
+    // Setting the model matrix refreshes `normalMatrix` with it, so every per-body
+    // `uniforms.modelMatrix = body.transform` also hands the shaders the matching normal matrix.
+    var modelMatrix: simd_float4x4 {
+        didSet { normalMatrix = Uniforms.normalMatrix(forModel: modelMatrix) }
+    }
     var viewMatrix: simd_float4x4
     var cameraPosition: SIMD4<Float>  // xyz + nearPlane in w
     var light0: LightDataSwift
@@ -41,6 +45,11 @@ struct Uniforms {
     var unlit: UInt32 = 0  // 1 = unlit/flat-colour (skip lighting + tone map), 2 = faceted
     var toneMapExposure: Float = 1.1  // LightingConfiguration.exposure
     var toneMapWhitePoint: Float = 1.0  // LightingConfiguration.whitePoint
+    // xy = render target size in pixels, zw unused. The pixel-sized depth bias of native edges.
+    var viewportParams: SIMD4<Float> = .zero
+    // Inverse transpose of `modelMatrix`'s upper 3x3 (see `Uniforms.normalMatrix(forModel:)`): the
+    // matrix the vertex stages transform normals with. Kept in step with `modelMatrix`.
+    var normalMatrix: simd_float3x3 = matrix_identity_float3x3
 }
 
 // Per-body shader uniforms.
@@ -1384,7 +1393,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 clipPlanes: clipPlaneVecs,
                 clipPlaneCount: clipPlaneCount,
                 unlit: controller.displayMode == .unlit,
-                flatShading: !controller.displayMode.usesSmoothShading
+                flatShading: !controller.displayMode.usesSmoothShading,
+                viewportSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height))
             )
         }
         // Quad-expanded edges (body edges, arcs, overlay edges) and their pick footprints.
@@ -1783,7 +1793,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder, buffers: buffers, uniforms: &uniforms,
                         patches: drawnPatches(
                             of: buffers, useMeshShaders: useMeshShaders,
-                            useTessellation: useTessellation))
+                            useTessellation: useTessellation),
+                        overMeshletSurface: drawsMeshShaded(
+                            buffers, useMeshShaders: useMeshShaders))
                     mainEncoder.setDepthStencilState(depthState)
                 }
             }
@@ -1902,7 +1914,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                             mainEncoder, buffers: d.buffers, uniforms: &uniforms,
                             patches: drawnPatches(
                                 of: d.buffers, useMeshShaders: useMeshShaders,
-                                useTessellation: useTessellation))
+                                useTessellation: useTessellation),
+                            overMeshletSurface: drawsMeshShaded(
+                                d.buffers, useMeshShaders: useMeshShaders))
                     }
                 }
             }
@@ -2853,10 +2867,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The depth is measured along the line of sight from the eye, as the composite pass
     /// linearizes the depth buffer it blurs by, so it is the pivot plane's depth (`distance`)
     /// plus the focus point's depth past that plane. It used to be the straight-line distance
-    /// from the eye, which also counted how far off-axis the centre lies (#215). In
-    /// orthographic the composite pass still decodes depth as perspective depth, so the blur
-    /// there does not yet follow this. A centre at or behind the eye's plane focuses just in
-    /// front of the eye.
+    /// from the eye, which also counted how far off-axis the centre lies (#215). A centre at or
+    /// behind the eye's plane focuses just in front of the eye.
     nonisolated static func autoFocusDistance(
         bodies: [ViewportBody], cameraState: CameraState
     ) -> Float {
@@ -3029,20 +3041,37 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return buffers.tessellation
     }
 
+    /// Whether `encodeShadedSurface` draws a body's surface through the mesh-shader pipeline.
+    private func drawsMeshShaded(_ buffers: BodyBuffers, useMeshShaders: Bool) -> Bool {
+        buffers.normalBuffer == nil && useMeshShaders && buffers.meshlets != nil
+            && meshShaderShadedPipeline != nil
+    }
+
     /// Composites a body's `triangleStyles` over its shaded surface (issue #25).
     ///
     /// The caller sets the depth-stencil state (`highlightDepthState`) and cull mode. Rebinds
     /// fragment buffers 1 (scene uniforms) and 2 (the style buffer). With `patches`, draws on
-    /// the tessellated surface instead of the flat mesh (#202).
+    /// the tessellated surface instead of the flat mesh (#202). `overMeshletSurface` biases the
+    /// highlight's depth toward the viewer, so it wins its depth tie with a mesh-shader surface
+    /// (#213).
     private func encodeTriangleHighlight(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
         uniforms: inout Uniforms,
-        patches: TessellationBuffers?
+        patches: TessellationBuffers?,
+        overMeshletSurface: Bool = false
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
             let styleBuf = buffers.triangleStyleBuffer, buffers.indexCount > 0
         else { return }
+        if overMeshletSurface {
+            RendererSharedSetup.setHighlightDepthBias(on: encoder, overMeshletSurface: true)
+        }
+        defer {
+            if overMeshletSurface {
+                RendererSharedSetup.setHighlightDepthBias(on: encoder, overMeshletSurface: false)
+            }
+        }
         if let patches, let pipeline = tessellatedHighlightPipeline {
             // On the tessellated surface the shaded pass drew (#202).
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
