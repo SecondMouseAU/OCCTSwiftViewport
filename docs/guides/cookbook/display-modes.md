@@ -81,8 +81,9 @@ faceting or reviewing mesh density.
 
 Added in **v1.1.21** (issue #77). Each body is drawn in its constant base
 colour with **no lighting, ambient, shadows, Fresnel rim, curvature weighting,
-or tone mapping**. The interactive SSAO / ACES tone-map post-pass is skipped
-entirely so it cannot re-desaturate colours after the fact.
+or tone mapping**. The surface shader skips its ACES tone map for unlit
+bodies, and the interactive SSAO / silhouette post-pass is skipped entirely, so
+nothing re-desaturates or darkens colours after the fact.
 
 This mode exists because the full PBR path (`shaded`) hue-shifts saturated
 body colours — a bright magenta reads as greenish after ACES tone mapping, and

@@ -252,10 +252,10 @@ Surfaces are shaded with a metallic-roughness **Cook-Torrance** BRDF (GGX normal
 | `ambientSkyColor` | `SIMD3<Float>` | `(0.9,0.95,1.0)` | Hemisphere ambient — colour for normals pointing up (+Z) |
 | `ambientGroundColor` | `SIMD3<Float>` | `(0.3,0.25,0.2)` | Hemisphere ambient — colour for normals pointing down (−Z) |
 | `enableSSAO` | `Bool` | `true` | Enable screen-space ambient occlusion |
-| `ssaoRadius` | `Float` | `0.5` | SSAO sampling radius in view-space units |
+| `ssaoRadius` | `Float` | `0.5` | SSAO sampling radius in world units (see [Ambient occlusion](#ambient-occlusion)) |
 | `ssaoIntensity` | `Float` | `0.6` | SSAO darkening intensity (0 = none, 1 = maximum) |
-| `exposure` | `Float` | `1.1` | Tone-mapping exposure multiplier |
-| `whitePoint` | `Float` | `1.0` | White point for tone-mapping normalization |
+| `exposure` | `Float` | `1.1` | Tone-mapping exposure multiplier, applied in linear space (see [Tone mapping](#tone-mapping)) |
+| `whitePoint` | `Float` | `1.0` | White point for tone-mapping normalization (see [Tone mapping](#tone-mapping)) |
 | `shadowLightSize` | `Float` | `0.02` | PCSS light-source size (larger = softer penumbras) |
 | `shadowSearchRadius` | `Float` | `0.01` | PCSS blocker-search radius in light-space UV |
 | `environmentMapData` | `Data?` | `nil` | Legacy raw-bytes HDR: `Int32 width \| Int32 height \| RGBA32Float pixels`. Loaded automatically by both renderers when it changes; cleared when set back to `nil` |
@@ -310,6 +310,40 @@ config.shadowsEnabled = false
 config.exposure = 1.3
 controller.lightingConfiguration = config
 ```
+
+### Colour pipeline
+
+Colours you author are **sRGB (display) values**: `ViewportBody.color`, `PBRMaterial.baseColor`, light colours, the ambient sky and ground colours, `backgroundColor`, grid, axis, edge and outline colours, and `TriangleStyle` highlight colours. `PBRMaterial.emissive` and HDR environment maps are **linear** radiance.
+
+Lit surfaces are the only place the renderer does arithmetic on light, so the surface shader:
+
+1. decodes the base colour, light colours and ambient level from sRGB to linear;
+2. lights in linear (direct lights, shadows, ambient, IBL, Fresnel rim, emissive);
+3. tone maps in linear (see below);
+4. encodes back to sRGB once, and writes the result.
+
+Everything else (unlit bodies, edges, wireframe, grid, axes, background clear colour, highlights, the selection outline and overlays) draws its authored sRGB colour unchanged. Decoding and re-encoding the same value would be a no-op. The colour targets are plain `bgra8Unorm` holding sRGB values, so the pick target (`r32Uint`) and every unlit colour are untouched. Blending (transparency, line anti-aliasing) and TAA run on the sRGB values, as before.
+
+The SSAO / silhouette composite decodes the image to linear, applies occlusion, silhouettes and depth of field there, and re-encodes. The skybox (`drawBackground` with an environment map) is linear HDR, so it is scaled by `backgroundExposure`, tone mapped with `exposure` / `whitePoint`, and encoded like lit surfaces.
+
+The selection and hover tints are blended into the final sRGB colour, so they look the same in every display mode.
+
+Translucent surfaces (opacity below 1, including `.xray`) get two adjustments:
+
+- **Far walls:** a body's far wall, seen through its near wall, is lit as the side being looked at. Its normals are flipped toward the viewer, so the Fresnel rim and environment reflection don't light up the whole far wall.
+- **Highlights:** alpha is raised where the direct specular highlight is bright. Reflection isn't dimmed by how transparent a surface is, so glass at 10 % opacity still shows its highlight; the rest of the surface keeps its own opacity.
+
+### Tone mapping
+
+Every lit surface goes through ACES filmic tone mapping (the Narkowicz approximation) in linear space, at the end of the surface shader, on every frame. That holds in `ViewportRenderer` whatever the SSAO and silhouette settings, and in `OffscreenRenderer`. The curve's input is `linearColor * exposure / whitePoint`, so `exposure` and `whitePoint` take effect in every configuration, including the `.performance` preset. HDR values above 1.0, such as bright speculars or `emissiveStrength > 1`, are compressed instead of clipping. Unlit bodies, edges, grid, axes, background and overlays are not tone mapped and ignore `exposure`.
+
+Until the fix for issue #136 (finding H6), lighting ran on sRGB values directly. Tone mapping ran only inside the SSAO / silhouette composite pass, on an image that had already clipped. With both effects off, highlights clipped and `exposure` did nothing. `OffscreenRenderer` never tone mapped at all.
+
+### Ambient occlusion
+
+SSAO darkens a pixel only where nearby geometry sits **in front of the surface's tangent plane**, within `ssaoRadius` world units. Typical cases are concave creases, contact points and the inside of holes. Flat and convex surfaces are never darkened. The radius is projected to pixels at each fragment's depth and clamped to 2–64 px. Occluders more than `ssaoRadius` in front fade out by twice that distance, so a separate object in front doesn't cast a halo. A 4×4 ordered pattern rotates and scales the 16-tap kernel per pixel, so the occlusion reads as a fine dither, and TAA smooths it when enabled. Orthographic cameras are supported.
+
+Before issue #136, every tap was compared against the centre pixel's depth. That darkened any sloped or curved surface, and the sample radius was a fraction of a pixel at normal viewing distances, so real creases got almost nothing.
 
 ---
 
@@ -377,7 +411,7 @@ Settings for a single light source in a `LightingConfiguration`. Three `LightSet
 |---|---|---|---|
 | `direction` | `SIMD3<Float>` | (required) | Normalised direction the light points toward. Ignored for `.point` lights. |
 | `intensity` | `Float` | `1.0` | Light intensity. Typical range 0–2; values above 1 are valid for HDR. |
-| `color` | `SIMD3<Float>` | `(1,1,1)` | RGB light colour in linear 0–1 space. |
+| `color` | `SIMD3<Float>` | `(1,1,1)` | RGB light colour, 0–1, as an sRGB value (decoded to linear for lighting). |
 | `isEnabled` | `Bool` | `true` | Whether this light contributes to shading. |
 | `lightType` | `LightType` | `.directional` | Whether this is a directional or point light. |
 | `position` | `SIMD3<Float>` | `.zero` | World-space position. Used only for `.point` lights. |

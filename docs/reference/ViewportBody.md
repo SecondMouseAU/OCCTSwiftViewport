@@ -84,7 +84,7 @@ Creates a body and assigns it the next unique `generation` value. The two requir
 | `vertexIndices` | Per-point source-vertex index, parallel to `vertices`. Default `[]` — pick reports the raw vertex array index. |
 | `vertexColors` | Per-point RGBA colors, parallel to `vertices`. Only consumed by the `.point` point-cloud pass. Default `[]`. |
 | `triangleStyles` | Per-triangle highlight overrides, parallel to triangle count. Default `[]` (no highlight pass). |
-| `color` | Base RGBA color. Used as `effectiveMaterial.baseColor + opacity` when `material` is `nil`. |
+| `color` | Base RGBA colour, as sRGB (display) values. Used as `effectiveMaterial.baseColor + opacity` when `material` is `nil`. |
 | `roughness` | PBR roughness 0–1. Default `0.5`. Ignored when `material` is set. |
 | `metallic` | PBR metallic factor 0–1. Default `0.0`. Ignored when `material` is set. |
 | `material` | Full `PBRMaterial`. When set, overrides `color`/`roughness`/`metallic`. Default `nil`. |
@@ -665,7 +665,7 @@ public init(
 ### Properties
 
 #### `var baseColor: SIMD3<Float>`
-Linear RGB albedo for dielectrics; F0 tint for metals.
+sRGB (display) albedo for dielectrics, decoded to linear for lighting; F0 tint for metals.
 
 #### `var metallic: Float`
 0 = dielectric, 1 = metal. Intermediate values are not physically meaningful but useful for blending.

@@ -175,7 +175,10 @@ struct DirectMeshRenderingTests {
         for p in stride(from: 0, to: direct.count, by: 4) {
             let lostLight = (Int(unshadowed[p]) + Int(unshadowed[p + 1]) + Int(unshadowed[p + 2]))
                           - (Int(direct[p]) + Int(direct[p + 1]) + Int(direct[p + 2]))
-            if lostLight > 30 { shadowedPixels += 1 }
+            // 15 summed levels, not 30: lit surfaces are tone mapped (#136 H6), and ACES's
+            // shoulder compresses the lit-vs-shadowed step on this near-white receiver.
+            // Without the shadow the two frames are identical, so the floor is still 0.
+            if lostLight > 15 { shadowedPixels += 1 }
         }
         // The cast shadow is ~47 px at 160x160. This threshold was 100 until #156, when ~107
         // more px along the ground's front edge also counted: that edge sat on the near plane,

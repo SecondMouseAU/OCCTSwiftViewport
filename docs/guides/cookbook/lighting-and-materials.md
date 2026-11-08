@@ -74,7 +74,8 @@ lighting.fresnelIntensity = 0.5     // 0–1
 lighting.ssaoRadius = 1.0
 lighting.ssaoIntensity = 0.9
 
-// Tone-mapping exposure.
+// Tone-mapping exposure, applied in linear space to every lit surface on every
+// frame, whether or not SSAO / silhouettes are on, and in OffscreenRenderer too.
 lighting.exposure = 1.2             // default 1.1
 
 controller.lightingConfiguration = lighting
@@ -115,7 +116,7 @@ controller.lightingConfiguration = lighting
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `baseColor` | `SIMD3<Float>` | `(0.8, 0.8, 0.8)` | Linear RGB. Albedo for dielectrics, F0 tint for metals. |
+| `baseColor` | `SIMD3<Float>` | `(0.8, 0.8, 0.8)` | sRGB (display) value, decoded to linear for lighting. Albedo for dielectrics, F0 tint for metals. |
 | `metallic` | `Float` | `0` | 0 = dielectric, 1 = metal. |
 | `roughness` | `Float` | `0.5` | 0 = mirror, 1 = fully rough. Squared internally for GGX. |
 | `ior` | `Float` | `1.5` | Index of refraction. Drives F0 for non-metals. Ignored when `metallic >= 1`. |
@@ -189,7 +190,7 @@ body.material = PBRMaterial(
 
 ### Emissive Example
 
-`emissiveStrength` values above 1 are HDR; they will bloom through the tonemapper:
+`emissiveStrength` values above 1 are HDR. The ACES tonemapper compresses them toward white instead of clipping them:
 
 ```swift
 body.material = PBRMaterial(
