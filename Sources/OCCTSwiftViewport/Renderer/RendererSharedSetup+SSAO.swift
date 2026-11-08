@@ -4,7 +4,8 @@
 // The SSAO occlusion and blur passes shared by ViewportRenderer and OffscreenRenderer (issue
 // #188). `ssao_fragment` used to compute the occlusion inline, so the 4x4 ordered dither of its
 // kernel rotation went straight onto the image. The term now has its own full-screen pass into an
-// R16Float texture, a depth-aware 4x4 blur of that texture, and the composite reads the result.
+// R32Float texture, a depth-aware 4x4 blur of that texture into an R16Float one, and the
+// composite reads the result.
 
 @preconcurrency import Metal
 
@@ -22,9 +23,15 @@ struct SSAOOcclusionPipelines {
 /// frame doesn't run SSAO, so a viewport with SSAO off holds no AO memory and encodes no AO pass.
 struct SSAOOcclusionTargets {
 
-    /// One channel of half-float: the term is `1 - occlusion * intensity`, and the blur averages
-    /// 16 of them, which an 8-bit target would quantise visibly in dark creases.
-    static let pixelFormat = MTLPixelFormat.r16Float
+    /// Full float for the occlusion pass's output.
+    ///
+    /// `ssaoBlur = false` then composites exactly the value the shader used to compute inline;
+    /// half-float storage would round it by up to one level of 255. The term is
+    /// `1 - occlusion * intensity`.
+    static let rawPixelFormat = MTLPixelFormat.r32Float
+    /// Half-float for the blur's output: the blur averages 16 terms, which an 8-bit target would
+    /// quantise visibly in dark creases, and half-float precision is well below one level.
+    static let blurredPixelFormat = MTLPixelFormat.r16Float
 
     /// The occlusion pass's output.
     private(set) var raw: MTLTexture?
@@ -33,6 +40,9 @@ struct SSAOOcclusionTargets {
     /// Occlusion passes encoded over this value's lifetime; tests use it to check that SSAO off
     /// encodes none.
     private(set) var passesEncoded = 0
+    /// Blur passes encoded over this value's lifetime; tests use it to check that
+    /// `LightingConfiguration.ssaoBlur = false` encodes none.
+    private(set) var blurPassesEncoded = 0
 
     /// Whether the textures are currently allocated.
     var isAllocated: Bool { raw != nil && blurred != nil }
@@ -45,12 +55,15 @@ struct SSAOOcclusionTargets {
         if let raw, let blurred, raw.width == width, raw.height == height {
             return (raw, blurred)
         }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Self.pixelFormat, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = .private
-        guard let newRaw = device.makeTexture(descriptor: descriptor),
-            let newBlurred = device.makeTexture(descriptor: descriptor)
+        func descriptor(_ format: MTLPixelFormat) -> MTLTextureDescriptor {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: format, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            return descriptor
+        }
+        guard let newRaw = device.makeTexture(descriptor: descriptor(Self.rawPixelFormat)),
+            let newBlurred = device.makeTexture(descriptor: descriptor(Self.blurredPixelFormat))
         else {
             release()
             return nil
@@ -71,6 +84,10 @@ struct SSAOOcclusionTargets {
     fileprivate mutating func countPass() {
         passesEncoded += 1
     }
+
+    fileprivate mutating func countBlurPass() {
+        blurPassesEncoded += 1
+    }
 }
 
 extension RendererSharedSetup {
@@ -84,25 +101,28 @@ extension RendererSharedSetup {
         lighting.enableSSAO && lighting.ssaoIntensity > 0.001
     }
 
-    /// The occlusion and blur pipelines (single sample, one `r16Float` colour target, no depth).
+    /// The occlusion and blur pipelines (single sample, one single-channel float colour target
+    /// each, no depth).
     static func makeSSAOOcclusionPipelines(
         device: MTLDevice,
         library: MTLLibrary,
         labelPrefix: String
     ) -> SSAOOcclusionPipelines? {
-        func pipeline(_ fragment: String) -> MTLRenderPipelineState? {
+        func pipeline(_ fragment: String, _ format: MTLPixelFormat) -> MTLRenderPipelineState? {
             makePipelineState(
                 device: device,
                 label: "\(labelPrefix)_\(fragment)",
                 library: library,
                 vertexFunction: "fullscreen_vertex",
                 fragmentFunction: fragment,
-                colorPixelFormat: SSAOOcclusionTargets.pixelFormat,
+                colorPixelFormat: format,
                 depthPixelFormat: .invalid
             )
         }
-        guard let occlusion = pipeline("ssao_occlusion_fragment"),
-            let blur = pipeline("ssao_blur_fragment")
+        guard
+            let occlusion = pipeline(
+                "ssao_occlusion_fragment", SSAOOcclusionTargets.rawPixelFormat),
+            let blur = pipeline("ssao_blur_fragment", SSAOOcclusionTargets.blurredPixelFormat)
         else { return nil }
         return SSAOOcclusionPipelines(occlusion: occlusion, blur: blur)
     }
@@ -119,8 +139,8 @@ extension RendererSharedSetup {
     ///   - depth: The single-sample depth the prepass wrote; also sets the target size.
     ///   - params: Must carry the intensity the composite will use (`SSAOParamsSwift.intensity`)
     ///     and the projection terms for `depth`.
-    ///   - blur: `false` skips the blur and hands back the raw term. Only tests turn this off, to
-    ///     see the dither the blur removes.
+    ///   - blur: `LightingConfiguration.ssaoBlur`. `false` skips the blur pass and hands back the
+    ///     raw, dithered term.
     /// - Returns: The texture `ssao_fragment` should read as its occlusion term, or `nil` if the
     ///   targets couldn't be allocated (the caller then sets the composite's intensity to 0).
     static func encodeSSAOOcclusion(
@@ -165,6 +185,7 @@ extension RendererSharedSetup {
         guard blur else { return raw }
         guard fullScreenPass(into: blurred, pipeline: pipelines.blur, textures: [raw, depth])
         else { return raw }
+        targets.countBlurPass()
         return blurred
     }
 }

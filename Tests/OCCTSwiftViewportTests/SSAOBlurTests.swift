@@ -66,12 +66,14 @@ struct SSAOBlurTests {
 
     private static func options(
         orthographic: Bool, size: Int = SSAOBlurTests.size, ssao: Bool = true,
-        intensity: Float = 1, silhouettes: Bool = false
+        intensity: Float = 1, silhouettes: Bool = false, blur: Bool? = nil
     ) -> OffscreenRenderOptions {
         var lighting = LightingConfiguration.threePoint
         lighting.shadowsEnabled = false
         lighting.enableSSAO = ssao
         lighting.ssaoIntensity = intensity
+        // `nil` leaves `ssaoBlur` at its default, so most tests also cover that default.
+        if let blur { lighting.ssaoBlur = blur }
         return OffscreenRenderOptions(
             width: size, height: size, cameraState: camera(orthographic: orthographic),
             displayMode: .shaded, lightingConfiguration: lighting,
@@ -80,14 +82,13 @@ struct SSAOBlurTests {
     }
 
     private func render(
-        _ options: OffscreenRenderOptions, blur: Bool = true, bodies: [ViewportBody]? = nil,
+        _ options: OffscreenRenderOptions, bodies: [ViewportBody]? = nil,
         renderer: OffscreenRenderer? = nil
     ) throws -> Image {
         guard let renderer = renderer ?? OffscreenRenderer() else {
             Issue.record("Metal device unavailable; skipping headless render test")
             throw ParityRender.Unavailable()
         }
-        renderer.ssaoBlurEnabled = blur
         let result = try ParityRender.render(
             bodies ?? Self.scene(), options, renderer: renderer)
         return Image(pixels: result.pixels, width: result.width, height: result.height)
@@ -129,9 +130,9 @@ struct SSAOBlurTests {
     /// Without the blur the Bayer pattern shows as period-4 variation along the rows (2 to 7
     /// levels on this scene); with it the rows are flat to within one level.
     private func checkDither(orthographic: Bool) throws {
-        let options = Self.options(orthographic: orthographic)
-        let raw = try render(options, blur: false)
-        let blurred = try render(options, blur: true)
+        let raw = try render(Self.options(orthographic: orthographic, blur: false))
+        // The default setting blurs.
+        let blurred = try render(Self.options(orthographic: orthographic))
 
         let before = Self.ditherAmplitude(raw)
         let after = Self.ditherAmplitude(blurred)
@@ -158,8 +159,9 @@ struct SSAOBlurTests {
     /// Checks the occlusion edge at the wall's silhouette in each of three columns.
     ///
     /// The wall's top face stays exactly as bright as with SSAO off right up to the silhouette, the
-    /// plane pixel beside it keeps its full occlusion, and the step between them is one pixel. A blur that crossed the depth step would darken the top face's edge pixels with the plane's
-    /// occlusion and lighten the plane's with the top face's.
+    /// plane pixel beside it keeps its full occlusion, and the step between them is one pixel.
+    /// A blur that crossed the depth step would darken the top face's edge pixels with the
+    /// plane's occlusion and lighten the plane's with the top face's.
     private func checkDepthStep(orthographic: Bool) throws {
         let off = try render(Self.options(orthographic: orthographic, ssao: false))
         let on = try render(Self.options(orthographic: orthographic))
@@ -208,6 +210,70 @@ struct SSAOBlurTests {
     }
 
     // MARK: - Settings
+
+    @Test("ssaoBlur defaults to true in every preset and init(matching:) copies it")
+    func ssaoBlurSetting() {
+        #expect(LightingConfiguration.threePoint.ssaoBlur)
+        #expect(LightingConfiguration.studio.ssaoBlur)
+        #expect(LightingConfiguration.architectural.ssaoBlur)
+        #expect(LightingConfiguration.flat.ssaoBlur)
+        #expect(OffscreenRenderOptions().lightingConfiguration.ssaoBlur)
+        #expect(
+            !LightingConfiguration(
+                keyLight: LightSettings(direction: SIMD3(0, 0, -1), intensity: 1),
+                fillLight: LightSettings(direction: SIMD3(0, 0, -1), intensity: 0),
+                backLight: LightSettings(direction: SIMD3(0, 0, -1), intensity: 0),
+                ssaoBlur: false
+            ).ssaoBlur)
+
+        var lighting = LightingConfiguration.threePoint
+        lighting.ssaoBlur = false
+        let controller = ViewportController(
+            configuration: ViewportConfiguration(lightingConfiguration: lighting))
+        #expect(!controller.lightingConfiguration.ssaoBlur)
+        let options = OffscreenRenderOptions(matching: controller, width: 64, height: 64)
+        #expect(!options.lightingConfiguration.ssaoBlur)
+    }
+
+    @Test("ssaoBlur = false skips the blur pass and composites the raw dithered occlusion")
+    func ssaoBlurOffSkipsThePass() throws {
+        guard let renderer = OffscreenRenderer() else {
+            Issue.record("Metal device unavailable; skipping headless render test")
+            return
+        }
+        let off = try render(
+            Self.options(orthographic: true, blur: false), renderer: renderer)
+        #expect(renderer.ssaoOcclusionTargets.passesEncoded == 1)
+        #expect(renderer.ssaoOcclusionTargets.blurPassesEncoded == 0)
+
+        let on = try render(Self.options(orthographic: true, blur: true), renderer: renderer)
+        #expect(renderer.ssaoOcclusionTargets.passesEncoded == 2)
+        #expect(renderer.ssaoOcclusionTargets.blurPassesEncoded == 1)
+
+        // The default is the same as an explicit `true`, pixel for pixel.
+        let byDefault = try render(Self.options(orthographic: true), renderer: renderer)
+        #expect(renderer.ssaoOcclusionTargets.blurPassesEncoded == 2)
+        #expect(byDefault.pixels == on.pixels)
+
+        // Off differs from on, and carries the dither the blur removes.
+        #expect(off.pixels != on.pixels)
+        #expect(Self.ditherAmplitude(off).std > 2.0)
+        #expect(Self.ditherAmplitude(on).std < 0.75)
+
+        // Away from any occluder the two agree: the blur only touches occluded pixels.
+        for x in [10, 128, 240] {
+            #expect(off.g(x, 8) == on.g(x, 8))
+        }
+
+        // SSAO off runs neither pass, whatever `ssaoBlur` says.
+        let before = renderer.ssaoOcclusionTargets.passesEncoded
+        _ = try render(
+            Self.options(orthographic: true, ssao: false, blur: true), renderer: renderer)
+        _ = try render(
+            Self.options(orthographic: true, ssao: false, blur: false), renderer: renderer)
+        #expect(renderer.ssaoOcclusionTargets.passesEncoded == before)
+        #expect(renderer.ssaoOcclusionTargets.blurPassesEncoded == 2)
+    }
 
     @Test("The blurred occlusion still scales with ssaoIntensity")
     func intensityScalesBlurredOcclusion() throws {
@@ -286,7 +352,8 @@ struct SSAOBlurTests {
             let targets = renderer.ssaoOcclusionTargets
             #expect(targets.raw?.width == size && targets.raw?.height == size)
             #expect(targets.blurred?.width == size && targets.blurred?.height == size)
-            #expect(targets.raw?.pixelFormat == .r16Float)
+            #expect(targets.raw?.pixelFormat == .r32Float)
+            #expect(targets.blurred?.pixelFormat == .r16Float)
         }
     }
 
@@ -294,12 +361,13 @@ struct SSAOBlurTests {
 
     /// Renders the same scene through the headless entry point of `ViewportRenderer`.
     private func renderLive(
-        ssao: Bool, blur: Bool, renderer existing: ViewportRenderer? = nil
+        ssao: Bool, blur: Bool? = nil, renderer existing: ViewportRenderer? = nil
     ) -> (image: Image, renderer: ViewportRenderer)? {
         var lighting = LightingConfiguration.threePoint
         lighting.shadowsEnabled = false
         lighting.enableSSAO = ssao
         lighting.ssaoIntensity = 1
+        if let blur { lighting.ssaoBlur = blur }
         let background = SIMD4<Float>(0, 0, 0, 1)
         let configuration = ViewportConfiguration(
             initialCameraState: Self.camera(orthographic: false), displayMode: .shaded,
@@ -313,7 +381,6 @@ struct SSAOBlurTests {
             let renderer = existing
                 ?? ViewportRenderer(controller: controller, bodies: .constant(Self.scene()))
         else { return nil }
-        renderer.ssaoBlurEnabled = blur
         guard
             let pixels = renderer.renderHeadlessBGRA(
                 width: Self.size, height: Self.size, backgroundColor: background)
@@ -324,8 +391,8 @@ struct SSAOBlurTests {
     @Test("The live renderer blurs its occlusion too, and holds no AO textures with SSAO off")
     func liveRenderer() throws {
         guard let raw = renderLive(ssao: true, blur: false),
-            let blurred = renderLive(ssao: true, blur: true),
-            let off = renderLive(ssao: false, blur: true)
+            let blurred = renderLive(ssao: true),
+            let off = renderLive(ssao: false)
         else {
             Issue.record("Metal device unavailable; skipping headless render test")
             return
@@ -337,7 +404,10 @@ struct SSAOBlurTests {
         #expect(after.std < 0.75, "dither survives the blur: std \(after.std) levels")
 
         #expect(blurred.renderer.ssaoOcclusionTargets.passesEncoded == 1)
+        #expect(blurred.renderer.ssaoOcclusionTargets.blurPassesEncoded == 1)
         #expect(blurred.renderer.ssaoOcclusionTargets.isAllocated)
+        #expect(raw.renderer.ssaoOcclusionTargets.passesEncoded == 1)
+        #expect(raw.renderer.ssaoOcclusionTargets.blurPassesEncoded == 0)
         #expect(off.renderer.ssaoOcclusionTargets.passesEncoded == 0)
         #expect(!off.renderer.ssaoOcclusionTargets.isAllocated)
     }
@@ -380,7 +450,8 @@ struct SSAOBlurTests {
             options.height = 480
             options.lightingConfiguration.ssaoIntensity = 0.9
             for (label, blur) in [("before", false), ("after", true)] {
-                let image = try render(options, blur: blur, bodies: [plane, box, cylinder])
+                options.lightingConfiguration.ssaoBlur = blur
+                let image = try render(options, bodies: [plane, box, cylinder])
                 try Self.writePNG(
                     image, to: folder.appendingPathComponent("\(name)-\(label).png"))
                 try Self.writePNG(
@@ -390,7 +461,7 @@ struct SSAOBlurTests {
         }
         // The flat-plane test scene, as the dither tests see it.
         for (label, blur) in [("before", false), ("after", true)] {
-            let image = try render(Self.options(orthographic: true), blur: blur)
+            let image = try render(Self.options(orthographic: true, blur: blur))
             try Self.writePNG(
                 image, to: folder.appendingPathComponent("wall-\(label)-crop.png"),
                 crop: (64, 96, 128, 64), scale: 6, stretch: 100...164)

@@ -469,8 +469,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The occlusion textures; allocated only on frames that run SSAO. Internal so tests can check
     /// that SSAO off allocates and encodes nothing.
     private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
-    /// Test hook: `false` feeds the composite the raw, un-blurred occlusion (#188).
-    var ssaoBlurEnabled = true
     /// 1x resolved color texture for SSAO input (MSAA resolves into this).
     private var resolvedColorTexture: MTLTexture?
     /// 1x resolved depth texture for SSAO depth sampling.
@@ -2811,7 +2809,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
                     commandBuffer: commandBuffer, pipelines: occlusionPipelines,
                     targets: &ssaoOcclusionTargets, device: device, depth: resolvedDepth,
-                    params: ssaoParams, blur: ssaoBlurEnabled)
+                    params: ssaoParams, blur: lighting.ssaoBlur)
             }
             if occlusionTexture == nil {
                 ssaoOcclusionTargets.release()

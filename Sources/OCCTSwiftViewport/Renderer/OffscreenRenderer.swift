@@ -589,8 +589,6 @@ public final class OffscreenRenderer: Sendable {
     /// The occlusion textures; allocated only by renders that run SSAO. Internal so tests can
     /// check that SSAO off allocates and encodes nothing.
     private(set) var ssaoOcclusionTargets = SSAOOcclusionTargets()
-    /// Test hook: `false` feeds the composite the raw, un-blurred occlusion (#188).
-    var ssaoBlurEnabled = true
     /// Single-sample colour the main pass resolves into when the composite runs.
     private var postColorTexture: MTLTexture?
     /// Single-sample depth written by the SSAO / silhouette depth prepass.
@@ -1699,7 +1697,7 @@ public final class OffscreenRenderer: Sendable {
             occlusionTexture = RendererSharedSetup.encodeSSAOOcclusion(
                 commandBuffer: commandBuffer, pipelines: occlusionPipelines,
                 targets: &ssaoOcclusionTargets, device: device, depth: targets.depth,
-                params: params, blur: ssaoBlurEnabled)
+                params: params, blur: lighting.ssaoBlur)
         }
         if occlusionTexture == nil {
             ssaoOcclusionTargets.release()

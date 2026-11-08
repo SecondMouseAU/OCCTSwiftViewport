@@ -1449,7 +1449,7 @@ inline float linearizeDepth(float depth, float near, float far, float orthograph
     return near * far / (far - depth * (far - near));
 }
 
-// SSAO occlusion term (#188). Runs on its own full-screen pass into an R16Float texture, so
+// SSAO occlusion term (#188). Runs on its own full-screen pass into an R32Float texture, so
 // `ssao_blur_fragment` can smooth the ordered-dither pattern out of it before `ssao_fragment`
 // multiplies it into the scene. The result is `1 - occlusion * intensity` in [0, 1], 1 = open.
 fragment float4 ssao_occlusion_fragment(
