@@ -269,7 +269,7 @@ The same two properties are parameters of `ViewportBody.directMesh(...)`, so a k
 
 Things to know:
 
-- **Colour space.** sRGB (display) values, like `color` and the point-cloud colours. A ramp built from an sRGB colour table looks as it does in an image tool. If your field is linear light, encode it to sRGB first. Only RGB is read; opacity still comes from `color.w`.
+- **Colour space.** sRGB (display) values by default, like `color`, so a ramp built from an sRGB colour table looks as it does in an image tool. If your field is linear light, set `body.vertexColorSpace = .linear` instead (it applies to point clouds too): lit surfaces then use the values as linear albedo and unlit surfaces and points encode them for display. Only RGB is read; opacity still comes from `color.w`.
 - **Fallback.** An empty array, or one whose count differs from the mesh's vertex count, is ignored and the body keeps its colour.
 - **Everywhere the surface is drawn.** All rendering qualities (including PN tessellation and mesh shaders), the x-ray and translucent passes, the `.unlit` display mode (which shows the ramp exactly, with no lighting), overlay bodies, and `OffscreenRenderer`.
 - **Cost.** Assigning `vertexColors` counts as a geometry change (new `generation`), so the body re-uploads. Switching `vertexColorMode` alone does not.

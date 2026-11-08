@@ -90,7 +90,7 @@ struct PointParamsSwift {
     var worldRadius: Float  // offset 16
     var pxPerWorldFactor: Float  // offset 20 — viewportHeight * projection[1][1] / 2
     var useVertexColors: UInt32  // offset 24
-    var _pad: UInt32 = 0  // offset 28
+    var vertexColorSpace: UInt32 = 0  // offset 28 — 0 = sRGB display values, 1 = linear
 }
 
 // Swift↔Metal sync: Renderer/Shaders.metal `struct GridUniforms` (same field order; `rows`
@@ -1779,8 +1779,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
                 encodeShadedSurface(
                     mainEncoder, buffers: buffers, vertexColorMode: body.vertexColorMode,
-                    uniforms: &uniforms, useMeshShaders: useMeshShaders,
-                    useTessellation: useTessellation)
+                    vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
+                    useMeshShaders: useMeshShaders, useTessellation: useTessellation)
 
                 // Per-triangle highlights (issue #25) straight over the surface they style, so
                 // they composite before the translucent pass rather than over it (#171).
@@ -1902,8 +1902,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     encodeShadedSurface(
                         mainEncoder, buffers: d.buffers, vertexColorMode: d.body.vertexColorMode,
-                        uniforms: &uniforms, useMeshShaders: useMeshShaders,
-                        useTessellation: useTessellation)
+                        vertexColorSpace: d.body.vertexColorSpace, uniforms: &uniforms,
+                        useMeshShaders: useMeshShaders, useTessellation: useTessellation)
                     if d.buffers.triangleStyleBuffer != nil {
                         mainEncoder.setDepthStencilState(highlightDepthState)
                         encodeTriangleHighlight(
@@ -2061,7 +2061,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     baseColor: body.color,
                     worldRadius: body.pointRadius,
                     pxPerWorldFactor: pxPerWorldFactor,
-                    useVertexColors: useColors
+                    useVertexColors: useColors,
+                    vertexColorSpace: body.vertexColorSpace.shaderValue
                 )
 
                 mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -2193,8 +2194,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     RendererSharedSetup.encodeVertexColors(
                         encoder: mainEncoder,
                         binding: RendererSharedSetup.VertexColorBinding(
-                            mode: body.vertexColorMode, colorBuffer: buffers.vertexColorBuffer,
-                            placeholder: vb, indices: ib))
+                            mode: body.vertexColorMode, space: body.vertexColorSpace,
+                            colorBuffer: buffers.vertexColorBuffer, placeholder: vb, indices: ib))
                     mainEncoder.setVertexBytes(
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
@@ -2268,7 +2269,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         baseColor: body.color,
                         worldRadius: body.pointRadius,
                         pxPerWorldFactor: pxPerWorldFactor,
-                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0,
+                        vertexColorSpace: body.vertexColorSpace.shaderValue
                     )
                     mainEncoder.setRenderPipelineState(pointPipeline)
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -2985,6 +2987,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
         vertexColorMode: VertexColorMode,
+        vertexColorSpace: AuthoredColorSpace,
         uniforms: inout Uniforms,
         useMeshShaders: Bool,
         useTessellation: Bool
@@ -2993,8 +2996,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         else { return }
         // The body's per-vertex colours (#142), bound on every shaded draw.
         let vertexColors = RendererSharedSetup.VertexColorBinding(
-            mode: vertexColorMode, colorBuffer: buffers.vertexColorBuffer, placeholder: vb,
-            indices: ib)
+            mode: vertexColorMode, space: vertexColorSpace, colorBuffer: buffers.vertexColorBuffer,
+            placeholder: vb, indices: ib)
 
         if let nb = buffers.normalBuffer {
             // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.

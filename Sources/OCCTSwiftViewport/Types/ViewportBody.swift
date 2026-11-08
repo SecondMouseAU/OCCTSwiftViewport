@@ -55,7 +55,7 @@ public enum BodyPrimitiveKind: Sendable, Hashable {
 /// The default, `.ignored`, leaves every existing render unchanged: a mesh body draws with its
 /// `color` (or `material`) alone, whether or not `vertexColors` is populated. The other two modes
 /// colour the shaded surface from the vertices. `.point` bodies always use their `vertexColors` and
-/// ignore this setting. See ``ViewportBody/vertexColors``.
+/// ignore this setting. See ``ViewportBody/vertexColors`` and ``ViewportBody/vertexColorSpace``.
 public enum VertexColorMode: UInt32, Sendable, Hashable, CaseIterable {
     /// The shaded surface uses the body's `color` or `material` base colour only.
     case ignored = 0
@@ -195,7 +195,8 @@ public struct ViewportBody: Identifiable, Sendable {
         didSet { geometryDidChange() }
     }
 
-    /// Per-vertex colour, as sRGB (display) RGBA like ``color``.
+    /// Per-vertex colour RGBA, in the colour space ``vertexColorSpace`` names (sRGB display
+    /// values like ``color`` by default).
     ///
     /// - Point-cloud bodies (`primitiveKind == .point`): one colour per point, parallel to
     ///   `vertices`. Always used when the count matches.
@@ -218,6 +219,16 @@ public struct ViewportBody: Identifiable, Sendable {
     /// about how a mesh draws. It has no effect on point-cloud bodies, and the shadow and pick
     /// passes ignore it. Read per frame, so changing it leaves ``generation`` as it was.
     public var vertexColorMode: VertexColorMode
+
+    /// The colour space ``vertexColors`` are authored in, for mesh and point-cloud bodies alike.
+    ///
+    /// ``AuthoredColorSpace/sRGB`` (the default) takes them as display values, like ``color``.
+    /// ``AuthoredColorSpace/linear`` takes them as linear light: lit surfaces use them as linear
+    /// albedo (no sRGB decode), and `.unlit` surfaces and point clouds encode them to display
+    /// values when drawn. With ``VertexColorMode/multiply`` a linear body combines the vertex
+    /// colour with the decoded body colour in linear light. Read per frame, so changing it leaves
+    /// ``generation`` as it was. It does not affect `color`, which is always an sRGB value.
+    public var vertexColorSpace: AuthoredColorSpace
 
     /// Radius of each point sprite in world units, for point-cloud bodies.
     ///
@@ -344,6 +355,7 @@ public struct ViewportBody: Identifiable, Sendable {
         vertexIndices: [Int32] = [],
         vertexColors: [SIMD4<Float>] = [],
         vertexColorMode: VertexColorMode = .ignored,
+        vertexColorSpace: AuthoredColorSpace = .sRGB,
         triangleStyles: [TriangleStyle] = [],
         color: SIMD4<Float>,
         roughness: Float = 0.5,
@@ -375,6 +387,7 @@ public struct ViewportBody: Identifiable, Sendable {
         self.vertexIndices = vertexIndices
         self.vertexColors = vertexColors
         self.vertexColorMode = vertexColorMode
+        self.vertexColorSpace = vertexColorSpace
         self.triangleStyles = triangleStyles
         self.color = color
         self.roughness = roughness
@@ -413,6 +426,7 @@ extension ViewportBody {
         edges: [[SIMD3<Float>]] = [],
         vertexColors: [SIMD4<Float>] = [],
         vertexColorMode: VertexColorMode = .ignored,
+        vertexColorSpace: AuthoredColorSpace = .sRGB,
         material: PBRMaterial? = nil,
         transform: simd_float4x4 = matrix_identity_float4x4
     ) -> ViewportBody {
@@ -434,6 +448,7 @@ extension ViewportBody {
             vertexIndices: indices.map { Int32($0) },
             vertexColors: vertexColors,
             vertexColorMode: vertexColorMode,
+            vertexColorSpace: vertexColorSpace,
             color: color,
             material: material,
             transform: transform,

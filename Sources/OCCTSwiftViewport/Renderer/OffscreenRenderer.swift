@@ -1059,6 +1059,7 @@ public final class OffscreenRenderer: Sendable {
         func encodeSurface(
             _ buffers: BodyBuffersOffscreen,
             vertexColorMode: VertexColorMode,
+            vertexColorSpace: AuthoredColorSpace,
             uniforms: inout Uniforms,
             bodyUniforms: inout BodyUniforms,
             refine: Bool = true
@@ -1075,8 +1076,8 @@ public final class OffscreenRenderer: Sendable {
             }
             // The body's per-vertex colours (#142), bound on every shaded draw.
             let vertexColors = RendererSharedSetup.VertexColorBinding(
-                mode: vertexColorMode, colorBuffer: buffers.vertexColorBuffer, placeholder: vb,
-                indices: ib)
+                mode: vertexColorMode, space: vertexColorSpace,
+                colorBuffer: buffers.vertexColorBuffer, placeholder: vb, indices: ib)
             if refine,
                 Self.encodeRefinedDraw(
                     encoder: mainEncoder, buffers: buffers, meshPipeline: refined?.meshShaded,
@@ -1165,7 +1166,8 @@ public final class OffscreenRenderer: Sendable {
                 baseColor: body.color,
                 worldRadius: body.pointRadius,
                 pxPerWorldFactor: Float(h) * projMatrix.columns.1.y * 0.5,
-                useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0,
+                vertexColorSpace: body.vertexColorSpace.shaderValue
             )
             mainEncoder.setRenderPipelineState(pointPipeline)
             mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -1253,7 +1255,8 @@ public final class OffscreenRenderer: Sendable {
             if displayMode.showsSurfaces, hasMesh, !defersSurface {
                 mainEncoder.setDepthStencilState(depthState)
                 encodeSurface(
-                    buffers, vertexColorMode: body.vertexColorMode, uniforms: &uniforms,
+                    buffers, vertexColorMode: body.vertexColorMode,
+                    vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
                     bodyUniforms: &bodyUniforms)
                 // Per-triangle highlights straight over the surface they style, so they composite
                 // before the translucent pass rather than over it (#171).
@@ -1291,7 +1294,8 @@ public final class OffscreenRenderer: Sendable {
                     mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentDepthState)
                     encodeSurface(
-                        t.buffers, vertexColorMode: t.body.vertexColorMode, uniforms: &uniforms,
+                        t.buffers, vertexColorMode: t.body.vertexColorMode,
+                        vertexColorSpace: t.body.vertexColorSpace, uniforms: &uniforms,
                         bodyUniforms: &bodyUniforms)
                     encodeHighlight(t.body, t.buffers, uniforms: &uniforms)
                 }
@@ -1471,7 +1475,8 @@ public final class OffscreenRenderer: Sendable {
                 if hasMesh {
                     // Widgets draw their plain mesh, untessellated, as live.
                     encodeSurface(
-                        buffers, vertexColorMode: body.vertexColorMode, uniforms: &uniforms,
+                        buffers, vertexColorMode: body.vertexColorMode,
+                        vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
                         bodyUniforms: &bodyUniforms, refine: false)
                 }
                 encodeEdges(

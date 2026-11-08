@@ -77,13 +77,39 @@ inline float3 linearToSrgb(float3 c) {
     return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);
 }
 
+// Per-vertex colour mode word (#142): bits 0-1 = `VertexColorMode.rawValue` (0 ignores the vertex
+// colour, 1 multiplies it into the base colour, 2 replaces the base colour), bit 2 = the vertex
+// colours are linear light (`AuthoredColorSpace.linear`) rather than sRGB display values.
+// `RendererSharedSetup.VertexColorBinding.packedMode` builds it; it is 0 whenever the body has no
+// usable colours.
+inline bool vertexColorsLinear(uint modeWord) {
+    return (modeWord & 4u) != 0u && (modeWord & 3u) != 0u;
+}
+
 // The surface albedo as an sRGB value: the body / material base colour combined with the
-// interpolated per-vertex colour (#142). `mode` is `VertexColorMode.rawValue`: 0 ignores the vertex
-// colour and returns `bodyColor` untouched, 1 multiplies it in, 2 replaces the base colour.
-inline float3 surfaceAlbedo(float3 bodyColor, float3 vertexColor, uint mode) {
+// interpolated per-vertex colour (#142). Mode 0 returns `bodyColor` untouched. Vertex colours
+// that are linear light are encoded for display after combining in linear (`.unlit` draws this
+// value as is).
+inline float3 surfaceAlbedo(float3 bodyColor, float3 vertexColor, uint modeWord) {
+    uint mode = modeWord & 3u;
+    if (vertexColorsLinear(modeWord)) {
+        float3 linearVertex = saturate(vertexColor);
+        float3 albedo = (mode == 1u) ? srgbToLinear(bodyColor) * linearVertex : linearVertex;
+        return linearToSrgb(albedo);
+    }
     if (mode == 1u) return bodyColor * vertexColor;
     if (mode == 2u) return vertexColor;
     return bodyColor;
+}
+
+// The same albedo as linear light, for lighting. sRGB vertex colours decode after combining, as
+// before; linear ones are used as they are, with no sRGB decode.
+inline float3 surfaceAlbedoLinear(float3 bodyColor, float3 vertexColor, uint modeWord) {
+    if (vertexColorsLinear(modeWord)) {
+        float3 linearVertex = saturate(vertexColor);
+        return ((modeWord & 3u) == 1u) ? srgbToLinear(bodyColor) * linearVertex : linearVertex;
+    }
+    return srgbToLinear(surfaceAlbedo(bodyColor, vertexColor, modeWord));
 }
 
 // ACES filmic tone mapping (Narkowicz approximation) of a LINEAR colour, scaled by
@@ -123,8 +149,9 @@ struct ShadedVertexOut {
     float3 viewNormal;       // for matcap UV
     float4 clipPositionCopy; // for depth-based effects
     // Per-vertex colour for mesh bodies (#142): the interpolated sRGB colour, and how it applies.
-    // `vertexColorMode` is flat (0 = ignored, 1 = multiply, 2 = replace), so a body that ignores
-    // its vertex colours reaches `surfaceAlbedo` with the mode alone and shades exactly as before.
+    // `vertexColorMode` is a flat mode word: bits 0-1 = VertexColorMode (0 ignored, 1 multiply,
+    // 2 replace), bit 2 = the colours are linear light (AuthoredColorSpace.linear). A body that
+    // ignores its vertex colours has the word 0, so it shades exactly as before.
     float3 vertexColor;
     uint   vertexColorMode [[flat]];
 };
@@ -237,8 +264,8 @@ inline float3 sampleEnvironment(float3 direction) {
 
 // Buffers 0 and 2 carry the vertex data (the direct-mesh path puts its normals at 2), and 1 the
 // scene uniforms. `vertexColors` (3, stride 16, indexed by `[[vertex_id]]`, which for an indexed
-// draw is the index value) and its mode (4) are bound on every draw; `vertexColors` is only read
-// when the mode is non-zero (#142).
+// draw is the index value) and its mode word (4) are bound on every draw; `vertexColors` is only
+// read when the mode word's bits 0-1 are non-zero (#142).
 vertex ShadedVertexOut shaded_vertex(
     VertexIn in [[stage_in]],
     uint vid [[vertex_id]],
@@ -255,7 +282,7 @@ vertex ShadedVertexOut shaded_vertex(
     out.viewNormal = normalize((uniforms.viewMatrix * uniforms.modelMatrix * float4(in.normal, 0.0)).xyz);
     out.clipPositionCopy = out.clipPosition;
     out.vertexColorMode = vertexColorMode;
-    out.vertexColor = (vertexColorMode != 0u) ? vertexColors[vid].rgb : float3(1.0);
+    out.vertexColor = ((vertexColorMode & 3u) != 0u) ? vertexColors[vid].rgb : float3(1.0);
     return out;
 }
 
@@ -405,10 +432,10 @@ fragment ShadedFragmentOut shaded_fragment(
 
     float roughness = clamp(bodyUniforms.roughness, 0.04, 1.0);
     float metallic = saturate(bodyUniforms.metallic);
-    // Body / material base colour is authored in sRGB, and so are the per-vertex colours (#142);
-    // combine them there, then light the result in linear.
-    float3 bodyColor = srgbToLinear(
-        surfaceAlbedo(bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode));
+    // Body / material base colour is authored in sRGB, and so are the per-vertex colours (#142)
+    // unless `vertexColorSpace` says linear: combine them, then light the result in linear.
+    float3 bodyColor = surfaceAlbedoLinear(
+        bodyUniforms.color.rgb, in.vertexColor, in.vertexColorMode);
     float clearcoat = saturate(bodyUniforms.clearcoat);
     float coatRoughness = clamp(bodyUniforms.clearcoatRoughness, 0.04, 1.0);
 
@@ -816,7 +843,7 @@ struct PointParams {
     float  worldRadius;        // offset 16
     float  pxPerWorldFactor;   // offset 20
     uint   useVertexColors;    // offset 24 (0 or 1)
-    uint   _pad;               // offset 28 — pad to 16-byte boundary
+    uint   vertexColorSpace;   // offset 28 (0 = sRGB display values, 1 = linear; encoded for display)
 };
 
 struct VisiblePointVertexOut {
@@ -850,7 +877,12 @@ vertex VisiblePointVertexOut visible_point_vertex(
     // visible at extreme depths.
     out.pointSize = clamp(screenSize, 1.0, 64.0);
 
-    out.color = (params.useVertexColors != 0u) ? vertexColors[vid] : params.baseColor;
+    out.color = params.baseColor;
+    if (params.useVertexColors != 0u) {
+        out.color = vertexColors[vid];
+        // Linear-light colours are encoded for the display target; sRGB ones are drawn as given.
+        if (params.vertexColorSpace != 0u) out.color.rgb = linearToSrgb(out.color.rgb);
+    }
     return out;
 }
 
@@ -2181,7 +2213,7 @@ vertex ShadedVertexOut tessellated_vertex(
     out.clipPositionCopy = out.clipPosition;
     out.vertexColorMode = vertexColorMode;
     out.vertexColor = float3(1.0);
-    if (vertexColorMode != 0u) {
+    if ((vertexColorMode & 3u) != 0u) {
         out.vertexColor = vertexColors[indices[patchID * 3]].rgb * u
                         + vertexColors[indices[patchID * 3 + 1]].rgb * v
                         + vertexColors[indices[patchID * 3 + 2]].rgb * w;
@@ -2430,7 +2462,7 @@ void meshlet_mesh(
         v.viewNormal = normalize((uniforms.viewMatrix * uniforms.modelMatrix * float4(nrm, 0.0)).xyz);
         v.clipPositionCopy = v.clipPosition;
         v.vertexColorMode = vertexColorMode;
-        v.vertexColor = (vertexColorMode != 0u) ? vertexColors[globalIdx].rgb : float3(1.0);
+        v.vertexColor = ((vertexColorMode & 3u) != 0u) ? vertexColors[globalIdx].rgb : float3(1.0);
         output.set_vertex(tid, v);
     }
 

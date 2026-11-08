@@ -44,13 +44,14 @@ enum VertexColorScene {
         color: SIMD4<Float> = white,
         vertexColors: [SIMD4<Float>] = gradient,
         mode: VertexColorMode = .replace,
+        space: AuthoredColorSpace = .sRGB,
         layer: RenderLayer = .geometry
     ) -> ViewportBody {
         var data: [Float] = []
         for c in corners { data += [c.x, c.y, c.z, 0, 0, 1] }
         return ViewportBody(
             id: id, vertexData: data, indices: [0, 1, 2], edges: [],
-            vertexColors: vertexColors, vertexColorMode: mode,
+            vertexColors: vertexColors, vertexColorMode: mode, vertexColorSpace: space,
             color: color, renderLayer: layer)
     }
 
@@ -59,7 +60,8 @@ enum VertexColorScene {
         id: String = "direct",
         color: SIMD4<Float> = white,
         vertexColors: [SIMD4<Float>] = gradient,
-        mode: VertexColorMode = .replace
+        mode: VertexColorMode = .replace,
+        space: AuthoredColorSpace = .sRGB
     ) -> ViewportBody {
         var positions: [Float] = []
         var normals: [Float] = []
@@ -69,7 +71,7 @@ enum VertexColorScene {
         }
         return ViewportBody.directMesh(
             id: id, positions: positions, normals: normals, indices: [0, 1, 2], color: color,
-            vertexColors: vertexColors, vertexColorMode: mode)
+            vertexColors: vertexColors, vertexColorMode: mode, vertexColorSpace: space)
     }
 
     /// Pixel at barycentric weights `w` of the three corners.
@@ -173,6 +175,7 @@ struct MeshVertexColorModelTests {
             id: "c", vertexData: [], indices: [], edges: [],
             vertexColors: [VertexColorScene.red], color: .one)
         #expect(carrying.vertexColorMode == .ignored)
+        #expect(carrying.vertexColorSpace == .sRGB)
     }
 
     @Test("The mode's raw values are the ones Shaders.metal switches on")
@@ -184,28 +187,35 @@ struct MeshVertexColorModelTests {
         #expect(VertexColorMode.allCases.count == 3)
     }
 
-    @Test("Changing the mode leaves generation alone; changing the colours takes a new one")
+    @Test(
+        "Changing the mode or colour space leaves generation alone; changing the colours takes a new one"
+    )
     func generationRules() {
         var body = VertexColorScene.triangle(mode: .ignored)
         let before = body.generation
         body.vertexColorMode = .replace
         body.vertexColorMode = .multiply
-        #expect(body.generation == before, "the mode is read per frame and needs no re-upload")
+        body.vertexColorSpace = .linear
+        #expect(
+            body.generation == before, "the mode and space are read per frame and need no re-upload"
+        )
         body.vertexColors = [VertexColorScene.blue, VertexColorScene.blue, VertexColorScene.blue]
         #expect(body.generation > before, "new colours must re-upload")
     }
 
     @Test("directMesh forwards vertex colours and the mode")
     func directMeshForwards() {
-        let body = VertexColorScene.directTriangle(mode: .multiply)
+        let body = VertexColorScene.directTriangle(mode: .multiply, space: .linear)
         #expect(body.usesDirectMesh)
         #expect(body.vertexColors == VertexColorScene.gradient)
         #expect(body.vertexColorMode == .multiply)
+        #expect(body.vertexColorSpace == .linear)
         // Defaults stay as before.
         let plain = ViewportBody.directMesh(
             id: "p", positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
             indices: [0, 1, 2], color: .one)
         #expect(plain.vertexColors.isEmpty && plain.vertexColorMode == .ignored)
+        #expect(plain.vertexColorSpace == .sRGB, "the colour space defaults to sRGB")
     }
 
     @Test("The mesh colour buffer needs a mode, and a count that matches the mesh")

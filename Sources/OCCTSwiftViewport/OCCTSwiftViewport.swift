@@ -102,6 +102,7 @@ public typealias _NavigationCube = NavigationCube
 public typealias _OrientationGnomon = OrientationGnomon
 public typealias _ScaleBarView = ScaleBarView
 public typealias _ScaleBarMetrics = ScaleBarMetrics
+public typealias _AuthoredColorSpace = AuthoredColorSpace
 
 // MARK: - Deprecated re-exports
 
