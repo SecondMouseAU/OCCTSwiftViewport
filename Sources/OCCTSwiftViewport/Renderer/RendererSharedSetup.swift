@@ -230,12 +230,16 @@ enum RendererSharedSetup {
     }
 
     /// Wireframe / edge line pipeline.
+    ///
+    /// Pass `fragmentFunction: "wireframe_segment_fragment"` for the per-segment colour variant
+    /// (`ViewportBody.edgeColors`, issue #140).
     static func makeWireframePipelineState(
         device: MTLDevice,
         library: MTLLibrary,
         sampleCount: Int,
         depthFormat: MTLPixelFormat,
         vertexDescriptor: MTLVertexDescriptor,
+        fragmentFunction: String = "wireframe_fragment",
         label: String? = nil
     ) -> MTLRenderPipelineState? {
         makePipelineState(
@@ -243,7 +247,7 @@ enum RendererSharedSetup {
             label: label,
             library: library,
             vertexFunction: "wireframe_vertex",
-            fragmentFunction: "wireframe_fragment",
+            fragmentFunction: fragmentFunction,
             colorPixelFormat: .bgra8Unorm,
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,
@@ -256,13 +260,15 @@ enum RendererSharedSetup {
     /// Quad-expanded wireframe pipeline (variable width + dash patterns).
     ///
     /// Uses a dedicated descriptor for endpoint, arc-length, corner, and direction attributes
-    /// with the `quad_edge_vertex` / `quad_edge_fragment` shaders.
+    /// with the `quad_edge_vertex` / `quad_edge_fragment` shaders, or `quad_edge_segment_fragment`
+    /// for the per-segment colour variant (`ViewportBody.edgeColors`, issue #140).
     static func makeQuadEdgePipelineState(
         device: MTLDevice,
         library: MTLLibrary,
         sampleCount: Int,
         depthFormat: MTLPixelFormat,
         vertexDescriptor: MTLVertexDescriptor,
+        fragmentFunction: String = "quad_edge_fragment",
         label: String? = nil
     ) -> MTLRenderPipelineState? {
         makePipelineState(
@@ -270,7 +276,7 @@ enum RendererSharedSetup {
             label: label,
             library: library,
             vertexFunction: "quad_edge_vertex",
-            fragmentFunction: "quad_edge_fragment",
+            fragmentFunction: fragmentFunction,
             colorPixelFormat: .bgra8Unorm,
             depthPixelFormat: depthFormat,
             stencilPixelFormat: depthFormat,

@@ -100,8 +100,9 @@ public struct ViewportBody: Identifiable, Sendable {
     /// `meshPositions`, `meshNormals`). The renderers compare it with the generation they cached
     /// GPU buffers for under this `id` and re-upload when it differs, so mutating a body and
     /// handing it back is enough to update the GPU (issue #166). Appearance and placement fields
-    /// (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, ...) leave it unchanged,
-    /// since they are read per frame and need no re-upload.
+    /// (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, `edgeColors`,
+    /// `edgeDrawRange`, `edgeColorSpace`, ...) leave it unchanged, since they are read per frame or re-upload only
+    /// their own small buffer.
     ///
     /// Copies share a generation until one of them is mutated. Two bodies with the same `id`
     /// and `generation` therefore hold the same geometry.
@@ -145,6 +146,13 @@ public struct ViewportBody: Identifiable, Sendable {
     /// B-Rep provenance, which leaves it pickable only as a whole.
     public var faceIndices: [Int32] {
         didSet { geometryDidChange() }
+    }
+
+    /// Number of line segments in `edges` once flattened (a polyline of `n` points has `n - 1`).
+    ///
+    /// The length `edgeColors` and `edgeIndices` need, and the bound of `edgeDrawRange`.
+    public var edgeSegmentCount: Int {
+        edges.reduce(0) { $0 + max($1.count - 1, 0) }
     }
 
     /// Maps each drawn line segment back to the B-Rep edge it came from, for edge selection.
@@ -217,6 +225,32 @@ public struct ViewportBody: Identifiable, Sendable {
     /// Changes whenever `triangleStyles` is assigned, so the renderer can re-upload just the
     /// style buffer for a body whose `generation` (and so geometry) is unchanged.
     private(set) var triangleStylesGeneration: UInt64
+
+    /// Per-segment colour for the `edges` polylines, in the colour space `edgeColorSpace` names.
+    ///
+    /// Parallel to the flattened segments (`count == edgeSegmentCount`), in `edgeIndices` order.
+    /// Empty, or any other count, leaves every segment in the body's usual edge colour, the rule
+    /// `vertexColors` follows for points. Assigning it leaves `generation` alone and re-uploads
+    /// only its own buffer, as `triangleStyles` does. See `docs/reference/ViewportBody.md`.
+    public var edgeColors: [SIMD4<Float>] {
+        didSet { edgeColorsGeneration = Self.nextGeneration() }
+    }
+
+    /// Changes whenever `edgeColors` is assigned, so the live renderer can re-upload just the
+    /// colour buffer for a body whose `generation` (and so geometry) is unchanged.
+    private(set) var edgeColorsGeneration: UInt64
+
+    /// How `edgeColors` are interpreted: sRGB display values drawn as given (the default), or
+    /// linear-light values converted to display encoding when drawn.
+    ///
+    /// Changing it leaves `generation` alone and uploads nothing; alpha is never converted.
+    public var edgeColorSpace: AuthoredColorSpace
+
+    /// The flattened `edges` segments that are drawn and picked, or `nil` (the default) for all.
+    ///
+    /// Clamped to the segments that exist; an empty range draws none. Assigning it leaves
+    /// `generation` alone and uploads nothing. See `docs/reference/ViewportBody.md`.
+    public var edgeDrawRange: Range<Int>?
 
     /// Base colour as sRGB (display) RGBA, used for shading when no `material` is set.
     ///
@@ -307,6 +341,9 @@ public struct ViewportBody: Identifiable, Sendable {
         vertexIndices: [Int32] = [],
         vertexColors: [SIMD4<Float>] = [],
         triangleStyles: [TriangleStyle] = [],
+        edgeColors: [SIMD4<Float>] = [],
+        edgeDrawRange: Range<Int>? = nil,
+        edgeColorSpace: AuthoredColorSpace = .sRGB,
         color: SIMD4<Float>,
         roughness: Float = 0.5,
         metallic: Float = 0.0,
@@ -324,6 +361,7 @@ public struct ViewportBody: Identifiable, Sendable {
         let generation = Self.nextGeneration()
         self.generation = generation
         self.triangleStylesGeneration = generation
+        self.edgeColorsGeneration = generation
         self.id = id
         self.vertexData = vertexData
         self.indices = indices
@@ -337,6 +375,9 @@ public struct ViewportBody: Identifiable, Sendable {
         self.vertexIndices = vertexIndices
         self.vertexColors = vertexColors
         self.triangleStyles = triangleStyles
+        self.edgeColors = edgeColors
+        self.edgeDrawRange = edgeDrawRange
+        self.edgeColorSpace = edgeColorSpace
         self.color = color
         self.roughness = roughness
         self.metallic = metallic

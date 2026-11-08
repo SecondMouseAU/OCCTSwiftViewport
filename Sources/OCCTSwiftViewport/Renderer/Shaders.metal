@@ -711,16 +711,19 @@ fragment PickFragmentOut pick_fragment(
     return out;
 }
 
-// Edge pick — kind=1.
+// Edge pick — kind=1. `firstSegment` is the index of the draw's first segment: `[[primitive_id]]`
+// restarts at 0 for each draw, and a ViewportBody.edgeDrawRange slice starts part-way in (#140).
 fragment PickFragmentOut pick_line_fragment(
     PickVertexOut in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]],
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant uint &firstSegment [[buffer(3)]],
     uint primitiveID [[primitive_id]]
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (1u << 30);
+    out.pickID = bodyUniforms.objectIndex | (((firstSegment + primitiveID) & 0x3FFFu) << 16)
+        | (1u << 30);
     return out;
 }
 
@@ -1014,10 +1017,16 @@ inline float edgeFadeDepth(float3 worldPosition, float4x4 viewMatrix, float near
     return saturate((viewDepth - nearPlane) / max(farPlane - nearPlane, 1e-6));
 }
 
-fragment WireframeFragmentOut wireframe_fragment(
-    WireframeVertexOut in [[stage_in]],
-    constant Uniforms &uniforms [[buffer(1)]],
-    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+// Shared body of wireframe_fragment and wireframe_segment_fragment. With `hasSegmentColor`,
+// `segmentColor` (sRGB RGBA from ViewportBody.edgeColors, drawn as given) replaces the body colour
+// of an edge-only body and the contrast-adaptive edge colour of a meshed one; a meshed body's
+// depth fade and edge intensity still apply, on top of the colour's alpha (#140).
+inline WireframeFragmentOut wireframeFragmentColor(
+    WireframeVertexOut in,
+    constant Uniforms &uniforms,
+    constant BodyUniforms &bodyUniforms,
+    bool hasSegmentColor,
+    float4 segmentColor
 ) {
     // Clip plane discard
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -1033,7 +1042,7 @@ fragment WireframeFragmentOut wireframe_fragment(
     // Edge-only bodies (metallic == -1 sentinel): use body color directly
     if (bodyUniforms.metallic < 0.0) {
         WireframeFragmentOut out;
-        out.color = float4(bodyColor, bodyAlpha);
+        out.color = hasSegmentColor ? segmentColor : float4(bodyColor, bodyAlpha);
         return out;
     }
 
@@ -1044,6 +1053,7 @@ fragment WireframeFragmentOut wireframe_fragment(
     float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+    if (hasSegmentColor) edgeColor = segmentColor.rgb;
 
     // Depth-based edge alpha: near edges fully opaque, far edges fade
     float nearPlane = uniforms.cameraPosition.w;
@@ -1052,10 +1062,42 @@ fragment WireframeFragmentOut wireframe_fragment(
     // edgeIntensity: 0 = invisible, 1 = normal, 2 = fully opaque at all depths
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    if (hasSegmentColor) edgeAlpha *= segmentColor.a;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
     return out;
+}
+
+fragment WireframeFragmentOut wireframe_fragment(
+    WireframeVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    return wireframeFragmentColor(in, uniforms, bodyUniforms, false, float4(0.0));
+}
+
+// A segment colour for display. `segmentParams.y` is ViewportBody.edgeColorSpace: 0 = sRGB, drawn
+// as given; 1 = linear, encoded to sRGB. Alpha is coverage, not a colour, and is never encoded.
+inline float4 segmentDisplayColor(float4 color, uint2 segmentParams) {
+    if (segmentParams.y != 0u) color.rgb = linearToSrgb(color.rgb);
+    return color;
+}
+
+// Per-segment colour variant of wireframe_fragment (#140). Each native line is one segment, so its
+// colour is `segmentColors[segmentParams.x + primitiveID]`: `[[primitive_id]]` restarts at 0 for
+// each draw, and `segmentParams.x` is where the draw's slice (ViewportBody.edgeDrawRange) starts.
+fragment WireframeFragmentOut wireframe_segment_fragment(
+    WireframeVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant float4 *segmentColors [[buffer(3)]],
+    constant uint2 &segmentParams [[buffer(4)]],
+    uint primitiveID [[primitive_id]]
+) {
+    return wireframeFragmentColor(
+        in, uniforms, bodyUniforms, true,
+        segmentDisplayColor(segmentColors[segmentParams.x + primitiveID], segmentParams));
 }
 
 // MARK: - Quad-Expanded Wireframe Pipeline (variable width + dash patterns)
@@ -1176,10 +1218,14 @@ vertex QuadEdgeVertexOut quad_edge_vertex(
     return out;
 }
 
-fragment WireframeFragmentOut quad_edge_fragment(
-    QuadEdgeVertexOut in [[stage_in]],
-    constant EdgeUniforms &uniforms [[buffer(1)]],
-    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+// Shared body of quad_edge_fragment and quad_edge_segment_fragment; `hasSegmentColor` and
+// `segmentColor` behave as in wireframeFragmentColor (#140).
+inline WireframeFragmentOut quadEdgeFragmentColor(
+    QuadEdgeVertexOut in,
+    constant EdgeUniforms &uniforms,
+    constant BodyUniforms &bodyUniforms,
+    bool hasSegmentColor,
+    float4 segmentColor
 ) {
     // Clip plane discard
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -1225,7 +1271,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
     // Edge-only body (metallic = -1 sentinel): draw in the body colour, not the contrast edge colour.
     if (bodyUniforms.metallic < 0.0) {
         WireframeFragmentOut out;
-        out.color = float4(bodyColor, bodyAlpha);
+        out.color = hasSegmentColor ? segmentColor : float4(bodyColor, bodyAlpha);
         return out;
     }
 
@@ -1233,6 +1279,7 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
     float3 lightEdge = bodyColor * 0.4 + 0.6;
     float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+    if (hasSegmentColor) edgeColor = segmentColor.rgb;
 
     // Depth fade and edgeIntensity scaling, identical to wireframe_fragment.
     float edgeIntensity = max(uniforms.edgeParams.y, 0.0);
@@ -1241,15 +1288,41 @@ fragment WireframeFragmentOut quad_edge_fragment(
     float linearDepth = edgeFadeDepth(in.worldPosition, uniforms.viewMatrix, nearPlane, farPlane);
     float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
     float edgeAlpha = alpha * mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    if (hasSegmentColor) edgeAlpha *= segmentColor.a;
 
     WireframeFragmentOut out;
     out.color = float4(edgeColor, edgeAlpha);
     return out;
 }
 
+fragment WireframeFragmentOut quad_edge_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]]
+) {
+    return quadEdgeFragmentColor(in, uniforms, bodyUniforms, false, float4(0.0));
+}
+
+// Per-segment colour variant of quad_edge_fragment (#140). Each segment is six strip vertices, so
+// `[[primitive_id]] / 6` is its index within the draw (as in pick_quad_edge_fragment), and
+// `segmentParams` is as in wireframe_segment_fragment: x = the draw's first segment, y = colour space.
+fragment WireframeFragmentOut quad_edge_segment_fragment(
+    QuadEdgeVertexOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant float4 *segmentColors [[buffer(3)]],
+    constant uint2 &segmentParams [[buffer(4)]],
+    uint primitiveID [[primitive_id]]
+) {
+    return quadEdgeFragmentColor(
+        in, uniforms, bodyUniforms, true,
+        segmentDisplayColor(segmentColors[segmentParams.x + primitiveID / 6u], segmentParams));
+}
+
 // Quad-expanded edge pick — kind=1, so picks cover the same width as the visible edge.
-// primSource.y == 0: primitiveID is the segment index (each segment is six strip vertices, so
-// triangle / 6). primSource.y == 1: primitiveID is primSource.x (the arc index, one draw per arc).
+// primSource.y == 0: the segment index is primSource.x (the draw's first segment, 0 unless a
+// ViewportBody.edgeDrawRange slice is drawn) + primitiveID / 6 (each segment is six strip
+// vertices). primSource.y == 1: the id is primSource.x (the arc index, one draw per arc).
 // The packing must match pick_line_fragment.
 fragment PickFragmentOut pick_quad_edge_fragment(
     QuadEdgeVertexOut in [[stage_in]],
@@ -1264,7 +1337,7 @@ fragment PickFragmentOut pick_quad_edge_fragment(
             discard_fragment();
         }
     }
-    uint segmentID = primSource.y != 0u ? primSource.x : primitiveID / 6u;
+    uint segmentID = primSource.y != 0u ? primSource.x : primSource.x + primitiveID / 6u;
     PickFragmentOut out;
     out.pickID = bodyUniforms.objectIndex | ((segmentID & 0x3FFFu) << 16) | (1u << 30);
     return out;
