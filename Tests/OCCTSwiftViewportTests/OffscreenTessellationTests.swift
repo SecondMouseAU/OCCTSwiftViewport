@@ -185,17 +185,10 @@ struct OffscreenTessellationTests {
         let offscreen = try ParityRender.render([sphere], options, renderer: renderer)
         #expect(offscreen.pixels == livePixels, "\(quality): offscreen differs from live")
 
-        // Each path must leave a mark, or the comparison would pass with it switched off.
-        let tessellated = try ParityRender.render(
-            [sphere], Self.options(.enhanced, adaptive: false, uniform: .fixed(8)),
-            renderer: renderer)
+        // Each path must leave a mark, or the comparison would pass with it switched off. Meshlets
+        // subdivide with the PN patches too (#175), so both paths round the faceted sphere.
         let flat = try ParityRender.render([sphere], Self.options(.standard), renderer: renderer)
-        if paths.meshShaders {
-            // Meshlets draw the mesh as given: no PN rounding, unlike the tessellated fallback.
-            #expect(offscreen.pixels != tessellated.pixels)
-        } else {
-            #expect(offscreen.pixels != flat.pixels)
-        }
+        #expect(offscreen.pixels != flat.pixels)
     }
 
     @Test("Tessellated offscreen output is deterministic")

@@ -169,6 +169,7 @@ extension RendererSharedSetup {
         stencilPixelFormat: MTLPixelFormat = .invalid,
         sampleCount: Int = 1,
         blending: Bool = false,
+        colorWriteMask: MTLColorWriteMask = .all,
         label: String,
         reflected: ((MTLRenderPipelineReflection) -> Void)? = nil
     ) throws -> MTLRenderPipelineState {
@@ -183,6 +184,7 @@ extension RendererSharedSetup {
         descriptor.fragmentFunction = fragmentFn
         if colorPixelFormat != .invalid {
             descriptor.colorAttachments[0].pixelFormat = colorPixelFormat
+            descriptor.colorAttachments[0].writeMask = colorWriteMask
             if blending, let attachment = descriptor.colorAttachments[0] {
                 // Per-body surface transparency (issue #53).
                 apply(.sourceOver, to: attachment)
@@ -194,7 +196,7 @@ extension RendererSharedSetup {
         }
         descriptor.rasterSampleCount = sampleCount
         descriptor.maxTotalThreadsPerObjectThreadgroup = 1
-        descriptor.maxTotalThreadsPerMeshThreadgroup = kMeshletMaxTriangles
+        descriptor.maxTotalThreadsPerMeshThreadgroup = kMeshletMeshThreads
         do {
             let (state, reflection) = try device.makeRenderPipelineState(
                 descriptor: descriptor, options: reflected == nil ? [] : [.bindingInfo])
@@ -241,6 +243,32 @@ extension RendererSharedSetup {
             device: device, library: library, meshFunction: "meshlet_depth_mesh",
             fragmentFunction: "depth_only_clip_fragment", depthPixelFormat: .depth32Float,
             label: label, reflected: reflected)
+    }
+
+    /// The mesh-shader per-triangle highlight pipeline (#175): `meshlet_highlight_mesh` +
+    /// `meshlet_highlight_fragment`, blended over the shaded surface.
+    static func makeMeshShaderHighlightPipelineState(
+        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
+        label: String = "mesh_highlight"
+    ) throws -> MTLRenderPipelineState {
+        try makeMeshShaderPipelineState(
+            device: device, library: library, meshFunction: "meshlet_highlight_mesh",
+            fragmentFunction: "meshlet_highlight_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount, blending: true, label: label)
+    }
+
+    /// The colourless selection stencil mask on the mesh-shader surface (#175):
+    /// `meshlet_depth_mesh` + `depth_only_clip_fragment`, writing no colour.
+    static func makeMeshShaderStencilMaskPipelineState(
+        device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat,
+        label: String = "mesh_stencil_mask"
+    ) throws -> MTLRenderPipelineState {
+        try makeMeshShaderPipelineState(
+            device: device, library: library, meshFunction: "meshlet_depth_mesh",
+            fragmentFunction: "depth_only_clip_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount, colorWriteMask: [], label: label)
     }
 
     // MARK: - Draws
@@ -298,26 +326,30 @@ extension RendererSharedSetup {
             overMeshletSurface ? meshletHighlightDepthBias : 0, slopeScale: 0, clamp: 0)
     }
 
-    /// Draws a body's meshlets with the mesh-shader `pipeline`.
+    /// Draws a body's meshlets with the mesh-shader `pipeline`, each triangle subdivided by its
+    /// per-frame tessellation factors (#175).
     ///
-    /// `vertexBuffer` is the body's interleaved (stride 6) vertex buffer; `uniforms` is bound at
-    /// object buffer 1 and mesh buffer 4. The caller sets fragment state.
+    /// The object function reads the factors at buffer 2 and the mesh function the PN patches at
+    /// buffer 7, both from `meshlets.tessellation`; the caller must have updated the factors
+    /// this frame (`TessellationManager.updateTessFactors`). `uniforms` is bound at object
+    /// buffer 1 and mesh buffer 4. The caller sets fragment state. Does nothing for meshlets
+    /// built without patches.
     ///
     /// The shaded pipeline passes `vertexColors` (#142), which adds the colours at mesh buffer 5
-    /// and their mode at 6. The shadow and depth pipelines leave it `nil`.
+    /// and their mode at 6. The other pipelines leave it `nil`.
     static func encodeMeshletDraw<U>(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         meshlets: MeshletBuffers,
-        vertexBuffer: MTLBuffer,
         uniforms: inout U,
         vertexColors: VertexColorBinding? = nil
     ) {
+        guard let tessellation = meshlets.tessellation else { return }
         encoder.setRenderPipelineState(pipeline)
         encoder.setObjectBuffer(meshlets.descriptorBuffer, offset: 0, index: 0)
         encoder.setObjectBytes(&uniforms, length: MemoryLayout<U>.size, index: 1)
+        encoder.setObjectBuffer(tessellation.tessFactorBuffer, offset: 0, index: 2)
         encoder.setMeshBuffer(meshlets.descriptorBuffer, offset: 0, index: 0)
-        encoder.setMeshBuffer(vertexBuffer, offset: 0, index: 1)
         encoder.setMeshBuffer(meshlets.vertexIndexBuffer, offset: 0, index: 2)
         encoder.setMeshBuffer(meshlets.triangleIndexBuffer, offset: 0, index: 3)
         encoder.setMeshBytes(&uniforms, length: MemoryLayout<U>.size, index: 4)
@@ -326,10 +358,11 @@ extension RendererSharedSetup {
             encoder.setMeshBuffer(vertexColors.colors, offset: 0, index: 5)
             encoder.setMeshBytes(&mode, length: MemoryLayout<UInt32>.size, index: 6)
         }
+        encoder.setMeshBuffer(tessellation.patchDataBuffer, offset: 0, index: 7)
         encoder.drawMeshThreadgroups(
             MTLSize(width: meshlets.meshletCount, height: 1, depth: 1),
             threadsPerObjectThreadgroup: MTLSize(width: 1, height: 1, depth: 1),
-            threadsPerMeshThreadgroup: MTLSize(width: kMeshletMaxTriangles, height: 1, depth: 1))
+            threadsPerMeshThreadgroup: MTLSize(width: kMeshletMeshThreads, height: 1, depth: 1))
     }
 }
 
@@ -345,11 +378,14 @@ extension RendererSharedBuffers {
     /// normals) and
     /// meshlets from `smoothedVertexData` when smoothing ran, so both describe the same mesh.
     ///
+    /// Meshlets subdivide their triangles from the same patches and per-frame factors (#175), so
+    /// they are built only when the patches are, and carry them in `MeshletBuffers.tessellation`.
+    ///
     /// - Parameters:
     ///   - body: The body the buffers are for.
     ///   - smoothedVertexData: The auto-smoothed interleaved data, or `nil` when none ran.
     ///   - mesh: The body's uploaded mesh buffers.
-    ///   - tessellationManager: Builds the patches; `nil` skips tessellation.
+    ///   - tessellationManager: Builds the patches; `nil` skips tessellation and meshlets.
     ///   - buildMeshlets: Whether the mesh-shader path is in use.
     ///   - creaseAngle: `normalSmoothingCreaseAngle`; PN patches keep edges sharper than this flat.
     ///   - device: Device for the meshlet buffers.
@@ -376,12 +412,13 @@ extension RendererSharedBuffers {
                 commandQueue: commandQueue)
         }
         var meshlets: MeshletBuffers?
-        if buildMeshlets,
+        if buildMeshlets, let tessellation,
             let source = ViewportRenderer.meshletSourceVertexData(
                 for: body, smoothedVertexData: smoothedVertexData)
         {
             meshlets = MeshletBuilder.build(
                 vertexData: source, indices: body.indices, device: device)
+            meshlets?.tessellation = tessellation
         }
         return (tessellation, meshlets)
     }
@@ -428,7 +465,7 @@ extension RendererSharedBuffers {
 struct SurfaceRefinement: Hashable {
     /// PN-triangle tessellation (`.enhanced`, and `.maximum` without mesh shaders).
     var tessellation = false
-    /// Mesh shaders (`.maximum` on Apple9).
+    /// Mesh shaders with PN subdivision (`.maximum` on Apple9).
     var meshShaders = false
 
     static let none = SurfaceRefinement()
@@ -456,6 +493,10 @@ struct RefinedPipelines {
     let meshShaded: MTLRenderPipelineState?
     let meshShadow: MTLRenderPipelineState?
     let meshDepthOnly: MTLRenderPipelineState?
+    /// Highlight, stencil mask and selection mask on the mesh-shader surface (#175).
+    let meshHighlight: MTLRenderPipelineState?
+    let meshStencilMask: MTLRenderPipelineState?
+    let meshSelectionMask: MTLRenderPipelineState?
 
     init(device: MTLDevice, library: MTLLibrary, key: Key) {
         let depthFormat: MTLPixelFormat = .depth32Float_stencil8
@@ -490,10 +531,21 @@ struct RefinedPipelines {
                 device: device, library: library, label: "offscreen_mesh_shadow")
             meshDepthOnly = try? RendererSharedSetup.makeMeshShaderDepthOnlyPipelineState(
                 device: device, library: library, label: "offscreen_mesh_depth_only")
+            meshHighlight = try? RendererSharedSetup.makeMeshShaderHighlightPipelineState(
+                device: device, library: library, sampleCount: key.sampleCount,
+                depthFormat: depthFormat, label: "offscreen_mesh_highlight")
+            meshStencilMask = try? RendererSharedSetup.makeMeshShaderStencilMaskPipelineState(
+                device: device, library: library, sampleCount: key.sampleCount,
+                depthFormat: depthFormat, label: "offscreen_mesh_stencil_mask")
+            meshSelectionMask = RendererSharedSetup.makeMeshShaderSelectionMaskPipelineState(
+                device: device, library: library, label: "offscreen_mesh_selection_mask")
         } else {
             meshShaded = nil
             meshShadow = nil
             meshDepthOnly = nil
+            meshHighlight = nil
+            meshStencilMask = nil
+            meshSelectionMask = nil
         }
     }
 
@@ -502,6 +554,7 @@ struct RefinedPipelines {
     func refinement(canTessellate: Bool) -> SurfaceRefinement {
         SurfaceRefinement(
             tessellation: canTessellate && tessellatedShaded != nil,
-            meshShaders: meshShaded != nil)
+            // Meshlets subdivide from the PN patches and factors the manager builds (#175).
+            meshShaders: canTessellate && meshShaded != nil)
     }
 }

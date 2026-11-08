@@ -300,7 +300,8 @@ let controller = ViewportController(configuration: .cadHighQuality)
 ```
 
 **What controls smoothness**
-- **Surfaces:** `renderingQuality = .enhanced` (or `.maximum`) enables adaptive
+- **Surfaces:** `renderingQuality = .enhanced` (or `.maximum`, which does the
+  same subdivision in mesh shaders on Apple9 GPUs) enables adaptive
   Phong tessellation. Requires an Apple3+ GPU (falls back gracefully). Smooth
   silhouettes need reasonable per-vertex normals — OCCT meshes provide these. For
   flat / per-face-normalled meshes (e.g. STL), set `autoSmoothNormals = true`

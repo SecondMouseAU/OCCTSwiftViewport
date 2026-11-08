@@ -22,7 +22,7 @@ let options = OffscreenRenderOptions(matching: controller, width: 1024, height: 
 ```
 
 `renderingQuality` works as live: `.enhanced` tessellates curved surfaces with PN triangles
-and `.maximum` uses mesh shaders on Apple9 GPUs, with a fixed (never load-governed) factor so
+and `.maximum` does the same in mesh shaders on Apple9 GPUs, with a fixed (never load-governed) factor so
 the output is reproducible. The headless path does not do TAA or depth of field; see
 [Parity with the live viewport](../../reference/Rendering.md#parity-with-the-live-viewport).
 

@@ -80,7 +80,7 @@ bits 16–29 : primitiveID  (14 bits: triangle/segment/point index within body)
 bits 30–31 : kind         ( 2 bits: 0=face, 1=edge, 2=vertex)
 ```
 
-For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data. Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
+For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data, the same for every sub-triangle of a subdivided input triangle (#175). Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
 
 ### Limits
 

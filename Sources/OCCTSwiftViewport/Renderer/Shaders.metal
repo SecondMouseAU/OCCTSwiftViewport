@@ -2567,10 +2567,224 @@ struct MeshletDesc {
     uint   triangleCount;
 };
 
-// Payload passed from object shader to mesh shader
+// --- PN-triangle subdivision in the mesh stage (#175) ---
+//
+// At `.maximum` a meshlet's triangles are subdivided like the hardware-tessellated path
+// (`tessellated_vertex`): each input triangle is evaluated as the cubic Bezier patch
+// `compute_pn_patches` built for it (`pnPatchPosition`), on a barycentric grid of M segments per
+// edge, so the shaded, shadow-map, depth, pick, highlight and selection-mask passes all draw the
+// same surface as `.enhanced`.
+//
+// The factors come from the same per-patch buffer `compute_tess_factors` fills for the hardware
+// path each frame, so `tessellationMaxFactor`, `adaptiveTessellation` and
+// `uniformTessellationFactor` act on meshlets too. Each edge factor is rounded up to an integer
+// segment count 1...PN_MAX_SEGMENTS. The edge factors of the triangles that share an edge agree,
+// and the grid's boundary vertices are snapped onto that edge's own segment count, so
+// neighbouring triangles, and meshlets, subdivided at different levels still meet without cracks.
+//
+// A mesh threadgroup can write 256 vertices and 512 primitives, and one meshlet of 64 triangles at
+// M = 2 already needs 384 vertices, so the object stage splits a meshlet into "chunks" of whole
+// triangles that fit (`pnPlanMeshlet`) and launches one mesh threadgroup per chunk. The vertices
+// of a triangle are not shared with its neighbours, as in the hardware path.
+//
+// Mesh output sizes are the hardware maxima. PN_MAX_SEGMENTS = 16 caps the subdivision: one
+// triangle (153 vertices, 256 primitives) then always fits a chunk, and a 4 px segment spans a
+// 64 px edge. The hardware path goes up to 64; the cap is mirrored by `kMeshletMaxSegments` in
+// MeshletBuilder.swift.
+#define PN_MAX_SEGMENTS 16u
+#define PN_MAX_MESHLET_TRIANGLES 64u
+#define PN_CHUNK_VERTICES 256u
+#define PN_CHUNK_PRIMITIVES 512u
+#define PN_MESH_THREADS 128u
+
+// Payload passed from object shader to mesh shader: the meshlet, how its triangles are split into
+// chunks, and each triangle's segment counts.
 struct MeshletPayload {
     uint meshletIndex;
+    uint chunkCount;
+    uint chunkFirst[PN_MAX_MESHLET_TRIANGLES + 1];  // meshlet-local first triangle of each chunk
+    uchar4 segments[PN_MAX_MESHLET_TRIANGLES];      // per triangle: M, edge 0, edge 1, edge 2
 };
+
+// Segments per edge for a tessellation factor: the next integer up, 1...PN_MAX_SEGMENTS.
+inline uint pnEdgeSegments(half factor) {
+    return clamp(uint(ceil(float(factor))), 1u, PN_MAX_SEGMENTS);
+}
+
+// (M, F0, F1, F2) for one triangle: F_e is the segment count of edge e (edge 0 is u = 0, between
+// vertices 1 and 2; edge 1 is v = 0; edge 2 is w = 0, as in compute_tess_factors) and M is the
+// interior grid's segment count, the largest of them and the inside factor.
+inline uchar4 pnTriangleSegments(MTLTriangleTessellationFactorsHalf f) {
+    uint f0 = pnEdgeSegments(f.edgeTessellationFactor[0]);
+    uint f1 = pnEdgeSegments(f.edgeTessellationFactor[1]);
+    uint f2 = pnEdgeSegments(f.edgeTessellationFactor[2]);
+    uint m = max(max(f0, f1), max(f2, pnEdgeSegments(f.insideTessellationFactor)));
+    return uchar4(m, f0, f1, f2);
+}
+
+// Vertices and primitives of a triangle subdivided into M segments per edge.
+inline uint pnVertexCount(uint m) { return (m + 1u) * (m + 2u) / 2u; }
+inline uint pnPrimitiveCount(uint m) { return m * m; }
+
+// Splits a meshlet's triangles into chunks that each fit one mesh threadgroup's output and writes
+// the payload. Returns the number of chunks, which is the mesh grid size.
+inline uint pnPlanMeshlet(
+    object_data MeshletPayload& payload, uint meshletIndex, uint triangleOffset,
+    uint triangleCount, device const MTLTriangleTessellationFactorsHalf* factors
+) {
+    payload.meshletIndex = meshletIndex;
+    payload.chunkFirst[0] = 0;
+    uint chunk = 0, vertices = 0, primitives = 0;
+    for (uint t = 0; t < triangleCount; t++) {
+        uchar4 seg = pnTriangleSegments(factors[triangleOffset + t]);
+        uint v = pnVertexCount(seg.x);
+        uint p = pnPrimitiveCount(seg.x);
+        if (vertices + v > PN_CHUNK_VERTICES || primitives + p > PN_CHUNK_PRIMITIVES) {
+            chunk++;
+            payload.chunkFirst[chunk] = t;
+            vertices = 0;
+            primitives = 0;
+        }
+        vertices += v;
+        primitives += p;
+        payload.segments[t] = seg;
+    }
+    payload.chunkFirst[chunk + 1] = triangleCount;
+    payload.chunkCount = chunk + 1;
+    return chunk + 1;
+}
+
+// Where each triangle of a chunk starts in the chunk's vertex and primitive output.
+struct PNChunkLayout {
+    uint vertexBase[PN_MAX_MESHLET_TRIANGLES + 1];
+    uint primitiveBase[PN_MAX_MESHLET_TRIANGLES + 1];  // [count] is the chunk's total
+};
+
+// Fills `layout` for the chunk `[first, first + count)`. Every thread of the threadgroup must
+// call it: it ends in a barrier.
+inline void pnBuildLayout(
+    threadgroup PNChunkLayout& layout, object_data const MeshletPayload& payload,
+    uint first, uint count, uint tid
+) {
+    if (tid == 0) {
+        uint v = 0, p = 0;
+        for (uint i = 0; i < count; i++) {
+            uint m = payload.segments[first + i].x;
+            layout.vertexBase[i] = v;
+            layout.primitiveBase[i] = p;
+            v += pnVertexCount(m);
+            p += pnPrimitiveCount(m);
+        }
+        layout.vertexBase[count] = v;
+        layout.primitiveBase[count] = p;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+// The triangle of a chunk (0...count-1) whose output range contains `slot`.
+inline uint pnFindTriangle(threadgroup const uint* base, uint count, uint slot) {
+    uint lo = 0, hi = count;
+    while (hi - lo > 1u) {
+        uint mid = (lo + hi) >> 1;
+        if (base[mid] <= slot) { lo = mid; } else { hi = mid; }
+    }
+    return lo;
+}
+
+// Index of grid vertex (a, b) in a triangle of M segments: rows of constant b, `M - b + 1` long.
+inline uint pnGridIndex(uint a, uint b, uint m) {
+    return b * (m + 1u) - ((b * (b - 1u)) >> 1) + a;
+}
+
+// Grid coordinates (a, b) of the vertex at `index`, the inverse of pnGridIndex.
+inline uint2 pnGridCoordinates(uint index, uint m) {
+    uint b = 0, rowStart = 0;
+    for (; b < m; b++) {
+        uint rowLength = m - b + 1u;
+        if (index < rowStart + rowLength) { break; }
+        rowStart += rowLength;
+    }
+    return uint2(index - rowStart, b);
+}
+
+// Barycentric (u, v, w) of grid vertex (a, b): u weighs the first corner, v the second, w the
+// third. A vertex on an edge is moved to the nearest vertex at or before it on that edge's own
+// F-segment subdivision, so the two triangles sharing the edge place identical vertices on it
+// whatever their interior resolutions.
+inline float3 pnBarycentric(uint a, uint b, uchar4 seg) {
+    uint m = seg.x;
+    uint c = m - a - b;
+    if (b == 0u) {            // w = 0, vertices 0 to 1
+        uint f = seg.w, k = (a * f) / m;
+        return float3(float(f - k) / float(f), float(k) / float(f), 0.0);
+    }
+    if (a == 0u) {            // v = 0, vertices 0 to 2
+        uint f = seg.z, k = (b * f) / m;
+        return float3(float(f - k) / float(f), 0.0, float(k) / float(f));
+    }
+    if (c == 0u) {            // u = 0, vertices 1 to 2
+        uint f = seg.y, k = (b * f) / m;
+        return float3(0.0, float(f - k) / float(f), float(k) / float(f));
+    }
+    return float3(float(c), float(a), float(b)) / float(m);
+}
+
+// One output vertex: the triangle (meshlet-local) it belongs to and its barycentric coordinates.
+struct PNVertexRef {
+    uint triangle;
+    float3 bary;
+};
+
+inline PNVertexRef pnLocateVertex(
+    threadgroup const PNChunkLayout& layout, object_data const MeshletPayload& payload,
+    uint first, uint count, uint slot
+) {
+    uint i = pnFindTriangle(layout.vertexBase, count, slot);
+    uchar4 seg = payload.segments[first + i];
+    uint2 ab = pnGridCoordinates(slot - layout.vertexBase[i], seg.x);
+    PNVertexRef ref;
+    ref.triangle = first + i;
+    ref.bary = pnBarycentric(ab.x, ab.y, seg);
+    return ref;
+}
+
+// One output primitive: its triangle (meshlet-local) and the chunk-local indices of its corners.
+struct PNPrimitiveRef {
+    uint triangle;
+    uint3 corners;
+};
+
+inline PNPrimitiveRef pnLocatePrimitive(
+    threadgroup const PNChunkLayout& layout, object_data const MeshletPayload& payload,
+    uint first, uint count, uint slot
+) {
+    uint i = pnFindTriangle(layout.primitiveBase, count, slot);
+    uint m = payload.segments[first + i].x;
+    uint q = slot - layout.primitiveBase[i];
+    // Row b holds M - b upward triangles and M - b - 1 downward ones, interleaved.
+    uint b = 0, rowStart = 0;
+    for (; b + 1u < m; b++) {
+        uint rowLength = 2u * (m - b) - 1u;
+        if (q < rowStart + rowLength) { break; }
+        rowStart += rowLength;
+    }
+    uint k = q - rowStart;
+    uint a = k >> 1;
+    uint base = layout.vertexBase[i];
+    PNPrimitiveRef ref;
+    ref.triangle = first + i;
+    // Both keep the winding of the input triangle.
+    if ((k & 1u) == 0u) {
+        ref.corners = uint3(
+            pnGridIndex(a, b, m), pnGridIndex(a + 1u, b, m), pnGridIndex(a, b + 1u, m));
+    } else {
+        ref.corners = uint3(
+            pnGridIndex(a + 1u, b, m), pnGridIndex(a + 1u, b + 1u, m),
+            pnGridIndex(a, b + 1u, m));
+    }
+    ref.corners += base;
+    return ref;
+}
 
 // Mesh shader output vertex — matches ShadedVertexOut for fragment reuse
 struct MeshVertex {
@@ -2583,8 +2797,9 @@ struct MeshVertex {
     uint   vertexColorMode [[flat]];
 };
 
-// Mesh output type: triangles, max 64 verts / 64 tris
-using ShadedMeshOutput = mesh<MeshVertex, void, 64, 64, topology::triangle>;
+// Mesh output type: triangles, up to a chunk's vertices and primitives (see PN_CHUNK_*).
+using ShadedMeshOutput =
+    mesh<MeshVertex, void, PN_CHUNK_VERTICES, PN_CHUNK_PRIMITIVES, topology::triangle>;
 
 // --- Object shaders: per-meshlet behind-camera culling ---
 //
@@ -2621,12 +2836,14 @@ void meshlet_object(
     object_data MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
     constant Uniforms& uniforms [[buffer(1)]],
+    device const MTLTriangleTessellationFactorsHalf* factors [[buffer(2)]],
     uint gid [[threadgroup_position_in_grid]],
     mesh_grid_properties mgp
 ) {
-    if (meshletInFront(meshlets[gid], uniforms.viewProjectionMatrix, uniforms.modelMatrix)) {
-        payload.meshletIndex = gid;
-        mgp.set_threadgroups_per_grid(uint3(1, 1, 1));
+    MeshletDesc m = meshlets[gid];
+    if (meshletInFront(m, uniforms.viewProjectionMatrix, uniforms.modelMatrix)) {
+        uint chunks = pnPlanMeshlet(payload, gid, m.triangleOffset, m.triangleCount, factors);
+        mgp.set_threadgroups_per_grid(uint3(chunks, 1, 1));
     } else {
         mgp.set_threadgroups_per_grid(uint3(0, 0, 0));
     }
@@ -2637,66 +2854,83 @@ void meshlet_shadow_object(
     object_data MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
     constant ShadowUniforms& uniforms [[buffer(1)]],
+    device const MTLTriangleTessellationFactorsHalf* factors [[buffer(2)]],
     uint gid [[threadgroup_position_in_grid]],
     mesh_grid_properties mgp
 ) {
-    if (meshletInFront(
-            meshlets[gid], uniforms.lightViewProjectionMatrix, uniforms.modelMatrix)) {
-        payload.meshletIndex = gid;
-        mgp.set_threadgroups_per_grid(uint3(1, 1, 1));
+    MeshletDesc m = meshlets[gid];
+    if (meshletInFront(m, uniforms.lightViewProjectionMatrix, uniforms.modelMatrix)) {
+        uint chunks = pnPlanMeshlet(payload, gid, m.triangleOffset, m.triangleCount, factors);
+        mgp.set_threadgroups_per_grid(uint3(chunks, 1, 1));
     } else {
         mgp.set_threadgroups_per_grid(uint3(0, 0, 0));
     }
 }
 
-// --- Mesh shader: emit triangles with PN triangle smoothing ---
+// --- Mesh shader: emit PN-subdivided triangles ---
+//
+// Every mesh function below follows the same shape: rebuild the chunk's layout, then run a strided
+// loop over its vertices and one over its primitives. A vertex is a point of one input triangle's
+// PN patch, evaluated with `pnPatchPosition` exactly as the tessellated path does, so all the
+// passes place a surface point identically. `patches` holds one PNPatchData per input triangle
+// and `m.triangleOffset + ref.triangle` is the input triangle's index (MeshletBuilder keeps
+// triangles in input order).
 
-[[mesh, max_total_threads_per_threadgroup(64)]]
+[[mesh, max_total_threads_per_threadgroup(PN_MESH_THREADS)]]
 void meshlet_mesh(
     object_data const MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
-    device float* vertices [[buffer(1)]],          // stride 6: px,py,pz,nx,ny,nz
     device uint32_t* vertexIndices [[buffer(2)]],  // meshlet vertex index buffer
     device uint8_t* triangleIndices [[buffer(3)]],  // meshlet triangle index buffer (3 per tri)
     constant Uniforms& uniforms [[buffer(4)]],
     const device float4* vertexColors [[buffer(5)]],  // per-vertex colour (#142), by globalIdx
     constant uint& vertexColorMode [[buffer(6)]],     // 0 = ignored; bound on every shaded draw
+    const device PNPatchData* patches [[buffer(7)]],
     ShadedMeshOutput output,
-    uint tid [[thread_index_in_threadgroup]]
+    uint tid [[thread_index_in_threadgroup]],
+    uint chunk [[threadgroup_position_in_grid]]
 ) {
     MeshletDesc m = meshlets[payload.meshletIndex];
+    uint first = payload.chunkFirst[chunk];
+    uint count = payload.chunkFirst[chunk + 1] - first;
+    threadgroup PNChunkLayout layout;
+    pnBuildLayout(layout, payload, first, count, tid);
+    output.set_primitive_count(layout.primitiveBase[count]);
 
-    // Set output counts
-    output.set_primitive_count(m.triangleCount);
+    for (uint slot = tid; slot < layout.vertexBase[count]; slot += PN_MESH_THREADS) {
+        PNVertexRef ref = pnLocateVertex(layout, payload, first, count, slot);
+        uint triangle = m.triangleOffset + ref.triangle;
+        PNPatchData p = patches[triangle];
+        float u = ref.bary.x, v = ref.bary.y, w = ref.bary.z;
 
-    // Emit vertices (each thread handles one vertex if tid < vertexCount)
-    if (tid < m.vertexCount) {
-        uint globalIdx = vertexIndices[m.vertexOffset + tid];
-        float3 pos = float3(vertices[globalIdx*6], vertices[globalIdx*6+1], vertices[globalIdx*6+2]);
-        float3 nrm = float3(vertices[globalIdx*6+3], vertices[globalIdx*6+4], vertices[globalIdx*6+5]);
+        // As tessellated_vertex: the corner normals blended by the barycentric weights, and the
+        // per-vertex colours (#142) of the triangle's three corners.
+        float3 normal = normalize(p.n200 * u + p.n020 * v + p.n002 * w);
+        float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(p, ref.bary), 1.0);
 
-        float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
-
-        MeshVertex v;
-        v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-        v.worldNormal = normalize(uniforms.normalMatrix * nrm);
-        v.worldPosition = worldPos.xyz;
-        v.viewNormal = normalize((uniforms.viewMatrix * float4(v.worldNormal, 0.0)).xyz);
-        v.clipPositionCopy = v.clipPosition;
-        v.vertexColorMode = vertexColorMode;
-        v.vertexColor = ((vertexColorMode & 3u) != 0u) ? vertexColors[globalIdx].rgb : float3(1.0);
-        output.set_vertex(tid, v);
+        MeshVertex vert;
+        vert.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        vert.worldNormal = normalize(uniforms.normalMatrix * normal);
+        vert.worldPosition = worldPos.xyz;
+        vert.viewNormal = normalize((uniforms.viewMatrix * float4(vert.worldNormal, 0.0)).xyz);
+        vert.clipPositionCopy = vert.clipPosition;
+        vert.vertexColorMode = vertexColorMode;
+        vert.vertexColor = float3(1.0);
+        if ((vertexColorMode & 3u) != 0u) {
+            uint corner = triangle * 3;
+            vert.vertexColor =
+                vertexColors[vertexIndices[m.vertexOffset + triangleIndices[corner]]].rgb * u
+                + vertexColors[vertexIndices[m.vertexOffset + triangleIndices[corner + 1]]].rgb * v
+                + vertexColors[vertexIndices[m.vertexOffset + triangleIndices[corner + 2]]].rgb * w;
+        }
+        output.set_vertex(slot, vert);
     }
 
-    // Emit triangles (each thread handles one triangle if tid < triangleCount)
-    if (tid < m.triangleCount) {
-        uint base = (m.triangleOffset + tid) * 3;
-        uint i0 = triangleIndices[base];
-        uint i1 = triangleIndices[base + 1];
-        uint i2 = triangleIndices[base + 2];
-        output.set_index(tid * 3, i0);
-        output.set_index(tid * 3 + 1, i1);
-        output.set_index(tid * 3 + 2, i2);
+    for (uint slot = tid; slot < layout.primitiveBase[count]; slot += PN_MESH_THREADS) {
+        PNPrimitiveRef prim = pnLocatePrimitive(layout, payload, first, count, slot);
+        output.set_index(slot * 3, prim.corners.x);
+        output.set_index(slot * 3 + 1, prim.corners.y);
+        output.set_index(slot * 3 + 2, prim.corners.z);
     }
 }
 
@@ -2707,79 +2941,164 @@ struct ShadowMeshVertex {
     float3 worldPosition;    // for clip plane testing (shadow_clip_fragment)
 };
 
-using ShadowMeshOutput = mesh<ShadowMeshVertex, void, 64, 64, topology::triangle>;
+using ShadowMeshOutput =
+    mesh<ShadowMeshVertex, void, PN_CHUNK_VERTICES, PN_CHUNK_PRIMITIVES, topology::triangle>;
 
-[[mesh, max_total_threads_per_threadgroup(64)]]
+[[mesh, max_total_threads_per_threadgroup(PN_MESH_THREADS)]]
 void meshlet_shadow_mesh(
     object_data const MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
-    device float* vertices [[buffer(1)]],
-    device uint32_t* vertexIndices [[buffer(2)]],
-    device uint8_t* triangleIndices [[buffer(3)]],
     constant ShadowUniforms& uniforms [[buffer(4)]],
+    const device PNPatchData* patches [[buffer(7)]],
     ShadowMeshOutput output,
-    uint tid [[thread_index_in_threadgroup]]
+    uint tid [[thread_index_in_threadgroup]],
+    uint chunk [[threadgroup_position_in_grid]]
 ) {
     MeshletDesc m = meshlets[payload.meshletIndex];
-    output.set_primitive_count(m.triangleCount);
+    uint first = payload.chunkFirst[chunk];
+    uint count = payload.chunkFirst[chunk + 1] - first;
+    threadgroup PNChunkLayout layout;
+    pnBuildLayout(layout, payload, first, count, tid);
+    output.set_primitive_count(layout.primitiveBase[count]);
 
-    if (tid < m.vertexCount) {
-        uint globalIdx = vertexIndices[m.vertexOffset + tid];
-        float3 pos = float3(vertices[globalIdx*6], vertices[globalIdx*6+1], vertices[globalIdx*6+2]);
-        float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
-        ShadowMeshVertex v;
-        v.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
-        v.worldPosition = worldPos.xyz;
-        output.set_vertex(tid, v);
+    for (uint slot = tid; slot < layout.vertexBase[count]; slot += PN_MESH_THREADS) {
+        PNVertexRef ref = pnLocateVertex(layout, payload, first, count, slot);
+        PNPatchData p = patches[m.triangleOffset + ref.triangle];
+        float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(p, ref.bary), 1.0);
+        ShadowMeshVertex vert;
+        vert.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+        vert.worldPosition = worldPos.xyz;
+        output.set_vertex(slot, vert);
     }
 
-    if (tid < m.triangleCount) {
-        uint base = (m.triangleOffset + tid) * 3;
-        output.set_index(tid * 3, uint(triangleIndices[base]));
-        output.set_index(tid * 3 + 1, uint(triangleIndices[base + 1]));
-        output.set_index(tid * 3 + 2, uint(triangleIndices[base + 2]));
+    for (uint slot = tid; slot < layout.primitiveBase[count]; slot += PN_MESH_THREADS) {
+        PNPrimitiveRef prim = pnLocatePrimitive(layout, payload, first, count, slot);
+        output.set_index(slot * 3, prim.corners.x);
+        output.set_index(slot * 3 + 1, prim.corners.y);
+        output.set_index(slot * 3 + 2, prim.corners.z);
     }
 }
 
 // --- Depth-only mesh shader variant ---
+//
+// Also the geometry of the selection stencil mask and selection mask (#175).
 
 struct DepthMeshVertex {
     float4 clipPosition [[position]];
     float3 worldPosition;    // for clip plane testing (depth_only_clip_fragment)
 };
 
-using DepthMeshOutput = mesh<DepthMeshVertex, void, 64, 64, topology::triangle>;
+using DepthMeshOutput =
+    mesh<DepthMeshVertex, void, PN_CHUNK_VERTICES, PN_CHUNK_PRIMITIVES, topology::triangle>;
 
-[[mesh, max_total_threads_per_threadgroup(64)]]
+[[mesh, max_total_threads_per_threadgroup(PN_MESH_THREADS)]]
 void meshlet_depth_mesh(
     object_data const MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
-    device float* vertices [[buffer(1)]],
-    device uint32_t* vertexIndices [[buffer(2)]],
-    device uint8_t* triangleIndices [[buffer(3)]],
     constant Uniforms& uniforms [[buffer(4)]],
+    const device PNPatchData* patches [[buffer(7)]],
     DepthMeshOutput output,
-    uint tid [[thread_index_in_threadgroup]]
+    uint tid [[thread_index_in_threadgroup]],
+    uint chunk [[threadgroup_position_in_grid]]
 ) {
     MeshletDesc m = meshlets[payload.meshletIndex];
-    output.set_primitive_count(m.triangleCount);
+    uint first = payload.chunkFirst[chunk];
+    uint count = payload.chunkFirst[chunk + 1] - first;
+    threadgroup PNChunkLayout layout;
+    pnBuildLayout(layout, payload, first, count, tid);
+    output.set_primitive_count(layout.primitiveBase[count]);
 
-    if (tid < m.vertexCount) {
-        uint globalIdx = vertexIndices[m.vertexOffset + tid];
-        float3 pos = float3(vertices[globalIdx*6], vertices[globalIdx*6+1], vertices[globalIdx*6+2]);
-        float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
-        DepthMeshVertex v;
-        v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-        v.worldPosition = worldPos.xyz;
-        output.set_vertex(tid, v);
+    for (uint slot = tid; slot < layout.vertexBase[count]; slot += PN_MESH_THREADS) {
+        PNVertexRef ref = pnLocateVertex(layout, payload, first, count, slot);
+        PNPatchData p = patches[m.triangleOffset + ref.triangle];
+        float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(p, ref.bary), 1.0);
+        DepthMeshVertex vert;
+        vert.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        vert.worldPosition = worldPos.xyz;
+        output.set_vertex(slot, vert);
     }
 
-    if (tid < m.triangleCount) {
-        uint base = (m.triangleOffset + tid) * 3;
-        output.set_index(tid * 3, uint(triangleIndices[base]));
-        output.set_index(tid * 3 + 1, uint(triangleIndices[base + 1]));
-        output.set_index(tid * 3 + 2, uint(triangleIndices[base + 2]));
+    for (uint slot = tid; slot < layout.primitiveBase[count]; slot += PN_MESH_THREADS) {
+        PNPrimitiveRef prim = pnLocatePrimitive(layout, payload, first, count, slot);
+        output.set_index(slot * 3, prim.corners.x);
+        output.set_index(slot * 3 + 1, prim.corners.y);
+        output.set_index(slot * 3 + 2, prim.corners.z);
     }
+}
+
+// --- Per-triangle highlight mesh shader variant (#175) ---
+//
+// The highlight over a mesh-shader surface, drawn from the same subdivided triangles as the
+// surface so it covers exactly what was shaded. Each sub-triangle carries its input triangle's
+// index, which indexes the style buffer.
+
+struct HighlightMeshVertex {
+    float4 clipPosition [[position]];
+    float3 worldPosition [[centroid_perspective]];  // MSAA-safe clip test, as HighlightVertexOut
+};
+
+struct HighlightMeshPrimitive {
+    uint triangleIndex [[flat]];
+};
+
+using HighlightMeshOutput =
+    mesh<HighlightMeshVertex, HighlightMeshPrimitive, PN_CHUNK_VERTICES, PN_CHUNK_PRIMITIVES,
+         topology::triangle>;
+
+[[mesh, max_total_threads_per_threadgroup(PN_MESH_THREADS)]]
+void meshlet_highlight_mesh(
+    object_data const MeshletPayload& payload [[payload]],
+    device MeshletDesc* meshlets [[buffer(0)]],
+    constant Uniforms& uniforms [[buffer(4)]],
+    const device PNPatchData* patches [[buffer(7)]],
+    HighlightMeshOutput output,
+    uint tid [[thread_index_in_threadgroup]],
+    uint chunk [[threadgroup_position_in_grid]]
+) {
+    MeshletDesc m = meshlets[payload.meshletIndex];
+    uint first = payload.chunkFirst[chunk];
+    uint count = payload.chunkFirst[chunk + 1] - first;
+    threadgroup PNChunkLayout layout;
+    pnBuildLayout(layout, payload, first, count, tid);
+    output.set_primitive_count(layout.primitiveBase[count]);
+
+    for (uint slot = tid; slot < layout.vertexBase[count]; slot += PN_MESH_THREADS) {
+        PNVertexRef ref = pnLocateVertex(layout, payload, first, count, slot);
+        PNPatchData p = patches[m.triangleOffset + ref.triangle];
+        float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(p, ref.bary), 1.0);
+        HighlightMeshVertex vert;
+        vert.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        vert.worldPosition = worldPos.xyz;
+        output.set_vertex(slot, vert);
+    }
+
+    for (uint slot = tid; slot < layout.primitiveBase[count]; slot += PN_MESH_THREADS) {
+        PNPrimitiveRef ref = pnLocatePrimitive(layout, payload, first, count, slot);
+        output.set_index(slot * 3, ref.corners.x);
+        output.set_index(slot * 3 + 1, ref.corners.y);
+        output.set_index(slot * 3 + 2, ref.corners.z);
+        HighlightMeshPrimitive prim;
+        prim.triangleIndex = m.triangleOffset + ref.triangle;
+        output.set_primitive(slot, prim);
+    }
+}
+
+struct HighlightMeshFragmentIn {
+    HighlightMeshVertex vert;
+    HighlightMeshPrimitive prim;
+};
+
+fragment HighlightFragmentOut meshlet_highlight_fragment(
+    HighlightMeshFragmentIn in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant float4 *triangleStyles [[buffer(2)]]
+) {
+    if (isClippedBySectionPlanes(in.vert.worldPosition, uniforms)) discard_fragment();
+    float4 style = triangleStyles[in.prim.triangleIndex];
+    if (style.a <= 0.0) discard_fragment();
+    HighlightFragmentOut out;
+    out.color = style;
+    return out;
 }
 
 // --- Pick mesh shader variant ---
@@ -2791,45 +3110,51 @@ struct PickMeshVertex {
 
 // In a mesh pipeline [[primitive_id]] is the meshlet-local primitive (0-63), so the global
 // triangle index travels as per-primitive data instead (issue #136, L10). MeshletBuilder keeps
-// triangles in input order, so the global index is triangleOffset + local index.
+// triangles in input order, so the global index is triangleOffset + local index. Every
+// sub-triangle of a subdivided input triangle carries that input triangle's index (#175).
 struct PickMeshPrimitive {
     uint triangleIndex [[flat]];
 };
 
-using PickMeshOutput = mesh<PickMeshVertex, PickMeshPrimitive, 64, 64, topology::triangle>;
+using PickMeshOutput =
+    mesh<PickMeshVertex, PickMeshPrimitive, PN_CHUNK_VERTICES, PN_CHUNK_PRIMITIVES,
+         topology::triangle>;
 
-[[mesh, max_total_threads_per_threadgroup(64)]]
+[[mesh, max_total_threads_per_threadgroup(PN_MESH_THREADS)]]
 void meshlet_pick_mesh(
     object_data const MeshletPayload& payload [[payload]],
     device MeshletDesc* meshlets [[buffer(0)]],
-    device float* vertices [[buffer(1)]],
-    device uint32_t* vertexIndices [[buffer(2)]],
-    device uint8_t* triangleIndices [[buffer(3)]],
     constant Uniforms& uniforms [[buffer(4)]],
+    const device PNPatchData* patches [[buffer(7)]],
     PickMeshOutput output,
-    uint tid [[thread_index_in_threadgroup]]
+    uint tid [[thread_index_in_threadgroup]],
+    uint chunk [[threadgroup_position_in_grid]]
 ) {
     MeshletDesc m = meshlets[payload.meshletIndex];
-    output.set_primitive_count(m.triangleCount);
+    uint first = payload.chunkFirst[chunk];
+    uint count = payload.chunkFirst[chunk + 1] - first;
+    threadgroup PNChunkLayout layout;
+    pnBuildLayout(layout, payload, first, count, tid);
+    output.set_primitive_count(layout.primitiveBase[count]);
 
-    if (tid < m.vertexCount) {
-        uint globalIdx = vertexIndices[m.vertexOffset + tid];
-        float3 pos = float3(vertices[globalIdx*6], vertices[globalIdx*6+1], vertices[globalIdx*6+2]);
-        float4 worldPos = uniforms.modelMatrix * float4(pos, 1.0);
-        PickMeshVertex v;
-        v.clipPosition = uniforms.viewProjectionMatrix * worldPos;
-        v.worldPosition = worldPos.xyz;
-        output.set_vertex(tid, v);
+    for (uint slot = tid; slot < layout.vertexBase[count]; slot += PN_MESH_THREADS) {
+        PNVertexRef ref = pnLocateVertex(layout, payload, first, count, slot);
+        PNPatchData p = patches[m.triangleOffset + ref.triangle];
+        float4 worldPos = uniforms.modelMatrix * float4(pnPatchPosition(p, ref.bary), 1.0);
+        PickMeshVertex vert;
+        vert.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+        vert.worldPosition = worldPos.xyz;
+        output.set_vertex(slot, vert);
     }
 
-    if (tid < m.triangleCount) {
-        uint base = (m.triangleOffset + tid) * 3;
-        output.set_index(tid * 3, uint(triangleIndices[base]));
-        output.set_index(tid * 3 + 1, uint(triangleIndices[base + 1]));
-        output.set_index(tid * 3 + 2, uint(triangleIndices[base + 2]));
+    for (uint slot = tid; slot < layout.primitiveBase[count]; slot += PN_MESH_THREADS) {
+        PNPrimitiveRef ref = pnLocatePrimitive(layout, payload, first, count, slot);
+        output.set_index(slot * 3, ref.corners.x);
+        output.set_index(slot * 3 + 1, ref.corners.y);
+        output.set_index(slot * 3 + 2, ref.corners.z);
         PickMeshPrimitive prim;
-        prim.triangleIndex = m.triangleOffset + tid;
-        output.set_primitive(tid, prim);
+        prim.triangleIndex = m.triangleOffset + ref.triangle;
+        output.set_primitive(slot, prim);
     }
 }
 
