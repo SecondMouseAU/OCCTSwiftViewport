@@ -9,7 +9,7 @@ import CoreGraphics
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("OffscreenRenderer measurement overlay")
+@Suite("OffscreenRenderer measurement overlay", .requiresMetalDevice)
 struct OffscreenRendererMeasurementTests {
 
     @Test("Empty measurements list leaves the image unchanged")

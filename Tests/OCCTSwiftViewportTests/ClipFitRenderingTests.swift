@@ -15,7 +15,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Clip-plane fit and edge depth bias rendering")
+@Suite("Clip-plane fit and edge depth bias rendering", .requiresMetalDevice)
 struct ClipFitRenderingTests {
 
     private static let size = 128

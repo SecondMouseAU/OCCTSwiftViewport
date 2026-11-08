@@ -9,7 +9,7 @@ import CoreGraphics
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("OffscreenRenderer per-body transform")
+@Suite("OffscreenRenderer per-body transform", .requiresMetalDevice)
 struct OffscreenTransformTests {
 
     @Test("A body's transform offsets it in headless renders (#55)")

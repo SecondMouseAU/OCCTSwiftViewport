@@ -374,7 +374,7 @@ enum ViewportRenderBattery {
 // MARK: - Tests
 
 @MainActor
-@Suite("ViewportRenderer headless frame rendering")
+@Suite("ViewportRenderer headless frame rendering", .requiresMetalDevice)
 struct ViewportRendererHeadlessTests {
 
     /// Renders the whole battery once, returning `nil` when Metal is unavailable.

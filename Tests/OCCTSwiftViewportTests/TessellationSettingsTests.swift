@@ -12,7 +12,7 @@ import simd
 
 @testable import OCCTSwiftViewport
 
-@Suite("Tessellation settings")
+@Suite("Tessellation settings", .requiresMetalDevice)
 struct TessellationSettingsTests {
 
     // MARK: - Max-factor clamp

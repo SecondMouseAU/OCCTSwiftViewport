@@ -110,7 +110,7 @@ struct EnvironmentMapSyncTests {
 // MARK: - Headless shading
 
 @MainActor
-@Suite("Lighting configuration fields affect shading")
+@Suite("Lighting configuration fields affect shading", .requiresMetalDevice)
 struct LightingConfigShadingTests {
 
     /// Camera above the origin looking down −Z (identity rotation = the top view).

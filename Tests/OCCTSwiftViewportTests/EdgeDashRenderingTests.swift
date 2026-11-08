@@ -13,7 +13,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Edge dash rendering")
+@Suite("Edge dash rendering", .requiresMetalDevice)
 struct EdgeDashRenderingTests {
 
     // Camera at +Z looking down -Z at the origin, orthographic so world units map evenly to pixels.

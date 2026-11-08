@@ -225,7 +225,7 @@ enum DisplayModeScenes {
 // MARK: - OffscreenRenderer
 
 @MainActor
-@Suite("Display modes — OffscreenRenderer")
+@Suite("Display modes — OffscreenRenderer", .requiresMetalDevice)
 struct OffscreenDisplayModeTests {
 
     private let bg = SIMD4<Float>(0, 0, 0, 1)
@@ -373,7 +373,7 @@ struct OffscreenDisplayModeTests {
 // MARK: - ViewportRenderer (live draw path, headless)
 
 @MainActor
-@Suite("Display modes — ViewportRenderer")
+@Suite("Display modes — ViewportRenderer", .requiresMetalDevice)
 struct LiveDisplayModeTests {
 
     static let size = 96

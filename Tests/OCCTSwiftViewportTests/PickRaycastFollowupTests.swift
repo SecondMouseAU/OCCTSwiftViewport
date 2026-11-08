@@ -211,7 +211,7 @@ private func pick(_ renderer: ViewportRenderer, at pixel: SIMD2<Int>) async -> P
 // MARK: - #182 native edge pick bias
 
 @MainActor
-@Suite("Native edge picks win over the tilted face they lie on (#182)")
+@Suite("Native edge picks win over the tilted face they lie on (#182)", .requiresMetalDevice)
 struct NativeEdgePickBiasTests {
 
     /// Large enough that the bias, a fixed fraction of the NDC height, covers the half-pixel
@@ -263,7 +263,7 @@ struct NativeEdgePickBiasTests {
 // MARK: - #183 shadow frustum
 
 @MainActor
-@Suite("Overlay bodies don't enlarge the shadow frustum (#183)")
+@Suite("Overlay bodies don't enlarge the shadow frustum (#183)", .requiresMetalDevice)
 struct ShadowFrustumOverlayTests {
 
     static let size = 160
@@ -409,7 +409,7 @@ struct FrameBufferPoolTrimTests {
 }
 
 @MainActor
-@Suite("Overlapping picks read back into their own buffers (#184)")
+@Suite("Overlapping picks read back into their own buffers (#184)", .requiresMetalDevice)
 struct OverlappingPickTests {
 
     /// A quad left of centre and one right of it, seen head-on in a 160 x 120 frame.

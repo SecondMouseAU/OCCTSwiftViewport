@@ -9,7 +9,7 @@ import CoreGraphics
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Visible point-cloud rendering")
+@Suite("Visible point-cloud rendering", .requiresMetalDevice)
 struct ViewportPointCloudRenderingTests {
 
     // MARK: - Acceptance: 10k points produce non-empty pixel coverage

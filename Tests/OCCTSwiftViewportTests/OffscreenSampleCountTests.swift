@@ -43,7 +43,7 @@ struct OffscreenSampleCountMappingTests {
 }
 
 @MainActor
-@Suite("Offscreen MSAA sample count rendering")
+@Suite("Offscreen MSAA sample count rendering", .requiresMetalDevice)
 struct OffscreenSampleCountRenderTests {
 
     // Camera at +Z (identity rotation) looking down -Z at the origin.

@@ -146,7 +146,7 @@ private enum ClipScene {
 }
 
 @MainActor
-@Suite("Section clip planes apply to every pass")
+@Suite("Section clip planes apply to every pass", .requiresMetalDevice)
 struct ClipPlanePassTests {
 
     /// Region-picks the whole headless frame and returns the body IDs hit.

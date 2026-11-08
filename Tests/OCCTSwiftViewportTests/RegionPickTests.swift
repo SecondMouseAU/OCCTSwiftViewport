@@ -181,7 +181,7 @@ struct RegionPickDecodeTests {
 }
 
 @MainActor
-@Suite("ViewportRenderer.performRegionPick")
+@Suite("ViewportRenderer.performRegionPick", .requiresMetalDevice)
 struct RegionPickRendererTests {
 
     @Test("Before any frame has drawn, the pick texture is empty and the region pick completes with []")
@@ -244,7 +244,7 @@ struct RegionPickSelectionFilterTests {
 }
 
 @MainActor
-@Suite("ViewportController.performRegionPick")
+@Suite("ViewportController.performRegionPick", .requiresMetalDevice)
 struct RegionPickControllerTests {
 
     /// Reference box for capturing results out of a @Sendable completion. See the note in

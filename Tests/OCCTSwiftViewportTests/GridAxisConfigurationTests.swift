@@ -346,7 +346,7 @@ struct GridAxisConfigurationWiringTests {
 /// `StandardView.top` (identity rotation) looks down −Z with +X right and +Y up, so a grid in
 /// the XY plane faces the camera, while the old XZ grid was seen edge-on as a single row.
 @MainActor
-@Suite("Grid and axis rendering")
+@Suite("Grid and axis rendering", .requiresMetalDevice)
 struct GridAxisRenderingTests {
 
     static let size = 128

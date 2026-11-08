@@ -172,7 +172,7 @@ enum ParityRender {
 // MARK: - Offscreen features
 
 @MainActor
-@Suite("Offscreen render parity features")
+@Suite("Offscreen render parity features", .requiresMetalDevice)
 struct OffscreenParityFeatureTests {
 
     private let white = SIMD4<Float>(1, 1, 1, 1)
@@ -545,7 +545,7 @@ struct OffscreenParityFeatureTests {
 // MARK: - Offscreen vs live
 
 @MainActor
-@Suite("Offscreen vs live renderer parity")
+@Suite("Offscreen vs live renderer parity", .requiresMetalDevice)
 struct OffscreenLiveParityTests {
 
     static let width = 160
@@ -711,7 +711,7 @@ struct OffscreenLiveParityTests {
 // MARK: - Live renderer fixes
 
 @MainActor
-@Suite("Live renderer overlay and outline fixes")
+@Suite("Live renderer overlay and outline fixes", .requiresMetalDevice)
 struct LiveOverlayOutlineTests {
 
     /// Renders `bodies` through the live renderer's headless path, front view on black.

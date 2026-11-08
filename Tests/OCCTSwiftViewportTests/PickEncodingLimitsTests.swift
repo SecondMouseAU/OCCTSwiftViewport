@@ -222,7 +222,7 @@ struct WrappedFacePickResolutionTests {
 // MARK: - Headless: tessellated and mesh-shader pick paths
 
 @MainActor
-@Suite("Pick triangle index under enhanced/maximum rendering quality")
+@Suite("Pick triangle index under enhanced/maximum rendering quality", .requiresMetalDevice)
 struct HighQualityPickIndexTests {
 
     static let width = 160

@@ -100,7 +100,7 @@ private func maxDelta(_ a: [UInt8], _ b: [UInt8]) -> Int {
 // MARK: - M10: stale buffers for an emptied body
 
 @MainActor
-@Suite("Renderer audit #136 — M10 emptied bodies")
+@Suite("Renderer audit #136 — M10 emptied bodies", .requiresMetalDevice)
 struct EmptiedBodyTests {
 
     @Test("OffscreenRenderer stops drawing a body that keeps its id but loses its geometry")
@@ -167,7 +167,7 @@ struct EmptiedBodyTests {
 // MARK: - M11: SSAO / silhouette depth prepass
 
 @MainActor
-@Suite("Renderer audit #136 — M11 SSAO depth prepass")
+@Suite("Renderer audit #136 — M11 SSAO depth prepass", .requiresMetalDevice)
 struct SSAODepthPrepassTests {
 
     @Test("Only opaque geometry-layer mesh bodies write SSAO depth")
@@ -270,7 +270,7 @@ struct DoFAutofocusTests {
 // MARK: - L2: MSAA clamping on the live renderer
 
 @MainActor
-@Suite("Renderer audit #136 — L2 live MSAA clamp")
+@Suite("Renderer audit #136 — L2 live MSAA clamp", .requiresMetalDevice)
 struct LiveSampleCountTests {
 
     @Test("An unsupported msaaSampleCount is clamped instead of failing renderer creation")
@@ -323,7 +323,7 @@ struct ClipPlaneLimitTests {
 // MARK: - L4: screen-space selection outline
 
 @MainActor
-@Suite("Renderer audit #136 — L4 selection outline")
+@Suite("Renderer audit #136 — L4 selection outline", .requiresMetalDevice)
 struct SelectionOutlineTests {
 
     private static let outlineGreen = SIMD3<Float>(0, 1, 0)
@@ -429,7 +429,7 @@ struct TriangleStylesCountTests {
 }
 
 @MainActor
-@Suite("Renderer audit #136 — L9 triangleStyles mutation")
+@Suite("Renderer audit #136 — L9 triangleStyles mutation", .requiresMetalDevice)
 struct TriangleStylesMutationTests {
 
     @Test("Reassigning triangleStyles on an existing body re-uploads the style buffer")

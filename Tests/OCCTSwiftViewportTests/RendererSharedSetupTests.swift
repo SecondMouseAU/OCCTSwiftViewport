@@ -12,7 +12,7 @@ import simd
 
 @testable import OCCTSwiftViewport
 
-@Suite("Renderer shared setup")
+@Suite("Renderer shared setup", .requiresMetalDevice)
 struct RendererSharedSetupTests {
 
     // MARK: - Reference implementations (the code that was duplicated)

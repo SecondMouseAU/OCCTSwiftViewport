@@ -145,7 +145,7 @@ struct FrameBufferPoolTests {
 // MARK: - Rendering
 
 @MainActor
-@Suite("Edge rendering gaps (issue #136)")
+@Suite("Edge rendering gaps (issue #136)", .requiresMetalDevice)
 struct EdgeRenderingGapsTests {
 
     // Camera at +Z looking down -Z at the origin; 10 world units span the 128 px frame.

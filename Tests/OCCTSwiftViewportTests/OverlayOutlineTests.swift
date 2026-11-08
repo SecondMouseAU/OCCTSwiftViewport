@@ -13,7 +13,7 @@ import simd
 
 @testable import OCCTSwiftViewport
 
-@Suite("Overlay selection outline")
+@Suite("Overlay selection outline", .requiresMetalDevice)
 struct OverlayOutlineTests {
 
     @MainActor

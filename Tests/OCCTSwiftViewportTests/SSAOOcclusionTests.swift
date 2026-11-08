@@ -14,7 +14,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("SSAO hemisphere occlusion")
+@Suite("SSAO hemisphere occlusion", .requiresMetalDevice)
 struct SSAOOcclusionTests {
 
     private static let size = 128

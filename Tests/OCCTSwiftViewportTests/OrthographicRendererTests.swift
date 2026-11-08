@@ -15,7 +15,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Orthographic renderer follow-ups (#215)")
+@Suite("Orthographic renderer follow-ups (#215)", .requiresMetalDevice)
 struct OrthographicRendererTests {
 
     // MARK: - Helpers

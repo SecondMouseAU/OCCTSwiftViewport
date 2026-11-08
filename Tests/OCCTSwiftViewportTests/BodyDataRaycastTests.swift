@@ -162,7 +162,7 @@ struct BodyGenerationMutationTests {
 }
 
 @MainActor
-@Suite("Mutated geometry reaches the GPU (#166)")
+@Suite("Mutated geometry reaches the GPU (#166)", .requiresMetalDevice)
 struct MutatedGeometryRenderTests {
 
     /// A box with depth, so the fitted near plane cannot graze it (a head-on zero-depth quad
@@ -337,7 +337,7 @@ struct DirectMeshInitBodyTests {
 // MARK: - #163 clip planes
 
 @MainActor
-@Suite("SceneRaycast honours section planes (#163)")
+@Suite("SceneRaycast honours section planes (#163)", .requiresMetalDevice)
 struct SceneRaycastClipPlaneTests {
 
     /// Removes everything with z > 0.2, the same plane `ClipPlanePassTests` checks the GPU

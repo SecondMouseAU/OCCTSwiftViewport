@@ -11,7 +11,7 @@ import CoreGraphics
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Surface transparency")
+@Suite("Surface transparency", .requiresMetalDevice)
 struct SurfaceTransparencyTests {
 
     // Camera at +Z (identity rotation) looking down -Z at the origin, so a larger

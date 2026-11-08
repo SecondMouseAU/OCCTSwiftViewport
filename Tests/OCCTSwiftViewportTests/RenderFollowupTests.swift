@@ -15,7 +15,7 @@ import simd
 
 // MARK: - Shadow pass culling (#209 item 1)
 
-@Suite("Shadow pass casts from either side and under mirroring (#209)")
+@Suite("Shadow pass casts from either side and under mirroring (#209)", .requiresMetalDevice)
 @MainActor
 struct ShadowCullTests {
 
@@ -91,7 +91,7 @@ struct ShadowCullTests {
 
 // MARK: - Face-on outline (#209 item 2)
 
-@Suite("Selection outline rings face-on flat-normal meshes (#209)")
+@Suite("Selection outline rings face-on flat-normal meshes (#209)", .requiresMetalDevice)
 @MainActor
 struct FaceOnOutlineTests {
 
@@ -218,7 +218,7 @@ struct FaceOnOutlineTests {
 
 // MARK: - Offscreen overlay frustum (#209 item 4)
 
-@Suite("Offscreen overlay in-view test follows pixelPan and explicitOrthoBounds (#209)")
+@Suite("Offscreen overlay in-view test follows pixelPan and explicitOrthoBounds (#209)", .requiresMetalDevice)
 @MainActor
 struct OffscreenOverlayFrustumTests {
 

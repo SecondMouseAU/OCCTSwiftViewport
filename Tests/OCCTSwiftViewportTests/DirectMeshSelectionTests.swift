@@ -18,7 +18,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Direct-mesh selection outline and triangle highlight")
+@Suite("Direct-mesh selection outline and triangle highlight", .requiresMetalDevice)
 struct DirectMeshSelectionTests {
 
     private static let color = SIMD4<Float>(0.4, 0.7, 0.95, 1)

@@ -13,7 +13,7 @@ import SwiftUI
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Direct-mesh rendering (Option A)")
+@Suite("Direct-mesh rendering (Option A)", .requiresMetalDevice)
 struct DirectMeshRenderingTests {
 
     private let color = SIMD4<Float>(0.40, 0.70, 0.95, 1)

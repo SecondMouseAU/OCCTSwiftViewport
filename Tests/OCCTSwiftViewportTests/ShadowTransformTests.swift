@@ -13,7 +13,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Shadow lookup honours body transforms once")
+@Suite("Shadow lookup honours body transforms once", .requiresMetalDevice)
 struct ShadowTransformTests {
 
     private static func translation(_ x: Float, _ y: Float, _ z: Float) -> simd_float4x4 {

@@ -108,7 +108,7 @@ private enum BatchScene {
 // MARK: - #162: clipped geometry casts no shadow
 
 @MainActor
-@Suite("Section clip planes apply to the shadow map")
+@Suite("Section clip planes apply to the shadow map", .requiresMetalDevice)
 struct ShadowClipPlaneTests {
 
     /// A ground slab whose top is at y = -0.9, and a box caster above it from y = -0.3 to 0.7.
@@ -181,7 +181,7 @@ struct ShadowClipPlaneTests {
 // MARK: - #164: no MSAA ghost line at a section cut
 
 @MainActor
-@Suite("MSAA section cut leaves no ghost of the clipped-away part")
+@Suite("MSAA section cut leaves no ghost of the clipped-away part", .requiresMetalDevice)
 struct MSAASectionGhostTests {
 
     struct View: CustomTestStringConvertible, Sendable {
@@ -237,7 +237,7 @@ struct MSAASectionGhostTests {
 // MARK: - #181: linear edge depth fade
 
 @MainActor
-@Suite("Edge depth fade is linear in view distance")
+@Suite("Edge depth fade is linear in view distance", .requiresMetalDevice)
 struct EdgeDepthFadeTests {
 
     private static let width = 200

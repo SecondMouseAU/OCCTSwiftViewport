@@ -16,7 +16,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Tone mapping on every frame (#136 H6)")
+@Suite("Tone mapping on every frame (#136 H6)", .requiresMetalDevice)
 struct ToneMappingTests {
 
     private static let size = 64

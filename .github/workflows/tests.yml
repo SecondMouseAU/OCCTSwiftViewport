@@ -73,8 +73,26 @@ jobs:
       - name: swift build
         run: swift build
 
+      # Hosted macOS runners do not always expose a Metal device, and which host a job
+      # lands on is not under our control. Suites that need a GPU carry
+      # `.requiresMetalDevice` (Tests/.../MetalTestSupport.swift), so on a GPU-less host
+      # they are reported as skipped instead of recording a failure, and run as normal
+      # when a device exists. The next step turns a skip into a visible warning so a
+      # green run on such a host is not mistaken for full GPU coverage.
       - name: swift test
-        run: swift test
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+
+      - name: Flag skipped GPU suites
+        if: always()
+        shell: bash
+        run: |
+          n=$(grep -c "No Metal device on this host" "$RUNNER_TEMP/swift-test.log" 2>/dev/null || true)
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "::warning title=GPU suites skipped::This runner exposed no Metal device, so the GPU test suites were reported as skipped (${n} log lines). Run swift test on a Mac with a GPU before releasing."
+          fi
 
       # Samples/CADInterface is a SwiftUI view consumers copy from, with no app target
       # of its own. Compiling it here (viewport-only, no OCCT binary) keeps it from

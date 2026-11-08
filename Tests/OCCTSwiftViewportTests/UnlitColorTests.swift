@@ -12,7 +12,7 @@ import CoreGraphics
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Unlit display mode")
+@Suite("Unlit display mode", .requiresMetalDevice)
 struct UnlitColorTests {
 
     // Camera at +Z (identity rotation) looking down -Z at the origin.

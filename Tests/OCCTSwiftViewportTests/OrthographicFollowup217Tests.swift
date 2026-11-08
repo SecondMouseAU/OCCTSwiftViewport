@@ -12,7 +12,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Orthographic follow-ups (#217)")
+@Suite("Orthographic follow-ups (#217)", .requiresMetalDevice)
 struct OrthographicFollowup217Tests {
 
     // MARK: - Helpers

@@ -15,7 +15,7 @@ import simd
 @testable import OCCTSwiftViewport
 
 @MainActor
-@Suite("Translucent surface shading")
+@Suite("Translucent surface shading", .requiresMetalDevice)
 struct TranslucentShadingTests {
 
     private static let size = 64

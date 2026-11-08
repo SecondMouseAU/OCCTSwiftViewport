@@ -118,7 +118,7 @@ enum PassScene {
 
 // MARK: - #170 Overlay layer
 
-@Suite("Overlay layer (#170)")
+@Suite("Overlay layer (#170)", .requiresMetalDevice)
 @MainActor
 struct OverlayLayerTests {
 
@@ -256,7 +256,7 @@ struct OverlayLayerTests {
 
 // MARK: - #187 Translucent surfaces keep the image opaque
 
-@Suite("Translucent surfaces and image alpha (#187)")
+@Suite("Translucent surfaces and image alpha (#187)", .requiresMetalDevice)
 @MainActor
 struct TranslucentAlphaTests {
 
@@ -318,7 +318,7 @@ struct TranslucentAlphaTests {
 
 // MARK: - #171 Highlights on translucent bodies
 
-@Suite("Per-triangle highlights on translucent bodies (#171)")
+@Suite("Per-triangle highlights on translucent bodies (#171)", .requiresMetalDevice)
 @MainActor
 struct TranslucentHighlightTests {
 
@@ -410,7 +410,7 @@ struct TranslucentHighlightTests {
 
 // MARK: - #177 Selection outline over nearer occluders
 
-@Suite("Selection outline under occluders (#177)")
+@Suite("Selection outline under occluders (#177)", .requiresMetalDevice)
 @MainActor
 struct OutlineOcclusionTests {
 
@@ -444,7 +444,7 @@ struct OutlineOcclusionTests {
 
 // MARK: - #161 Tessellation / mesh-shader fallbacks
 
-@Suite("Rendering-quality fallbacks (#161)")
+@Suite("Rendering-quality fallbacks (#161)", .requiresMetalDevice)
 @MainActor
 struct RenderingQualityFallbackTests {
 
@@ -545,7 +545,7 @@ struct RenderingQualityFallbackTests {
 
 // MARK: - #202 Passes on the PN-tessellated surface
 
-@Suite("Highlight, outline and crease on the tessellated surface (#202)")
+@Suite("Highlight, outline and crease on the tessellated surface (#202)", .requiresMetalDevice)
 @MainActor
 struct TessellatedSurfacePassTests {
 

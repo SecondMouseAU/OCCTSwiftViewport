@@ -17,7 +17,7 @@ import simd
 #endif
 
 @MainActor
-@Suite("Offscreen tessellation and mesh shaders")
+@Suite("Offscreen tessellation and mesh shaders", .requiresMetalDevice)
 struct OffscreenTessellationTests {
 
     /// A coarse sphere seen along its pole axis, so its outline is a 14-gon until PN triangles
