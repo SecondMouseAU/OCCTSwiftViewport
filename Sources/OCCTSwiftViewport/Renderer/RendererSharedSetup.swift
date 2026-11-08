@@ -176,7 +176,28 @@ enum RendererSharedSetup {
             blending: blending,
             vertexDescriptor: vertexDescriptor
         )
-        return try? device.makeRenderPipelineState(descriptor: descriptor)
+        return makeRenderPipelineStateReporting(device: device, descriptor: descriptor)
+    }
+
+    /// `device.makeRenderPipelineState(descriptor:)` that says why it failed.
+    ///
+    /// Every caller treats a `nil` pipeline as "this renderer cannot be created", which reaches the
+    /// app as an unexplained `nil` from `ViewportRenderer` / `OffscreenRenderer`. Logging the Metal
+    /// error and the pipeline's label is the only way to tell which pipeline a device rejected.
+    static func makeRenderPipelineStateReporting(
+        device: MTLDevice, descriptor: MTLRenderPipelineDescriptor
+    ) -> MTLRenderPipelineState? {
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog(
+                "[OCCTSwiftViewport] Render pipeline '%@' (vertex %@, fragment %@) failed on %@: %@",
+                descriptor.label ?? "unlabelled",
+                descriptor.vertexFunction?.name ?? "none",
+                descriptor.fragmentFunction?.name ?? "none",
+                device.name, String(describing: error))
+            return nil
+        }
     }
 
     // MARK: - Shared Pipelines
@@ -409,7 +430,7 @@ enum RendererSharedSetup {
             vertexDescriptor: vertexDescriptor
         )
         descriptor.colorAttachments[0].writeMask = []
-        return try? device.makeRenderPipelineState(descriptor: descriptor)
+        return makeRenderPipelineStateReporting(device: device, descriptor: descriptor)
     }
 
     /// HDR skybox background pipeline (full-screen triangle sampling the environment cube map).

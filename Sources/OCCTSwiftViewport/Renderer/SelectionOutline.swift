@@ -65,7 +65,14 @@ extension RendererSharedSetup {
 
     /// The renderers' shader library: the build-time `default.metallib` in the resource bundle.
     static func loadLibrary(device: MTLDevice) -> MTLLibrary? {
-        try? device.makeDefaultLibrary(bundle: Bundle.module)
+        do {
+            return try device.makeDefaultLibrary(bundle: Bundle.module)
+        } catch {
+            NSLog(
+                "[OCCTSwiftViewport] Shader library failed to load on %@ (bundle %@): %@",
+                device.name, Bundle.module.bundlePath, String(describing: error))
+            return nil
+        }
     }
 
     // MARK: Pipelines
