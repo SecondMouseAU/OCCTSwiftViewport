@@ -2582,10 +2582,13 @@ vertex SkyboxVertexOut skybox_vertex(
     SkyboxVertexOut out;
     out.clipPosition = float4(ndc, 1.0, 1.0); // depth = 1 in NDC
 
-    // Reconstruct world-space view direction by inverse-projecting near and far points.
+    // Reconstruct the world-space view ray by inverse-projecting near and far points. Leave it
+    // un-normalised: the ray is affine in NDC xy, so the rasteriser interpolates it exactly, and
+    // skybox_fragment normalises the result. Normalising here instead interpolated unit
+    // vectors, which skews every direction between the corners (issue #228).
     float4 worldNear = u.inverseViewProjection * float4(ndc, 0.0, 1.0);
     float4 worldFar  = u.inverseViewProjection * float4(ndc, 1.0, 1.0);
-    out.viewDirection = normalize(worldFar.xyz / worldFar.w - worldNear.xyz / worldNear.w);
+    out.viewDirection = worldFar.xyz / worldFar.w - worldNear.xyz / worldNear.w;
     return out;
 }
 

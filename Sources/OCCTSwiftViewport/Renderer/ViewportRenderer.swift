@@ -1666,7 +1666,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         {
             RendererSharedSetup.encodeSkybox(
                 encoder: mainEncoder, pipeline: skyPipeline, depthState: skyDepth,
-                viewProjection: viewProjection, lighting: lighting, cubeMap: cubeMap)
+                view: viewMatrix, projection: projMatrix, lighting: lighting, cubeMap: cubeMap)
             mainEncoder.setDepthStencilState(depthState)
         }
 

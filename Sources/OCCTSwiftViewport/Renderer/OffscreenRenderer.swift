@@ -1017,7 +1017,7 @@ public final class OffscreenRenderer: Sendable {
         {
             RendererSharedSetup.encodeSkybox(
                 encoder: mainEncoder, pipeline: skyboxPipeline, depthState: overlayDepthState,
-                viewProjection: viewProjection, lighting: lighting, cubeMap: cubeMap)
+                view: viewMatrix, projection: projMatrix, lighting: lighting, cubeMap: cubeMap)
             mainEncoder.setDepthStencilState(depthState)
         }
 
