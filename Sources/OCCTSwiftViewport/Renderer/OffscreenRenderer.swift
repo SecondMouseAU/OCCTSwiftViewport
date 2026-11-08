@@ -771,7 +771,11 @@ public final class OffscreenRenderer: Sendable {
             showGrid: options.showGrid,
             showAxes: options.showAxes
         )
-        let clip = cameraState.clipPlanes(
+        // The planes are fitted as orthographic whenever the projection is, including an
+        // `explicitOrthoBounds` one on a perspective camera (#217).
+        var clipCamera = cameraState
+        clipCamera.isOrthographic = Self.isOrthographic(options)
+        let clip = clipCamera.clipPlanes(
             sceneBounds: RendererSharedSetup.clipFitBounds(
                 sceneBounds, includingOverlaysOf: bodies,
                 in: Self.wideViewFrustum(options: options, camera: cameraState),
@@ -831,7 +835,8 @@ public final class OffscreenRenderer: Sendable {
                 clipPlanes: clipPlaneVecs,
                 clipPlaneCount: clipPlaneCount,
                 unlit: options.displayMode == .unlit,
-                flatShading: !options.displayMode.usesSmoothShading
+                flatShading: !options.displayMode.usesSmoothShading,
+                viewportSize: SIMD2(Float(w), Float(h))
             )
         }
 
@@ -1258,9 +1263,22 @@ public final class OffscreenRenderer: Sendable {
             mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
+            // Over a mesh-shader surface the highlight is biased toward the viewer so it wins the
+            // depth tie with `meshlet_mesh`'s position (#213).
+            let overMeshlets =
+                buffers.normalBuffer == nil && buffers.meshlets != nil
+                && refined?.meshShaded != nil
+            if overMeshlets {
+                RendererSharedSetup.setHighlightDepthBias(
+                    on: mainEncoder, overMeshletSurface: true)
+            }
             mainEncoder.drawIndexedPrimitives(
                 type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
                 indexBuffer: ib, indexBufferOffset: 0)
+            if overMeshlets {
+                RendererSharedSetup.setHighlightDepthBias(
+                    on: mainEncoder, overMeshletSurface: false)
+            }
         }
 
         // Bodies. Overlay-layer bodies are drawn last, on top (see the overlay pass below).
@@ -1846,9 +1864,9 @@ public final class OffscreenRenderer: Sendable {
     /// scene, as one built with a small `distance` does, had its front near-clipped (#215).
     ///
     /// Moving the eye changes neither the projection nor the lit shading (see
-    /// `RendererSharedSetup.shadingEyePosition`). It changes the clip planes, so whatever reads
-    /// them changes too: the edge depth fade, and the composite pass (SSAO, silhouettes), which
-    /// still decodes orthographic depth as perspective depth. An `explicitOrthoBounds`
+    /// `RendererSharedSetup.shadingEyePosition`), nor the depth range: the orthographic clip
+    /// planes are fitted to the scene, so the edge depth fade and the composite pass (SSAO,
+    /// silhouettes) are the same for every eye (#217). An `explicitOrthoBounds`
     /// projection is orthographic whatever the camera's projection, so its eye is placed too;
     /// the grid and axes keep sizing themselves from `options.cameraState`, as that camera's
     /// `distance` sizes them.

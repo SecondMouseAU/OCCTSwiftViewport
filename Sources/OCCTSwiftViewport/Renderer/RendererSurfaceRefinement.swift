@@ -260,6 +260,30 @@ extension RendererSharedSetup {
             patchIndexBuffer: nil, patchIndexBufferOffset: 0, instanceCount: 1, baseInstance: 0)
     }
 
+    /// The constant depth bias, in units of the smallest resolvable depth, a per-triangle highlight
+    /// draws with over a mesh-shader surface.
+    ///
+    /// A body's meshlets are drawn by the mesh pipeline (`meshlet_mesh`), but its highlight by the
+    /// plain vertex pipeline (`highlight_vertex`), with `.lessEqual` so it wins the tie with the
+    /// surface underneath. The two stages compute the same clip position, yet separate shader
+    /// functions are not guaranteed to round it identically, and a last-bit difference would make
+    /// the highlight lose the tie in places (#213). A few units of depth toward the viewer settles
+    /// it: far below anything visible (a ~1e-7 fraction of the depth range) and only applied to
+    /// highlights over meshlet surfaces.
+    static let meshletHighlightDepthBias: Float = -8
+
+    /// Sets the depth bias a per-triangle highlight is drawn with: `meshletHighlightDepthBias` over
+    /// a mesh-shader surface, none over any other (whose surface and highlight go through the same
+    /// vertex path or the same patch evaluation).
+    ///
+    /// Call with `overMeshletSurface: false` after the highlight to restore the encoder.
+    static func setHighlightDepthBias(
+        on encoder: MTLRenderCommandEncoder, overMeshletSurface: Bool
+    ) {
+        encoder.setDepthBias(
+            overMeshletSurface ? meshletHighlightDepthBias : 0, slopeScale: 0, clamp: 0)
+    }
+
     /// Draws a body's meshlets with the mesh-shader `pipeline`.
     ///
     /// `vertexBuffer` is the body's interleaved (stride 6) vertex buffer; `uniforms` is bound at

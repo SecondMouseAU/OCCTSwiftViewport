@@ -305,7 +305,7 @@ Selects the render pass: `.mesh` (shaded + wireframe), `.point` (point-cloud spr
 
 #### `triangleStyles: [TriangleStyle]`
 
-Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles straight after the surface they style, with `.lessEqual` depth, preventing silhouette flicker. On a translucent body (opacity below 1, or any body in `.xray`) they are drawn inside the sorted translucent pass, the far-facing half before the camera-facing half, so a highlight is seen through the surfaces in front of it rather than painted over them (#171). Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
+Per-triangle highlight overrides. When non-empty, `count` must equal `indices.count / 3`; an array of any other length is ignored (the body draws with no highlights) and debug builds log the mismatch. Entries with `color.w == 0` are skipped. The renderer composites non-zero-alpha styles straight after the surface they style, with `.lessEqual` depth, preventing silhouette flicker. On a translucent body (opacity below 1, or any body in `.xray`) they are drawn inside the sorted translucent pass, the far-facing half before the camera-facing half, so a highlight is seen through the surfaces in front of it rather than painted over them (#171). Over a mesh-shader surface (`.maximum` quality) the highlight is drawn through the plain vertex pipeline with a depth bias of a few depth units toward the viewer, so it keeps winning its `.lessEqual` tie with the meshlet surface even if the two stages round the position differently in the last bit (#213). Reassigning this field on an existing body (same `generation`) triggers a GPU style-buffer re-upload on the next frame without disturbing vertex/index/edge buffers.
 
 #### `color: SIMD4<Float>`
 
@@ -342,6 +342,8 @@ When `false`, the body is drawn normally but excluded from the GPU pick buffer. 
 #### `transform: simd_float4x4`
 
 Per-body model matrix. Applied in the vertex shader on top of the scene model matrix. Lets the renderer reposition a body (e.g., during a manipulator drag) without re-uploading vertex data. Default `matrix_identity_float4x4`.
+
+Positions go through the matrix; normals go through the inverse transpose of its upper 3×3 (the shaders' `Uniforms.normalMatrix`, kept in step with `transform`), so a body with a non-uniform scale or a shear is lit exactly like the same geometry with the transform baked into its vertices, on the shaded, direct-mesh, tessellated and mesh-shader paths alike (issue #213). Transforming a normal by the matrix itself tilts it off the surface under such a transform. A mirroring transform keeps its normals pointing out of the surface.
 
 ---
 
