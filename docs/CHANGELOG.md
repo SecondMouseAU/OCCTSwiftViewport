@@ -4,6 +4,17 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`ViewportRenderer()` and `OffscreenRenderer()` returned `nil` in plain SwiftPM builds** (regression in
+  v1.3.0, from #212). The shared `RendererSharedSetup.loadLibrary` only tried the build-time
+  `default.metallib`, but SwiftPM's native build system (`swift build`, `swift run` and `swift test` with
+  an Xcode 26 toolchain, and hosted CI) copies `Shaders.metal` instead of compiling it, so initialisation
+  failed with "no default library was found". The run-time compile of the copied source that both
+  renderers had before #212 is restored. Xcode builds were never affected. This is also why the `tests`
+  workflow was red on `main` from #212 onward while the suite passed on developer Macs.
+- A render pipeline or the shader library failing to build is now logged (pipeline label, vertex and
+  fragment function, device and Metal error) instead of silently surfacing as a `nil` renderer.
+
 ## [1.3.0] - 2026-11-08
 
 The medium and low findings from the hard-coded values audit (issue #136), the linear colour pipeline

@@ -63,14 +63,38 @@ extension RendererSharedSetup {
 
     // MARK: Library
 
-    /// The renderers' shader library: the build-time `default.metallib` in the resource bundle.
-    static func loadLibrary(device: MTLDevice) -> MTLLibrary? {
+    /// The renderers' shader library.
+    ///
+    /// Xcode's build system compiles `Shaders.metal` into `default.metallib` inside the resource
+    /// bundle. SwiftPM's native build system (`swift build` / `swift run` / `swift test` with an
+    /// Xcode 26 toolchain, and hosted CI) only copies the `.metal` source, so there is no metallib
+    /// and the shaders must be compiled at run time. Keep both paths: when this function only tried
+    /// the metallib, every `ViewportRenderer` and `OffscreenRenderer` init returned `nil` in those
+    /// builds.
+    ///
+    /// `bundle` exists so a test can hand in a bundle that has the source but no metallib.
+    static func loadLibrary(device: MTLDevice, bundle: Bundle = Bundle.module) -> MTLLibrary? {
+        let metallibError: Error
         do {
-            return try device.makeDefaultLibrary(bundle: Bundle.module)
+            return try device.makeDefaultLibrary(bundle: bundle)
+        } catch {
+            metallibError = error
+        }
+
+        guard let sourceURL = bundle.url(forResource: "Shaders", withExtension: "metal") else {
+            NSLog(
+                "[OCCTSwiftViewport] No shader library on %@: no default.metallib (%@) and no "
+                    + "Shaders.metal source in bundle %@",
+                device.name, String(describing: metallibError), bundle.bundlePath)
+            return nil
+        }
+        do {
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            return try device.makeLibrary(source: source, options: nil)
         } catch {
             NSLog(
-                "[OCCTSwiftViewport] Shader library failed to load on %@ (bundle %@): %@",
-                device.name, Bundle.module.bundlePath, String(describing: error))
+                "[OCCTSwiftViewport] Compiling Shaders.metal at run time failed on %@: %@",
+                device.name, String(describing: error))
             return nil
         }
     }
