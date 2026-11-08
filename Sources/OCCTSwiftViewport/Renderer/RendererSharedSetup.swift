@@ -460,21 +460,59 @@ enum RendererSharedSetup {
         )
     }
 
+    /// The matrix `skybox_vertex` unprojects each corner's view ray with (#228).
+    ///
+    /// Only the ray's direction matters, so this is `(projection * view)`'s inverse with the eye
+    /// moved to the origin and the depth range squeezed to 1...2, inverted in `Double`. The
+    /// frame's own near and far planes are fitted to the scene and can be a million times apart,
+    /// which makes the matrix ill-conditioned: a plain `Float` inverse of it, unprojected in the
+    /// shader, put the ray a degree or two off on a tilted view. The projection keeps its x and
+    /// y terms, so a TAA jitter or a pan still shifts the sky with the scene.
+    static func skyboxRayMatrix(view: simd_float4x4, projection: simd_float4x4) -> simd_float4x4 {
+        var rotation = view
+        rotation.columns.3 = SIMD4<Float>(0, 0, 0, 1)
+        var squeezed = projection
+        if projection.columns.2.w != 0 {
+            // Perspective, near 1 and far 2: z = far / (near - far), then z * near.
+            squeezed.columns.2.z = -2
+            squeezed.columns.3.z = -2
+        } else {
+            // Orthographic, near 1 and far 2: -1 / depth, then -near / depth.
+            squeezed.columns.2.z = -1
+            squeezed.columns.3.z = -1
+        }
+        func widen(_ m: simd_float4x4) -> simd_double4x4 {
+            simd_double4x4(
+                columns: (
+                    SIMD4<Double>(m.columns.0), SIMD4<Double>(m.columns.1),
+                    SIMD4<Double>(m.columns.2), SIMD4<Double>(m.columns.3)
+                ))
+        }
+        let inverse = simd_inverse(widen(squeezed) * widen(rotation))
+        return simd_float4x4(
+            columns: (
+                SIMD4<Float>(inverse.columns.0), SIMD4<Float>(inverse.columns.1),
+                SIMD4<Float>(inverse.columns.2), SIMD4<Float>(inverse.columns.3)
+            ))
+    }
+
     /// Encodes the skybox background; the caller restores its own depth state afterwards.
     ///
     /// `depthState` should be always-pass with no depth writes, so later geometry overwrites it.
+    /// `view` and `projection` are the frame's, as drawn (`skyboxRayMatrix` conditions them).
     static func encodeSkybox(
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         depthState: MTLDepthStencilState,
-        viewProjection: simd_float4x4,
+        view: simd_float4x4,
+        projection: simd_float4x4,
         lighting: LightingConfiguration,
         cubeMap: MTLTexture
     ) {
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
         var skyUniforms = SkyboxUniformsSwift(
-            inverseViewProjection: simd_inverse(viewProjection),
+            inverseViewProjection: skyboxRayMatrix(view: view, projection: projection),
             // z = mip level: 0 for a sharp background. w = tone-map scale (exposure / whitePoint).
             params: SIMD4<Float>(
                 lighting.environmentRotationY, lighting.backgroundExposure, 0,

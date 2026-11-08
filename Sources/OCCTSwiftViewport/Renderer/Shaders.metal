@@ -2586,16 +2586,35 @@ struct MeshVertex {
 // Mesh output type: triangles, max 64 verts / 64 tris
 using ShadedMeshOutput = mesh<MeshVertex, void, 64, 64, topology::triangle>;
 
-// --- Object shader: per-meshlet behind-camera culling ---
-//
-// Reads only the first two matrices of `Uniforms` (viewProjectionMatrix, modelMatrix): the
-// shadow pass binds the 128-byte ShadowUniforms here, whose two fields line up with them.
+// --- Object shaders: per-meshlet behind-camera culling ---
 //
 // Meshlet bounds are in the body's local space, so they go through modelMatrix first. There is
 // deliberately no normal-cone backface cull: the standard and tessellated paths draw back faces
 // (no cull mode), and the old cone test ran in local space against a world-space camera, so it
 // removed front-facing meshlets of rotated or moved bodies and back faces (open shells, clip
 // sections) that every other path draws.
+//
+// The scene passes read `Uniforms` (meshlet_object); the shadow map reads the 128-byte
+// ShadowUniforms (meshlet_shadow_object). They are separate functions because Metal validates a
+// bound buffer against the struct its function declares: the shadow pass used to bind
+// ShadowUniforms at meshlet_object's `Uniforms` slot, which aborts under MTL_DEBUG_LAYER and
+// otherwise reads past the bound bytes (#229). Both share meshletInFront.
+
+// Whether any of the meshlet's world-space bounding sphere is in front of the eye of
+// `viewProjection` (the camera, or the light for the shadow map).
+inline bool meshletInFront(MeshletDesc m, float4x4 viewProjection, float4x4 modelMatrix) {
+    // World-space bounding sphere: transform the centre and scale the radius by the largest
+    // axis scale, so the sphere stays conservative under non-uniform scale.
+    float4 worldCenter = modelMatrix * float4(m.center, 1.0);
+    float maxScale = max(length(modelMatrix[0].xyz),
+                         max(length(modelMatrix[1].xyz),
+                             length(modelMatrix[2].xyz)));
+    float worldRadius = m.radius * maxScale;
+
+    // Behind-camera check (a full 6-plane frustum test could be added later).
+    float4 centerClip = viewProjection * worldCenter;
+    return centerClip.w + worldRadius >= 0.01;
+}
 
 [[object, max_total_threads_per_threadgroup(1)]]
 void meshlet_object(
@@ -2605,21 +2624,24 @@ void meshlet_object(
     uint gid [[threadgroup_position_in_grid]],
     mesh_grid_properties mgp
 ) {
-    MeshletDesc m = meshlets[gid];
+    if (meshletInFront(meshlets[gid], uniforms.viewProjectionMatrix, uniforms.modelMatrix)) {
+        payload.meshletIndex = gid;
+        mgp.set_threadgroups_per_grid(uint3(1, 1, 1));
+    } else {
+        mgp.set_threadgroups_per_grid(uint3(0, 0, 0));
+    }
+}
 
-    // World-space bounding sphere: transform the centre and scale the radius by the largest
-    // axis scale, so the sphere stays conservative under non-uniform scale.
-    float4 worldCenter = uniforms.modelMatrix * float4(m.center, 1.0);
-    float maxScale = max(length(uniforms.modelMatrix[0].xyz),
-                         max(length(uniforms.modelMatrix[1].xyz),
-                             length(uniforms.modelMatrix[2].xyz)));
-    float worldRadius = m.radius * maxScale;
-
-    // Behind-camera check (a full 6-plane frustum test could be added later).
-    float4 centerClip = uniforms.viewProjectionMatrix * worldCenter;
-    bool visible = centerClip.w + worldRadius >= 0.01;
-
-    if (visible) {
+[[object, max_total_threads_per_threadgroup(1)]]
+void meshlet_shadow_object(
+    object_data MeshletPayload& payload [[payload]],
+    device MeshletDesc* meshlets [[buffer(0)]],
+    constant ShadowUniforms& uniforms [[buffer(1)]],
+    uint gid [[threadgroup_position_in_grid]],
+    mesh_grid_properties mgp
+) {
+    if (meshletInFront(
+            meshlets[gid], uniforms.lightViewProjectionMatrix, uniforms.modelMatrix)) {
         payload.meshletIndex = gid;
         mgp.set_threadgroups_per_grid(uint3(1, 1, 1));
     } else {
@@ -2858,10 +2880,13 @@ vertex SkyboxVertexOut skybox_vertex(
     SkyboxVertexOut out;
     out.clipPosition = float4(ndc, 1.0, 1.0); // depth = 1 in NDC
 
-    // Reconstruct world-space view direction by inverse-projecting near and far points.
+    // Reconstruct the world-space view ray by inverse-projecting near and far points. Leave it
+    // un-normalised: the ray is affine in NDC xy, so the rasteriser interpolates it exactly, and
+    // skybox_fragment normalises the result. Normalising here instead interpolated unit
+    // vectors, which skews every direction between the corners (issue #228).
     float4 worldNear = u.inverseViewProjection * float4(ndc, 0.0, 1.0);
     float4 worldFar  = u.inverseViewProjection * float4(ndc, 1.0, 1.0);
-    out.viewDirection = normalize(worldFar.xyz / worldFar.w - worldNear.xyz / worldNear.w);
+    out.viewDirection = worldFar.xyz / worldFar.w - worldNear.xyz / worldNear.w;
     return out;
 }
 

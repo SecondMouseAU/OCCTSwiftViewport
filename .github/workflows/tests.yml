@@ -76,6 +76,14 @@ jobs:
       - name: swift test
         run: swift test
 
+      # Metal reads MTL_DEBUG_LAYER when the process starts, so the suite that guards the
+      # mesh-shader passes' buffer bindings (#229) runs again in a process with API validation
+      # on. The shadow pass once bound 128 bytes where its object function declared 656, which
+      # only the validation layer turns into an abort. The suite returns early on a GPU without
+      # mesh shaders (Apple9), which a hosted runner may well be.
+      - name: swift test (Metal API validation)
+        run: MTL_DEBUG_LAYER=1 swift test --filter MeshletShadowUniformsTests
+
       # Samples/CADInterface is a SwiftUI view consumers copy from, with no app target
       # of its own. Compiling it here (viewport-only, no OCCT binary) keeps it from
       # drifting off the public API unnoticed.
