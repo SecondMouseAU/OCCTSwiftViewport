@@ -297,7 +297,7 @@ let state = ViewCubeRegion.topFrontRight.cameraState(
     pivot: sceneBounds.center,
     distance: 25.0
 )
-controller.setCameraState(state, animated: true)
+controller.animateTo(state)
 ```
 
 ---

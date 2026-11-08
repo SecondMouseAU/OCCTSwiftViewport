@@ -159,7 +159,9 @@ controller.goToStandardView(.front)
 controller.goToStandardView(.isometricFrontRight)
 
 // Focus on geometry
-controller.focusOnBounds()  // Fit all bodies in view
+if let fitted = controller.cameraState.fit(to: bodies, aspectRatio: aspect) {  // Fit all bodies in view
+    controller.animateTo(fitted)
+}
 controller.focusOn(point: SIMD3<Float>(0, 0, 0), distance: 10)
 
 // Reset
@@ -315,15 +317,16 @@ let controller = ViewportController(configuration: .cadHighQuality)
 ## GPU Picking and Selection
 
 ```swift
-// Pick at a screen coordinate
-if let hit = controller.pick(at: screenPoint) {
-    print("Hit body: \(hit.bodyIndex), face: \(hit.faceIndex)")
+// A tap publishes the GPU pick result
+if let hit = controller.pickResult {
+    print("Hit body: \(hit.bodyID), \(hit.kind), primitive: \(hit.triangleIndex)")
 }
 
-// CPU-side raycasting for more control
-let ray = ProjectionUtility.ray(from: screenPoint, viewport: size,
-                                 camera: controller.cameraState)
-let hits = SceneRaycast.cast(ray: ray, bodies: bodies)
+// CPU-side raycasting for more control (ndc: -1...1, y up)
+let ray = Ray.fromCamera(ndc: ndc, cameraState: controller.cameraState, aspectRatio: aspect)
+if let hit = SceneRaycast.cast(ray: ray, bodies: bodies) {
+    print("Hit \(hit.bodyID) at \(hit.point)")
+}
 ```
 
 ## Clip Planes
@@ -342,8 +345,8 @@ controller.clipPlanes = [clip]
 ```swift
 // Distance between two points
 let measurement = DistanceMeasurement(
-    from: SIMD3<Float>(0, 0, 0),
-    to: SIMD3<Float>(10, 0, 0)
+    start: SIMD3<Float>(0, 0, 0),
+    end: SIMD3<Float>(10, 0, 0)
 )
 controller.measurements = [.distance(measurement)]
 

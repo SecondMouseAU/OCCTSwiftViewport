@@ -35,7 +35,7 @@ The overlay is 96 × 96 pt, placed 12 pt inside the corner specified by `configu
 Pass a `ViewportConfiguration` with the desired `viewCubePosition`:
 
 ```swift
-var config = ViewportConfiguration.default
+var config = ViewportConfiguration()
 config.viewCubePosition = .topTrailing   // move cube to top-right
 
 let controller = ViewportController(configuration: config)

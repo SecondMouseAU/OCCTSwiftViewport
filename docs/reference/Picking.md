@@ -584,9 +584,11 @@ Projects a world-space point to a screen-space `CGPoint`. Returns `nil` if the p
 **Example:**
 
 ```swift
+let state = controller.cameraState
+let vpMatrix = state.projectionMatrix(aspectRatio: aspect) * state.viewMatrix
 if let screenPt = ProjectionUtility.worldToScreen(
     point: hitPoint,
-    vpMatrix: controller.viewProjectionMatrix,
+    vpMatrix: vpMatrix,
     viewportSize: viewportSize
 ) {
     // Place a SwiftUI annotation overlay at screenPt

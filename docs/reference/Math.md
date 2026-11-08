@@ -215,11 +215,9 @@ Decomposes the matrix into six half-space planes (left, right, bottom, top, near
 - **Parameters:** `m` — a column-major 4×4 view-projection matrix (typically `projectionMatrix * viewMatrix` from a camera).
 - **Example:**
   ```swift
-  let camera = Camera()
-  camera.eye = SIMD3(0, -100, 50)
-  camera.center = SIMD3(0, 0, 0)
+  let camera = CameraState(distance: 100)
   
-  let viewProj = camera.projectionMatrix * camera.viewMatrix
+  let viewProj = camera.projectionMatrix(aspectRatio: 16.0 / 9.0) * camera.viewMatrix
   let frustum = Frustum(viewProjection: viewProj)
   ```
 
@@ -264,11 +262,11 @@ Uses the "p-vertex" technique: for each plane, selects the AABB corner furthest 
 - **Returns:** `true` if the box intersects or is inside the frustum; `false` if entirely outside (safe to cull).
 - **Example:**
   ```swift
-  let viewProj = camera.projectionMatrix * camera.viewMatrix
+  let viewProj = camera.projectionMatrix(aspectRatio: aspect) * camera.viewMatrix
   let frustum = Frustum(viewProjection: viewProj)
   
   for body in bodies {
-      if frustum.intersects(body.boundingBox) {
+      if let box = body.boundingBox, frustum.intersects(box) {
           // Render the body
           renderBody(body)
       } else {
