@@ -1080,6 +1080,8 @@ public final class OffscreenRenderer: Sendable {
         /// bodies pass `false`: live draws them with the plain pipeline.
         func encodeSurface(
             _ buffers: BodyBuffersOffscreen,
+            vertexColorMode: VertexColorMode,
+            vertexColorSpace: AuthoredColorSpace,
             uniforms: inout Uniforms,
             bodyUniforms: inout BodyUniforms,
             refine: Bool = true
@@ -1094,10 +1096,15 @@ public final class OffscreenRenderer: Sendable {
             if shadowEnabled, let shadowTex = shadowMapManager.texture {
                 mainEncoder.setFragmentTexture(shadowTex, index: 1)
             }
+            // The body's per-vertex colours (#142), bound on every shaded draw.
+            let vertexColors = RendererSharedSetup.VertexColorBinding(
+                mode: vertexColorMode, space: vertexColorSpace,
+                colorBuffer: buffers.vertexColorBuffer, placeholder: vb, indices: ib)
             if refine,
                 Self.encodeRefinedDraw(
                     encoder: mainEncoder, buffers: buffers, meshPipeline: refined?.meshShaded,
-                    tessellatedPipeline: refined?.tessellatedShaded, uniforms: &uniforms)
+                    tessellatedPipeline: refined?.tessellatedShaded, uniforms: &uniforms,
+                    vertexColors: vertexColors)
             {
                 return
             }
@@ -1110,6 +1117,7 @@ public final class OffscreenRenderer: Sendable {
                 mainEncoder.setRenderPipelineState(pipelines.shadedPipeline)
                 mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
             }
+            RendererSharedSetup.encodeVertexColors(encoder: mainEncoder, binding: vertexColors)
             mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.drawIndexedPrimitives(
                 type: .triangle, indexCount: buffers.indexCount, indexType: .uint32,
@@ -1198,7 +1206,8 @@ public final class OffscreenRenderer: Sendable {
                 baseColor: body.color,
                 worldRadius: body.pointRadius,
                 pxPerWorldFactor: Float(h) * projMatrix.columns.1.y * 0.5,
-                useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0,
+                vertexColorSpace: body.vertexColorSpace.shaderValue
             )
             mainEncoder.setRenderPipelineState(pointPipeline)
             mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -1285,7 +1294,10 @@ public final class OffscreenRenderer: Sendable {
 
             if displayMode.showsSurfaces, hasMesh, !defersSurface {
                 mainEncoder.setDepthStencilState(depthState)
-                encodeSurface(buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                encodeSurface(
+                    buffers, vertexColorMode: body.vertexColorMode,
+                    vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
+                    bodyUniforms: &bodyUniforms)
                 // Per-triangle highlights straight over the surface they style, so they composite
                 // before the translucent pass rather than over it (#171).
                 encodeHighlight(body, buffers, uniforms: &uniforms)
@@ -1322,7 +1334,10 @@ public final class OffscreenRenderer: Sendable {
                 for culled in ViewportRenderer.translucentCullOrder(for: t.body.transform) {
                     mainEncoder.setCullMode(culled)
                     mainEncoder.setDepthStencilState(transparentDepthState)
-                    encodeSurface(t.buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                    encodeSurface(
+                        t.buffers, vertexColorMode: t.body.vertexColorMode,
+                        vertexColorSpace: t.body.vertexColorSpace, uniforms: &uniforms,
+                        bodyUniforms: &bodyUniforms)
                     encodeHighlight(t.body, t.buffers, uniforms: &uniforms)
                 }
             }
@@ -1501,7 +1516,9 @@ public final class OffscreenRenderer: Sendable {
                 if hasMesh {
                     // Widgets draw their plain mesh, untessellated, as live.
                     encodeSurface(
-                        buffers, uniforms: &uniforms, bodyUniforms: &bodyUniforms, refine: false)
+                        buffers, vertexColorMode: body.vertexColorMode,
+                        vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
+                        bodyUniforms: &bodyUniforms, refine: false)
                 }
                 encodeEdges(
                     body, buffers, hasMesh: hasMesh, uniforms: &uniforms,
@@ -1948,19 +1965,20 @@ public final class OffscreenRenderer: Sendable {
         buffers: BodyBuffersOffscreen,
         meshPipeline: MTLRenderPipelineState?,
         tessellatedPipeline: MTLRenderPipelineState?,
-        uniforms: inout U
+        uniforms: inout U,
+        vertexColors: RendererSharedSetup.VertexColorBinding? = nil
     ) -> Bool {
         guard buffers.normalBuffer == nil, let vb = buffers.vertexBuffer else { return false }
         if let meshlets = buffers.meshlets, let meshPipeline {
             RendererSharedSetup.encodeMeshletDraw(
                 encoder: encoder, pipeline: meshPipeline, meshlets: meshlets, vertexBuffer: vb,
-                uniforms: &uniforms)
+                uniforms: &uniforms, vertexColors: vertexColors)
             return true
         }
         if let tessellation = buffers.tessellation, let tessellatedPipeline {
             RendererSharedSetup.encodeTessellatedDraw(
                 encoder: encoder, pipeline: tessellatedPipeline, tessellation: tessellation,
-                uniforms: &uniforms)
+                uniforms: &uniforms, vertexColors: vertexColors)
             return true
         }
         return false
@@ -1997,6 +2015,16 @@ public final class OffscreenRenderer: Sendable {
             cached?.smoothingKey == smoothingKey,
             cached.map({ $0.refinement == refinement }) ?? true
         {
+            // `vertexColorMode` is not geometry, so switching it on leaves the generation as it
+            // was: upload the colours the first time a body asks for them (#142).
+            if body.vertexColorMode != .ignored, var buffers = cached,
+                buffers.vertexColorBuffer == nil,
+                let colors = RendererSharedBuffers.makeMeshColorBuffer(
+                    device: device, body: body, vertexCount: buffers.vertexCount)
+            {
+                buffers.vertexColorBuffer = colors
+                bodyBufferCache[body.id] = buffers
+            }
             return
         }
 
@@ -2039,6 +2067,8 @@ public final class OffscreenRenderer: Sendable {
         bodyBufferCache[body.id] = BodyBuffersOffscreen(
             vertexBuffer: mesh.vertexBuffer,
             normalBuffer: mesh.normalBuffer,
+            vertexColorBuffer: RendererSharedBuffers.makeMeshColorBuffer(
+                device: device, body: body, vertexCount: mesh.vertexCount),
             indexBuffer: mesh.indexBuffer,
             indexCount: mesh.indexCount,
             edgeVertexBuffer: nativeEdgeVB,
@@ -2068,6 +2098,12 @@ private struct BodyBuffersOffscreen {
     /// When non-nil, `vertexBuffer` holds positions only (stride 12) and the body draws via
     /// `directMeshPipeline`.
     var normalBuffer: MTLBuffer? = nil
+
+    /// Per-vertex RGBA colours (stride 16) for the shaded pass (issue #142).
+    ///
+    /// Nil unless `body.vertexColorMode` asked for them and `body.vertexColors` matched the mesh's
+    /// vertex count; the shaded pass then uses the body colour.
+    var vertexColorBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?

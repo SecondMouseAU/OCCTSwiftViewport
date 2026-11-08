@@ -90,7 +90,7 @@ struct PointParamsSwift {
     var worldRadius: Float  // offset 16
     var pxPerWorldFactor: Float  // offset 20 — viewportHeight * projection[1][1] / 2
     var useVertexColors: UInt32  // offset 24
-    var _pad: UInt32 = 0  // offset 28
+    var vertexColorSpace: UInt32 = 0  // offset 28 — 0 = sRGB display values, 1 = linear
 }
 
 // Swift↔Metal sync: Renderer/Shaders.metal `struct GridUniforms` (same field order; `rows`
@@ -219,6 +219,12 @@ private struct BodyBuffers {
     /// When non-nil, `vertexBuffer` holds positions only (stride 12) and the body draws via
     /// `directMeshPipeline` in the opaque shaded pass; the shadow / pick / depth passes skip it.
     var normalBuffer: MTLBuffer? = nil
+    /// Per-vertex RGBA colours (stride 16) for the shaded pass (issue #142).
+    ///
+    /// Nil unless `body.vertexColorMode` asked for them and `body.vertexColors` matched the mesh's
+    /// vertex count; the shaded pass then uses the body colour. Built lazily, so a body that
+    /// switches mode on gets its buffer without a rebuild of the rest.
+    var vertexColorBuffer: MTLBuffer? = nil
     let indexBuffer: MTLBuffer?
     let indexCount: Int
     let edgeVertexBuffer: MTLBuffer?
@@ -1812,7 +1818,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 encodeShadedSurface(
-                    mainEncoder, buffers: buffers, uniforms: &uniforms,
+                    mainEncoder, buffers: buffers, vertexColorMode: body.vertexColorMode,
+                    vertexColorSpace: body.vertexColorSpace, uniforms: &uniforms,
                     useMeshShaders: useMeshShaders, useTessellation: useTessellation)
 
                 // Per-triangle highlights (issue #25) straight over the surface they style, so
@@ -1946,7 +1953,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.setFragmentBytes(
                         &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
                     encodeShadedSurface(
-                        mainEncoder, buffers: d.buffers, uniforms: &uniforms,
+                        mainEncoder, buffers: d.buffers, vertexColorMode: d.body.vertexColorMode,
+                        vertexColorSpace: d.body.vertexColorSpace, uniforms: &uniforms,
                         useMeshShaders: useMeshShaders, useTessellation: useTessellation)
                     if d.buffers.triangleStyleBuffer != nil {
                         mainEncoder.setDepthStencilState(highlightDepthState)
@@ -2105,7 +2113,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     baseColor: body.color,
                     worldRadius: body.pointRadius,
                     pxPerWorldFactor: pxPerWorldFactor,
-                    useVertexColors: useColors
+                    useVertexColors: useColors,
+                    vertexColorSpace: body.vertexColorSpace.shaderValue
                 )
 
                 mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -2233,6 +2242,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         mainEncoder.setRenderPipelineState(shadedPipeline)
                         mainEncoder.setVertexBuffer(vb, offset: 0, index: 0)
                     }
+                    // Per-vertex colours (#142): overlay widgets honour them like geometry.
+                    RendererSharedSetup.encodeVertexColors(
+                        encoder: mainEncoder,
+                        binding: RendererSharedSetup.VertexColorBinding(
+                            mode: body.vertexColorMode, space: body.vertexColorSpace,
+                            colorBuffer: buffers.vertexColorBuffer, placeholder: vb, indices: ib))
                     mainEncoder.setVertexBytes(
                         &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                     mainEncoder.setFragmentBytes(
@@ -2318,7 +2333,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         baseColor: body.color,
                         worldRadius: body.pointRadius,
                         pxPerWorldFactor: pxPerWorldFactor,
-                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0
+                        useVertexColors: buffers.pointColorBuffer != nil ? 1 : 0,
+                        vertexColorSpace: body.vertexColorSpace.shaderValue
                     )
                     mainEncoder.setRenderPipelineState(pointPipeline)
                     mainEncoder.setVertexBuffer(positionBuf, offset: 0, index: 0)
@@ -3067,18 +3083,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private func encodeShadedSurface(
         _ encoder: MTLRenderCommandEncoder,
         buffers: BodyBuffers,
+        vertexColorMode: VertexColorMode,
+        vertexColorSpace: AuthoredColorSpace,
         uniforms: inout Uniforms,
         useMeshShaders: Bool,
         useTessellation: Bool
     ) {
         guard let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer, buffers.indexCount > 0
         else { return }
+        // The body's per-vertex colours (#142), bound on every shaded draw.
+        let vertexColors = RendererSharedSetup.VertexColorBinding(
+            mode: vertexColorMode, space: vertexColorSpace, colorBuffer: buffers.vertexColorBuffer,
+            placeholder: vb, indices: ib)
 
         if let nb = buffers.normalBuffer {
             // Direct-mesh path (Option A): de-interleaved position@0 + normal@2, no interleave.
             encoder.setRenderPipelineState(directMeshPipeline)
             encoder.setVertexBuffer(vb, offset: 0, index: 0)
             encoder.setVertexBuffer(nb, offset: 0, index: 2)
+            RendererSharedSetup.encodeVertexColors(encoder: encoder, binding: vertexColors)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             encoder.drawIndexedPrimitives(
                 type: .triangle,
@@ -3092,15 +3115,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         {
             RendererSharedSetup.encodeMeshletDraw(
                 encoder: encoder, pipeline: msPipeline, meshlets: ml, vertexBuffer: vb,
-                uniforms: &uniforms)
+                uniforms: &uniforms, vertexColors: vertexColors)
         } else if useTessellation, let tess = buffers.tessellation,
             let tessPipeline = tessellatedShadedPipeline
         {
             RendererSharedSetup.encodeTessellatedDraw(
-                encoder: encoder, pipeline: tessPipeline, tessellation: tess, uniforms: &uniforms)
+                encoder: encoder, pipeline: tessPipeline, tessellation: tess, uniforms: &uniforms,
+                vertexColors: vertexColors)
         } else {
             encoder.setRenderPipelineState(shadedPipeline)
             encoder.setVertexBuffer(vb, offset: 0, index: 0)
+            RendererSharedSetup.encodeVertexColors(encoder: encoder, binding: vertexColors)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             encoder.drawIndexedPrimitives(
                 type: .triangle,
@@ -3189,6 +3214,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 bodyBufferCache[body.id] = cached
             }
             bodyEdgeColorGeneration[body.id] = body.edgeColorsGeneration
+            // `vertexColorMode` is not geometry, so switching it on leaves the generation as it
+            // was: upload the colours the first time a body asks for them (#142).
+            if body.vertexColorMode != .ignored, var cached = bodyBufferCache[body.id],
+                cached.vertexColorBuffer == nil,
+                let colors = RendererSharedBuffers.makeMeshColorBuffer(
+                    device: device, body: body, vertexCount: cached.vertexCount)
+            {
+                cached.vertexColorBuffer = colors
+                bodyBufferCache[body.id] = cached
+            }
             return  // buffer still valid
         }
 
@@ -3307,6 +3342,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         bodyBufferCache[body.id] = BodyBuffers(
             vertexBuffer: vertexBuffer,
             normalBuffer: normalBuffer,
+            vertexColorBuffer: RendererSharedBuffers.makeMeshColorBuffer(
+                device: device, body: body, vertexCount: vertexCount),
             indexBuffer: indexBuffer,
             indexCount: indexCount,
             edgeVertexBuffer: nativeEdgeVB,
