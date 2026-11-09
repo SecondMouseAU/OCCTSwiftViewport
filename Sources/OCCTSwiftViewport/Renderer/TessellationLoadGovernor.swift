@@ -9,6 +9,10 @@ import Foundation
 /// One frame's load signals, fed to `TessellationLoadGovernor.step(_:)`.
 struct TessellationLoadSample: Sendable, Equatable {
     /// GPU time of the most recently completed frame, in seconds; `nil` when none was measured.
+    ///
+    /// A frame that follows an idle GPU takes longer than the same frame behind a busy one, and a
+    /// debug build's slow CPU-side encoding makes every frame such a frame (1.6 to 2.5 times
+    /// slower on an M4, #238). The governor does not correct for it.
     var gpuFrameTime: Double?
     /// Time available per frame, in seconds (`1 / preferredFramesPerSecond`).
     var frameBudget: Double
