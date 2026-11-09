@@ -107,7 +107,7 @@ extension RendererSharedSetup {
         try makeTessellatedPipelineState(
             device: device, library: library, label: label,
             vertexFunction: "tessellated_pick_vertex",
-            fragmentFunction: "tessellated_pick_fragment", colorPixelFormat: .r32Uint,
+            fragmentFunction: "tessellated_pick_fragment", colorPixelFormat: .rg32Uint,
             depthPixelFormat: .depth32Float, maxFactor: maxFactor)
     }
 

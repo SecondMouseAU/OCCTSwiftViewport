@@ -88,10 +88,10 @@ extension BodyUniforms {
     init(body: ViewportBody, objectIndex: UInt32 = 0, isSelected: UInt32 = 0) {
         let m = body.effectiveMaterial
         self.color = SIMD4<Float>(m.baseColor.x, m.baseColor.y, m.baseColor.z, m.opacity)
-        // `objectIndex` is the body's draw-order ordinal and is read only by the pick shaders.
-        // Past the 16-bit object field it becomes the sentinel, so the body reads back as a miss
-        // instead of bleeding into the primitive bits (issue #136, H4).
-        self.objectIndex = PickResult.pickObjectIndex(forOrdinal: objectIndex)
+        // `objectIndex` is the body's draw-order ordinal and is read only by the pick shaders,
+        // which write it whole into the pick texture's R channel (issue #160). `0xFFFF_FFFF` is
+        // reserved to mean "no object".
+        self.objectIndex = objectIndex
         self.roughness = m.roughness
         self.metallic = m.metallic
         self.isSelected = isSelected
@@ -140,7 +140,11 @@ struct SelectionOutlineParamsSwift {
 }
 
 // IMPORTANT — Swift↔Metal sync (see Renderer/Shaders.metal `struct EdgeUniforms`).
-// Field order, types, and 16-byte alignment must stay identical.
+// Field order, types, and 16-byte alignment must stay identical. Total size = stride = 352 bytes:
+// the Metal struct is 16-byte aligned, so its declared size is rounded up to a multiple of 16, but
+// Swift's `MemoryLayout.size` is not (the struct ended at 344 until `_pad2` was added, and the
+// encoders bind `.size` bytes). A buffer shorter than the declared struct aborts under
+// `MTL_DEBUG_LAYER=1` (#231), so the trailing pad is explicit on both sides.
 struct EdgeUniforms {
     var viewProjectionMatrix: simd_float4x4
     var modelMatrix: simd_float4x4
@@ -156,6 +160,7 @@ struct EdgeUniforms {
     var dashPatternType: UInt32 = 0
     var viewportSize: SIMD2<Float> = .zero
     var _pad: SIMD2<Float> = .zero
+    var _pad2: SIMD2<Float> = .zero  // rounds the size up to the 16-byte alignment (#231)
 }
 
 extension EdgeUniforms {
@@ -361,7 +366,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Direct-mesh face-pick pipeline (Option A).
     ///
     /// `pick_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh bodies
-    /// are stamped into the R32Uint pick texture. The pick vertex shader reads only position; the
+    /// are stamped into the RG32Uint pick texture. The pick vertex shader reads only position; the
     /// normal binding satisfies attribute 1.
     private let pickShadedDirectPipeline: MTLRenderPipelineState
     /// Line-primitive pick pipeline for edge picking.
@@ -544,7 +549,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // MARK: - Picking
 
-    /// Manages the R32Uint pick ID texture (second color attachment).
+    /// Manages the RG32Uint pick ID texture the 1x pick pass renders into.
     private let pickTextureManager: PickTextureManager
     /// Shared-mode readback buffers for exact and region picks (issue #90).
     ///
@@ -560,9 +565,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///
     /// Routes GPU pick results to either `ViewportController.pickResult` or `widgetPickResult`.
     private var currentLayerMap: [String: PickLayer] = [:]
-    /// Maps bodyID → primitive kinds with more than `PickResult.maxPrimitivesPerKind` primitives,
-    /// rebuilt each frame, so picks of those kinds are flagged `isPrimitiveIndexAmbiguous`.
-    private var currentAmbiguousKinds: [String: Set<PrimitiveKind>] = [:]
 
     /// Buffers for the per-frame adaptively-sampled analytic arc edges (issue #48): line
     /// segments and, with quad expansion, their quad strips.
@@ -689,13 +691,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.skyboxDepthState = RendererSharedSetup.makeDepthStencilState(
             device: device, compareFunction: .always, isDepthWriteEnabled: false)
 
-        // --- 1x pick-only pipeline (R32Uint, no MSAA) ---
+        // --- 1x pick-only pipeline (RG32Uint, no MSAA) ---
 
         guard
             let pickShadedPipeline = RendererSharedSetup.makePipelineState(
                 device: device, label: "pick_shaded", library: library,
                 vertexFunction: "pick_vertex", fragmentFunction: "pick_fragment",
-                colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+                colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
                 vertexDescriptor: vertexDesc)
         else {
             return nil
@@ -707,7 +709,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let pickShadedDirectPipeline = RendererSharedSetup.makePipelineState(
                 device: device, label: "pick_shaded_direct", library: library,
                 vertexFunction: "pick_vertex", fragmentFunction: "pick_fragment",
-                colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+                colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
                 vertexDescriptor: directVertexDesc)
         else {
             return nil
@@ -719,7 +721,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.pickLinePipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_line", library: library,
             vertexFunction: "pick_line_vertex", fragmentFunction: "pick_line_fragment",
-            colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
 
         // 1x arc pick pipeline (issue #48) — pick_line_vertex, biased like the drawn arc
@@ -727,7 +729,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.pickArcPipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_arc", library: library,
             vertexFunction: "pick_line_vertex", fragmentFunction: "pick_arc_fragment",
-            colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
 
         // 1x quad edge pick pipeline — quad_edge_vertex expands segments to the visible edge
@@ -735,7 +737,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.pickQuadEdgePipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_quad_edge", library: library,
             vertexFunction: "quad_edge_vertex", fragmentFunction: "pick_quad_edge_fragment",
-            colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
 
         // 1x point pick pipeline (vertex picking) — pick_point_vertex outputs
@@ -743,7 +745,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.pickPointPipeline = RendererSharedSetup.makePipelineState(
             device: device, label: "pick_point", library: library,
             vertexFunction: "pick_point_vertex", fragmentFunction: "pick_point_fragment",
-            colorPixelFormat: .r32Uint, depthPixelFormat: .depth32Float,
+            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
             vertexDescriptor: vertexDesc)
 
         self.visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
@@ -981,7 +983,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             self.meshShaderPickPipeline = meshPipeline {
                 try RendererSharedSetup.makeMeshShaderPipelineState(
                     device: device, library: library, meshFunction: "meshlet_pick_mesh",
-                    fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .r32Uint,
+                    fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .rg32Uint,
                     depthPixelFormat: .depth32Float, label: "mesh_pick")
             }
             // The highlight, stencil mask and selection mask follow the subdivided surface (#175).
@@ -1490,7 +1492,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // Build index map for picking: objectIndex → bodyID
         var indexMap: [Int: String] = [:]
         var layerMap: [String: PickLayer] = [:]
-        var ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
         var objectIndex: UInt32 = 0
 
         // Ensure buffers for all visible bodies, and resolve each body's buffers +
@@ -1502,25 +1503,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         frameVisibleBodies.reserveCapacity(bodies.count)
         for body in bodies where body.isVisible {
             ensureBuffers(for: body)
-            // Bodies past the 16-bit object field get no pick ID (BodyUniforms writes the
-            // sentinel for them), so they never enter the index map.
-            if PickResult.pickObjectIndex(forOrdinal: objectIndex) != PickResult.sentinel {
-                indexMap[Int(objectIndex)] = body.id
-            }
+            indexMap[Int(objectIndex)] = body.id
             layerMap[body.id] = body.pickLayer
             if let bufs = bodyBufferCache[body.id] {
                 frameVisibleBodies.append((body, bufs, objectIndex))
-                let kinds = PickResult.ambiguousKinds(
-                    triangleCount: bufs.indexCount / 3,
-                    edgeSegmentCount: max(bufs.edgePrimitiveCount, body.arcs.count),
-                    pointCount: bufs.pointVertexCount)
-                if !kinds.isEmpty { ambiguousKinds[body.id] = kinds }
             }
             objectIndex += 1
         }
         currentIndexMap = indexMap
         currentLayerMap = layerMap
-        currentAmbiguousKinds = ambiguousKinds
 
         // Per-body frustum culling (issue #42): off-screen bodies are skipped
         // inline in the main pass below, using the cached local AABB — no per-frame
@@ -2418,7 +2409,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         mainEncoder.endEncoding()
 
         // =========================================================
-        // Pass 2: 1x Pick pass (R32Uint, no MSAA)
+        // Pass 2: 1x Pick pass (RG32Uint, no MSAA)
         // =========================================================
         let pickingEnabled = controller.configuration.pickingConfiguration.isEnabled
         if pickingEnabled {
@@ -2432,9 +2423,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 pickPass.colorAttachments[0].texture = pickTex
                 pickPass.colorAttachments[0].loadAction = .clear
                 pickPass.colorAttachments[0].storeAction = .store
+                // R and G both 0xFFFF_FFFF: no object, no primitive (`PickEncoding.noHit`).
                 pickPass.colorAttachments[0].clearColor = MTLClearColor(
-                    red: Double(0xFFFF_FFFF),
-                    green: 0, blue: 0, alpha: 0
+                    red: Double(PickEncoding.noObject),
+                    green: Double(PickEncoding.noObject), blue: 0, alpha: 0
                 )
                 pickPass.depthAttachment.texture = pickDepth
                 pickPass.depthAttachment.loadAction = .clear
@@ -3579,7 +3571,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let y = max(0, min(pixel.y, pickTextureManager.height - 1))
 
         let pool = pickReadbackPool
-        guard let readbackBuffer = pool.acquire(byteCount: MemoryLayout<UInt32>.size) else {
+        guard let readbackBuffer = pool.acquire(byteCount: PickEncoding.bytesPerTexel) else {
             completion(nil)
             return
         }
@@ -3600,14 +3592,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             sourceSize: MTLSize(width: 1, height: 1, depth: 1),
             to: readbackBuffer,
             destinationOffset: 0,
-            destinationBytesPerRow: MemoryLayout<UInt32>.size,
-            destinationBytesPerImage: MemoryLayout<UInt32>.size
+            destinationBytesPerRow: PickEncoding.bytesPerTexel,
+            destinationBytesPerImage: PickEncoding.bytesPerTexel
         )
         blitEncoder.endEncoding()
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
-        let ambiguousKinds = currentAmbiguousKinds
 
         // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
         // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
@@ -3618,11 +3609,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // and makes the compiler check that the captures really are safe to hand to Metal.
         // See issue #110.
         commandBuffer.addCompletedHandler { @Sendable _ in
-            let rawValue = readbackBuffer.contents().load(as: UInt32.self)
+            // One RG32Uint texel: R then G in memory, so a UInt64 load is `G << 32 | R`.
+            let pickValue = readbackBuffer.contents().load(as: UInt64.self)
             pool.release(readbackBuffer)
-            let result = PickResult(
-                rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
-                ambiguousKinds: ambiguousKinds)
+            let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
             Task { @MainActor in
                 completion(result)
             }
@@ -3678,23 +3668,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
-        let ambiguousKinds = currentAmbiguousKinds
         let centerX = pixel.x - startX
         let centerY = pixel.y - startY
 
         commandBuffer.addCompletedHandler { @Sendable _ in
             // De-stride into one flat row-major array, as performRegionPick does.
-            let base = readbackBuffer.contents()
-            var rawValues: [UInt32] = []
-            rawValues.reserveCapacity(actualWidth * actualHeight)
-            for row in 0..<actualHeight {
-                let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
-                rawValues.append(
-                    contentsOf: UnsafeBufferPointer(start: rowValues, count: actualWidth))
-            }
+            let pickValues = PickEncoding.texels(
+                from: readbackBuffer.contents(), bytesPerRow: bytesPerRow, width: actualWidth,
+                height: actualHeight)
             let bestResult = Self.bestNeighborhoodPickResult(
-                rawValues, width: actualWidth, center: SIMD2(centerX, centerY),
-                indexMap: indexMap, layerMap: layerMap, ambiguousKinds: ambiguousKinds)
+                pickValues, width: actualWidth, center: SIMD2(centerX, centerY),
+                indexMap: indexMap, layerMap: layerMap)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3781,23 +3765,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
-        let ambiguousKinds = currentAmbiguousKinds
 
         // `@Sendable` for the same reason as in `performPick(at:)` above: this handler runs on
         // Metal's completion queue, so it must not inherit `@MainActor` isolation. See issue #110.
         commandBuffer.addCompletedHandler { @Sendable _ in
-            // De-stride: read exactly the w*4 live bytes from each padded row, skipping the
+            // De-stride: read exactly the w*8 live bytes from each padded row, skipping the
             // alignment padding, into one flat row-major array for decodeRegionPickResults.
-            let base = readbackBuffer.contents()
-            var rawValues: [UInt32] = []
-            rawValues.reserveCapacity(w * h)
-            for row in 0..<h {
-                let rowValues = (base + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
-                rawValues.append(contentsOf: UnsafeBufferPointer(start: rowValues, count: w))
-            }
+            let pickValues = PickEncoding.texels(
+                from: readbackBuffer.contents(), bytesPerRow: bytesPerRow, width: w, height: h)
             pool.release(readbackBuffer)
             let results = Self.decodeRegionPickResults(
-                rawValues, indexMap: indexMap, layerMap: layerMap, ambiguousKinds: ambiguousKinds)
+                pickValues, indexMap: indexMap, layerMap: layerMap)
             Task { @MainActor in
                 completion(results)
             }
@@ -3808,10 +3786,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// Rounds `width * bytesPerPixel` up to a 256-byte-aligned row stride — the safe
     /// conservative choice for a texture→buffer blit's `destinationBytesPerRow` (Metal's true
-    /// minimum per-format alignment can be smaller, but never larger, for a plain 4-byte
-    /// uncompressed format like the R32Uint pick texture).
+    /// minimum per-format alignment can be smaller, but never larger, for a plain 8-byte
+    /// uncompressed format like the RG32Uint pick texture).
     nonisolated static func alignedBytesPerRow(
-        forWidth width: Int, bytesPerPixel: Int = MemoryLayout<UInt32>.size
+        forWidth width: Int, bytesPerPixel: Int = PickEncoding.bytesPerTexel
     ) -> Int {
         let alignment = 256
         let unaligned = width * bytesPerPixel
@@ -3856,31 +3834,29 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return (startX, startY, width, height)
     }
 
-    /// Picks the best hit from a neighborhood of raw R32Uint pick values (issue #118).
+    /// Picks the best hit from a neighborhood of RG32Uint pick texels (issue #118).
     ///
     /// A vertex beats an edge, an edge beats a face; among hits of the same kind the one nearest
     /// `center` wins, and on an exact tie the first in row-major order is kept. Background and
-    /// undecodable pixels are skipped. `rawValues` is flat and row-major, `width` values per row;
+    /// undecodable pixels are skipped. `pickValues` is flat and row-major, `width` values per row;
     /// `center` is the cursor's position within that region. Pulled out of the GPU readback path
     /// as a pure function, like `decodeRegionPickResults`, so it is testable without a live draw.
     nonisolated static func bestNeighborhoodPickResult(
-        _ rawValues: [UInt32],
+        _ pickValues: [UInt64],
         width: Int,
         center: SIMD2<Int>,
         indexMap: [Int: String],
-        layerMap: [String: PickLayer],
-        ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
+        layerMap: [String: PickLayer]
     ) -> PickResult? {
         guard width > 0 else { return nil }
         var bestResult: PickResult? = nil
         var bestPriority = -1
         var bestDistSq = Int.max
 
-        for (index, rawValue) in rawValues.enumerated() {
+        for (index, pickValue) in pickValues.enumerated() {
             guard
                 let result = PickResult(
-                    rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
-                    ambiguousKinds: ambiguousKinds)
+                    pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
             else {
                 continue
             }
@@ -3905,26 +3881,22 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return bestResult
     }
 
-    /// Decodes raw R32Uint pick values into the de-duplicated primitives they represent.
+    /// Decodes RG32Uint pick texels into the de-duplicated primitives they represent.
     ///
     /// Input is a flat, row-major array as read back by `performRegionPick`; output keeps each
-    /// primitive's first appearance, and background (sentinel) pixels are dropped. Pulled out of
+    /// primitive's first appearance, and background (no-hit) pixels are dropped. Pulled out of
     /// the GPU readback path as a pure function so the dedup/decode logic is unit-testable
     /// without a live draw (the pick texture itself is only populated by an actual frame).
     nonisolated static func decodeRegionPickResults(
-        _ rawValues: [UInt32],
+        _ pickValues: [UInt64],
         indexMap: [Int: String],
-        layerMap: [String: PickLayer],
-        ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
+        layerMap: [String: PickLayer]
     ) -> [PickResult] {
-        var seen = Set<UInt32>()
+        var seen = Set<UInt64>()
         var results: [PickResult] = []
-        for rawValue in rawValues {
-            guard rawValue != PickResult.sentinel, !seen.contains(rawValue) else { continue }
-            seen.insert(rawValue)
-            if let result = PickResult(
-                rawValue: rawValue, indexMap: indexMap, layerMap: layerMap,
-                ambiguousKinds: ambiguousKinds)
+        for pickValue in pickValues {
+            guard PickEncoding.isHit(pickValue), seen.insert(pickValue).inserted else { continue }
+            if let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
             {
                 results.append(result)
             }

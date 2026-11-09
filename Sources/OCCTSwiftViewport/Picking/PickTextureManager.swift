@@ -1,11 +1,16 @@
 // PickTextureManager.swift
 // ViewportKit
 //
-// Manages the R32Uint pick ID texture used as a second color attachment.
+// Manages the RG32Uint pick ID texture the 1x pick pass renders into.
 
 import Metal
 
-/// Owns and recreates the R32Uint pick ID texture when the drawable size changes.
+/// Owns and recreates the RG32Uint pick ID texture when the drawable size changes.
+///
+/// One texel is 8 bytes (R = object index, G = primitive index and kind; see `PickEncoding`), so
+/// the texture costs `8 * width * height` bytes: 16.6 MB at 1920 x 1080 and 66.4 MB at 3840 x 2160,
+/// twice what the R32Uint texture it replaced took. It is rendered in its own 1x pass (no MSAA)
+/// and stored `.private`.
 @MainActor
 final class PickTextureManager {
 
@@ -28,7 +33,7 @@ final class PickTextureManager {
         guard newWidth != width || newHeight != height else { return }
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Uint,
+            pixelFormat: .rg32Uint,
             width: newWidth,
             height: newHeight,
             mipmapped: false

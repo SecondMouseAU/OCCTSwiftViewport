@@ -23,6 +23,10 @@ swift test --filter CameraStateTests
 # Run a single test
 swift test --filter "CameraStateTests/Default initialization"
 
+# Run the whole suite under Metal API validation (CI does; catches a bound buffer smaller than
+# the struct the shader declares, which is otherwise silent undefined behaviour)
+MTL_DEBUG_LAYER=1 swift test
+
 # Clean build (use if stale PCH errors after renames)
 swift package clean && swift build
 
@@ -60,7 +64,7 @@ ViewportController (@MainActor, ObservableObject — central hub)
       ├─ Axes pipeline (RGB unit cylinders scaled per draw + 1 px centre lines; GridAxisGeometry.swift)
       ├─ Shadow map pipeline (ShadowMapManager — directional light depth pass)
       ├─ Environment map (EnvironmentMapManager — image-based lighting)
-      └─ Pick ID texture (R32Uint second color attachment, TBDR imageblock-based)
+      └─ Pick ID texture (RG32Uint, own 1x pick pass; R = 32-bit object index, G = 30-bit primitive index + 2 kind bits)
 ```
 
 `MetalViewportView` is the SwiftUI entry point. It wraps `MTKView` via platform-specific representables and attaches gesture handlers (iOS: drag/pinch/rotation/tap; macOS: mouse with modifier keys + scroll wheel).
@@ -71,7 +75,7 @@ ViewportController (@MainActor, ObservableObject — central hub)
 
 ### GPU Picking
 
-Pick IDs are encoded as `objectIndex | (primitiveID << 16)` into a R32Uint texture rendered as a second color attachment. `PickTextureManager` handles texture lifecycle. CPU-side raycasting (`SceneRaycast`) provides broadphase AABB culling then narrowphase Moller-Trumbore triangle intersection. `ProjectionUtility` provides screen-space ↔ world-space coordinate conversion.
+Pick IDs are written to an RG32Uint texture by a separate 1x pick pass: R is the body's `objectIndex` (32 bits), G is `primitiveID` (30 bits) plus 2 kind bits, packed by `packPickID` in `Shaders.metal` and decoded by `PickEncoding` (`Picking/PickEncoding.swift`). The two must stay in sync. `PickTextureManager` handles texture lifecycle. CPU-side raycasting (`SceneRaycast`) provides broadphase AABB culling then narrowphase Moller-Trumbore triangle intersection. `ProjectionUtility` provides screen-space ↔ world-space coordinate conversion.
 
 ### Shaders & Uniform Struct Sync
 
@@ -80,7 +84,7 @@ All Metal shaders are in `Sources/OCCTSwiftViewport/Renderer/Shaders.metal`. The
 - **Swift side:** `Renderer/ViewportRenderer.swift` (search for `struct Uniforms` and `struct BodyUniforms`)
 - **Metal side:** `Renderer/Shaders.metal` (search for `struct Uniforms` and `struct BodyUniforms`)
 
-When modifying: maintain identical field order, matching types (`SIMD4<Float>` ↔ `float4`, `UInt32` ↔ `uint`), and 16-byte alignment for SIMD types.
+When modifying: maintain identical field order, matching types (`SIMD4<Float>` ↔ `float4`, `UInt32` ↔ `uint`), and 16-byte alignment for SIMD types. `EdgeUniforms` follows the same rule. A Metal struct's size is rounded up to its alignment, but Swift's `MemoryLayout.size` is not, so end the Swift struct with explicit padding until `size == stride` (`UniformBufferSizeTests` checks the scene pipelines' bound structs against the sizes the shaders declare).
 
 ### Camera System
 

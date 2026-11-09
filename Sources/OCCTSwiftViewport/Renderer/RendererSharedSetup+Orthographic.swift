@@ -30,7 +30,7 @@ extension RendererSharedSetup {
     /// The grid is left out: the window drawn follows the pivot, which would move the eye on a
     /// pivot update, and the whole `gridSize` square moved the eye of every orthographic scene
     /// far back. The renderers draw the grid depth-clamped instead, so the part of it in front
-    /// of the eye is not near-clipped (see `gridDepthClipMode(orthographic:)`).
+    /// of the near plane is not clipped (see `gridDepthClipMode(orthographic:)`).
     ///
     /// - Parameters:
     ///   - modelBounds: World bounds of the visible geometry-layer bodies.

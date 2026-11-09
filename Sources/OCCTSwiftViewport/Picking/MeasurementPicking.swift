@@ -16,8 +16,8 @@ extension ViewportBody {
     /// Moller-Trumbore. Returns `nil` if the index is out of range or the ray misses the
     /// (transformed) triangle.
     ///
-    /// `triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick. If that pick is
-    /// `isPrimitiveIndexAmbiguous`, resolve it with `resolveWrappedTriangleIndex(_:ray:)` first.
+    /// `triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick, which is always the
+    /// exact triangle index, however many triangles the body has.
     public func worldHitPoint(ray: Ray, triangleIndex: Int) -> SIMD3<Float>? {
         let stride = 6
         let direct = vertexData.isEmpty
@@ -51,23 +51,25 @@ extension ViewportBody {
         return ray.origin + ray.direction * t
     }
 
-    /// Resolves a face pick's wrapped triangle index to the exact triangle under `ray`.
+    /// Resolves a wrapped face-pick triangle index to the exact triangle under `ray`.
     ///
-    /// The GPU pick format has 14 bits for the primitive index, so on a body with more than
-    /// `PickResult.maxPrimitivesPerKind` (16,384) triangles it reports the true index modulo
-    /// 16,384 and sets `PickResult.isPrimitiveIndexAmbiguous`. This tests each congruent
-    /// candidate (`wrappedIndex`, `wrappedIndex + 16_384`, …) against `ray`, in world space, and
-    /// returns the one hit nearest the ray origin. That is the triangle the GPU depth test kept.
-    /// The cost is one ray-triangle test per 16,384 triangles in the body.
+    /// Pre-#160 GPU pick targets had 14 bits for the primitive index, so on a body with more than
+    /// 16,384 triangles a pick reported the true index modulo 16,384. The pick target is now
+    /// RG32Uint and `PickResult.triangleIndex` is always exact, so there is nothing to resolve.
+    /// This stays for callers that still hold a wrapped index: it tests each congruent candidate
+    /// (`wrappedIndex`, `wrappedIndex + 16_384`, ...) against `ray`, in world space, and returns the
+    /// one hit nearest the ray origin.
     ///
     /// - Parameters:
-    ///   - wrappedIndex: `PickResult.triangleIndex` from a `.face` pick on this body.
+    ///   - wrappedIndex: A triangle index in `0..<16_384`, the true index modulo 16,384.
     ///   - ray: The world-space ray through the picked pixel, e.g. from `Ray.fromCamera(...)`.
-    /// - Returns: The exact triangle index, or `nil` when the ray hits no candidate. That can
-    ///   happen under `RenderingQuality.enhanced`/`.maximum`, where the GPU picks the curved
-    ///   tessellated surface but this tests the flat input triangles.
+    /// - Returns: The exact triangle index, or `nil` when the ray hits no candidate.
+    @available(
+        *, deprecated,
+        message: "Pick indices no longer wrap; PickResult.triangleIndex is exact."
+    )
     public func resolveWrappedTriangleIndex(_ wrappedIndex: Int, ray: Ray) -> Int? {
-        let modulus = PickResult.maxPrimitivesPerKind
+        let modulus = 1 << 14
         guard wrappedIndex >= 0, wrappedIndex < modulus else { return nil }
         let triangleCount = indices.count / 3
         var best: (index: Int, distance: Float)?

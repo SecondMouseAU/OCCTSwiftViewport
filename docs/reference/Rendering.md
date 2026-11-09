@@ -453,9 +453,9 @@ Clears the GPU buffer cache so all body buffers are rebuilt on the next draw cal
 public func performPick(at pixel: SIMD2<Int>, completion: @escaping @Sendable (PickResult?) -> Void)
 ```
 
-Asynchronously reads a single pixel from the R32Uint pick texture (populated during the previous frame's pick sub-pass) and calls `completion` on the main actor with the decoded `PickResult`, or `nil` for a background or no-hit pixel. The pixel coordinate is in drawable pixels (not points).
+Asynchronously reads a single pixel from the RG32Uint pick texture (populated during the previous frame's pick sub-pass) and calls `completion` on the main actor with the decoded `PickResult`, or `nil` for a background or no-hit pixel. The pixel coordinate is in drawable pixels (not points).
 
-Pick IDs are encoded as `objectIndex | (primitiveID << 16)`. The renderer rebuilds the `objectIndex → bodyID` map each frame.
+Each texel is two 32-bit channels: R is the body's draw-order `objectIndex` and G is a 30-bit primitive index plus a 2-bit kind (see [Picking: Bit layout](Picking.md#bit-layout)). The renderer rebuilds the `objectIndex → bodyID` map each frame. The texel is 8 bytes, so the readback and the texture are twice what the old R32Uint target took (see [Picking: Cost](Picking.md#cost)); in exchange a scene can hold 4 billion pickable bodies and a body 1 billion primitives per kind, and `triangleIndex` is always exact.
 
 **Example:**
 
@@ -465,7 +465,7 @@ let scale = renderer.lastDrawableSize.width / viewSize.width
 let drawablePx = SIMD2<Int>(Int(tapPt.x * scale), Int(tapPt.y * scale))
 renderer.performPick(at: drawablePx) { result in
     if let result {
-        print("Hit body \(result.bodyID), primitive \(result.primitiveID)")
+        print("Hit body \(result.bodyID), primitive \(result.triangleIndex)")
     }
 }
 ```
@@ -503,7 +503,7 @@ func renderHeadless(
 ) -> CGImage?
 ```
 
-`draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the R32Uint pick pass, the TAA resolve, the SSAO occlusion pass and its depth-aware blur (only when `enableSSAO` is on; the blur is skipped when `lightingConfiguration.ssaoBlur` is `false`), and the SSAO/silhouette composite. (Tone mapping is not a pass: the surface shader applies it, so both renderers get it.) `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
+`draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the RG32Uint pick pass, the TAA resolve, the SSAO occlusion pass and its depth-aware blur (only when `enableSSAO` is on; the blur is skipped when `lightingConfiguration.ssaoBlur` is `false`), and the SSAO/silhouette composite. (Tone mapping is not a pass: the surface shader applies it, so both renderers get it.) `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
 
 This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA, depth of field or pick pass, whereas this path *is* the live renderer.
 

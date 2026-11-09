@@ -6,7 +6,7 @@ nav_order: 6
 
 # Picking & Selection
 
-OCCTSwiftViewport resolves a tap or click through two complementary paths: a **GPU pick pass** that reads a single R32Uint texel to identify which body and primitive was hit, and a **CPU raycast** (`SceneRaycast`) that computes a precise world-space intersection point. Both paths are controlled from `ViewportController`.
+OCCTSwiftViewport resolves a tap or click through two complementary paths: a **GPU pick pass** that reads a single RG32Uint texel to identify which body and primitive was hit, and a **CPU raycast** (`SceneRaycast`) that computes a precise world-space intersection point. Both paths are controlled from `ViewportController`.
 
 ---
 
@@ -21,7 +21,7 @@ config.pickingConfiguration = PickingConfiguration(isEnabled: true)
 let controller = ViewportController(configuration: config)
 ```
 
-The renderer allocates a second R32Uint color attachment only when picking is enabled, keeping the default render path lean.
+The renderer allocates the RG32Uint pick texture (8 bytes per pixel: 16.6 MB at 1920 × 1080) and runs its 1× pick pass only when picking is enabled, keeping the default render path lean.
 
 ---
 
@@ -64,8 +64,7 @@ MetalViewportView(controller: controller, bodies: bodies)
 | `kind` | `PrimitiveKind` | `.face`, `.edge`, or `.vertex` |
 | `triangleIndex` | `Int` | Primitive index within the body (triangle for face picks, segment for edge picks, point for vertex picks) |
 | `pickLayer` | `PickLayer` | `.userGeometry` or `.widget` |
-| `rawValue` | `UInt32` | Raw R32Uint value (bits 0–15: objectIndex; 16–29: primitiveID; 30–31: kind) |
-| `isPrimitiveIndexAmbiguous` | `Bool` | `true` when the body has more than 16,384 primitives of the picked kind, so `triangleIndex` may have wrapped (see [Pick limits](#pick-limits)) |
+| `pickValue` | `UInt64` | Raw RG32Uint texel, `G << 32 \| R` (R: objectIndex; G bits 0–29: primitiveID, bits 30–31: kind) |
 
 `pickResult` carries `.userGeometry` picks. Widget-layer picks (manipulator handles, etc.) land separately in `widgetPickResult` and are never mixed into the selection stream.
 
@@ -345,21 +344,13 @@ controller.onPick = { result in
 
 ## Pick limits
 
-The GPU pick value is a single 32-bit integer, which caps two things:
+The GPU pick texture is RG32Uint, so `triangleIndex` is always exact:
 
-- **65,536 visible bodies per frame** (`PickResult.maxPickableBodies`). Bodies after that in draw order still hide what is behind them, but tapping them returns `nil`.
-- **16,384 primitives per kind per body** (`PickResult.maxPrimitivesPerKind`). On a bigger body the GPU reports the index modulo 16,384 and `isPrimitiveIndexAmbiguous` is `true`.
+- **4,294,967,295 visible bodies per frame** (`PickResult.maxPickableBodies`), counted in draw order.
+- **1,073,741,824 primitives per kind per body** (`PickResult.maxPrimitivesPerKind`).
 
-For face taps the built-in tap path resolves the wrapped index with a CPU ray test before it publishes `pickResult`, so `faceIndices[result.triangleIndex]` stays correct. Region picks, edge and vertex picks, and your own `performPick` calls are not resolved. Guard them:
+Both are far beyond what the renderer can hold, so there is nothing to guard: a tap, a `performPick` call or a region pick on a million-triangle STL reports the true triangle, edge or point index, and `faceIndices[result.triangleIndex]`, `edgeIndices[...]` and `vertexIndices[...]` can be indexed directly.
 
-```swift
-if result.isPrimitiveIndexAmbiguous {
-    // Face picks: resolve against the tap ray.
-    if result.kind == .face,
-        let exact = body.resolveWrappedTriangleIndex(result.triangleIndex, ray: tapRay)
-    {
-        let faceID = body.faceIndices[exact]
-    }
-    // Edge and vertex picks cannot be resolved this way: split the body, or treat the pick as body-level.
-}
-```
+Before issue #160 the target was R32Uint, which capped a frame at 65,536 pickable bodies and a body at 16,384 primitives per kind; a bigger body reported the index modulo 16,384 with `isPrimitiveIndexAmbiguous == true`. If you wrote code for that (checking the flag, calling `ViewportBody.resolveWrappedTriangleIndex(_:ray:)`), you can delete it: the flag is now always `false` and both are deprecated no-ops. `PickResult.rawValue` (a lossy `UInt32`) is deprecated in favour of `pickValue`.
+
+The price is the texture: 8 bytes per pixel instead of 4, so 16.6 MB at 1920 × 1080 and 66.4 MB at 3840 × 2160, and 8 bytes per pixel read back for each pick. See [Picking: Cost](../../reference/Picking.md#cost).

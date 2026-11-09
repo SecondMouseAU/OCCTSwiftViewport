@@ -231,11 +231,9 @@ of large ones with the same total geometry. If your source produces one body per
 component (e.g. per mesh connected-component), **merge components that share a
 material into a single `ViewportBody`** before handing them to the viewport. You
 can keep sub-component picking by maintaining a triangle→component map and using
-`ViewportBody.faceIndices`. GPU picks carry 14 bits of primitive index, so on a
-merged body with more than 16,384 triangles (or edge segments, or points) a pick
-sets `PickResult.isPrimitiveIndexAmbiguous`. Tapped faces are resolved for you;
-see [Picking limits](docs/reference/Picking.md#limits). A frame picks at most
-65,536 bodies.
+`ViewportBody.faceIndices`. GPU picks carry a 30-bit primitive index, so
+`PickResult.triangleIndex` is exact on a merged body of any size; see
+[Picking limits](docs/reference/Picking.md#limits).
 
 **Rules of thumb**
 - Aim for **low hundreds of bodies**, not thousands. Merging ~thousands of
@@ -472,7 +470,7 @@ ViewportController (@MainActor, ObservableObject — central hub)
       ├─ Axes pipeline     (RGB colored lines)
       ├─ Shadow map        (ShadowMapManager — directional light depth pass)
       ├─ Environment map   (EnvironmentMapManager — image-based lighting)
-      └─ Pick ID texture   (R32Uint second color attachment, TBDR imageblock)
+      └─ Pick ID texture   (RG32Uint, rendered in its own 1x pick pass)
 ```
 
 ### Key Types

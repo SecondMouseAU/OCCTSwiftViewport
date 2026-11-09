@@ -341,7 +341,7 @@ Lit surfaces are the only place the renderer does arithmetic on light, so the su
 3. tone maps in linear (see below);
 4. encodes back to sRGB once, and writes the result.
 
-Everything else (unlit bodies, edges, wireframe, grid, axes, background clear colour, highlights, the selection outline and overlays) draws its authored sRGB colour unchanged. Decoding and re-encoding the same value would be a no-op. The colour targets are plain `bgra8Unorm` holding sRGB values, so the pick target (`r32Uint`) and every unlit colour are untouched. Blending (transparency, line anti-aliasing) and TAA run on the sRGB values, as before.
+Everything else (unlit bodies, edges, wireframe, grid, axes, background clear colour, highlights, the selection outline and overlays) draws its authored sRGB colour unchanged. Decoding and re-encoding the same value would be a no-op. The colour targets are plain `bgra8Unorm` holding sRGB values, so the pick target (`rg32Uint`) and every unlit colour are untouched. Blending (transparency, line anti-aliasing) and TAA run on the sRGB values, as before.
 
 The SSAO / silhouette composite decodes the image to linear, applies occlusion, silhouettes and depth of field there, and re-encodes. The skybox (`drawBackground` with an environment map) is linear HDR, so it is scaled by `backgroundExposure`, tone mapped with `exposure` / `whitePoint`, and encoded like lit surfaces.
 

@@ -172,7 +172,7 @@ struct MeshletShadowUniformsTests {
                 {
                     _ = try RendererSharedSetup.makeMeshShaderPipelineState(
                         device: device, library: library, meshFunction: "meshlet_pick_mesh",
-                        fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .r32Uint,
+                        fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .rg32Uint,
                         depthPixelFormat: .depth32Float, label: "mesh_pick", reflected: $0)
                 }
             ),
