@@ -336,16 +336,16 @@ struct HeightfieldPassTests {
             try #require(renderer.render(bodies: [HeightfieldScene.body(field)], options: options)))
         // Keeps x < 50: the plane's positive side is where dot(N, P) + distance >= 0.
         options.clipPlanes = [ClipPlane(normal: SIMD3(-1, 0, 0), distance: 50)]
-        let cut = HeightfieldScene.pixels(
+        let clipped = HeightfieldScene.pixels(
             try #require(renderer.render(bodies: [HeightfieldScene.body(field)], options: options)))
         let wholeCount = ParityRender.count(whole.pixels, width: 128, height: 128) {
             !HeightfieldScene.isBackground($0)
         }
-        let cutCount = ParityRender.count(cut.pixels, width: 128, height: 128) {
+        let clippedCount = ParityRender.count(clipped.pixels, width: 128, height: 128) {
             !HeightfieldScene.isBackground($0)
         }
-        print("CLIP: \(wholeCount) pixels whole, \(cutCount) after the section plane")
-        #expect(cutCount > wholeCount * 4 / 10 && cutCount < wholeCount * 6 / 10)
+        print("CLIP: \(wholeCount) pixels whole, \(clippedCount) after the section plane")
+        #expect(clippedCount > wholeCount * 4 / 10 && clippedCount < wholeCount * 6 / 10)
     }
 
     // MARK: Live against offscreen

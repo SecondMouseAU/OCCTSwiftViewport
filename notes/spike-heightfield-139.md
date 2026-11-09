@@ -1,6 +1,6 @@
 # Spike: dynamic heightfield surface (issue #139)
 
-**Status: COMPLETE (phases 1-4 landed, gates passed).** Branch `spike/heightfield-139`, cut from `origin/main` at `0751a58`
+**Status: COMPLETE (phases 1-4 landed, gates passed).** Branch `spike/heightfield-139`, branched from `origin/main` at `0751a58`
 (v1.3.1). Research prototype, not a PR. Commits are `spike: phase N ...`.
 
 Question: can the viewport draw a 2000 x 2000-cell height grid, updated in place by rectangle,
@@ -165,7 +165,7 @@ Findings from the numbers:
 2. **`replace` itself is the CPU limiter**: 21 us per 130 x 120 call (3.1M cells in 2.6 ms) on the caller's
    thread; fine for 200 per frame on one core but worth vectorising (it widens min/max per cell).
 3. The update's GPU work is negligible; its CPU cost is dominated by the mirror-to-staging memcpy (0.8 ms for
-   16 MB). Merging dirty tiles into row runs cut the blit commands from 2 per tile to 2 per run; the
+   16 MB). Merging dirty tiles into row runs reduced the blit commands from 2 per tile to 2 per run; the
    disjoint case's update GPU time is 1.3 ms.
 
 ### Dead ends and surprises
@@ -261,7 +261,7 @@ per frame and shared.
 
 Also checked: shadow casting (a 40-high block throws a shadow over 3,738 pixels, identical count in the live
 and the offscreen renderer), silhouettes see the field's depth (1,040 pixels, identical in both), section
-planes cut it (the footprint halves), live and offscreen shaded output are pixel-identical (0 differing
+planes clip it (the footprint halves), live and offscreen shaded output are pixel-identical (0 differing
 pixels, shadows on), float16 heights render identically to float32 for exactly representable values at half
 the height upload.
 
