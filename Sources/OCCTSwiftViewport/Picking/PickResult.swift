@@ -93,6 +93,11 @@ public struct PickResult: Sendable, Equatable {
     /// `widgetPickResult`, so widget hits never leak into the user selection stream.
     public let pickLayer: PickLayer
 
+    /// For a pick of a ``ViewportBody/heightfield`` body: the cell hit and its height, attribute
+    /// and id (``Heightfield/tracksIDs``), read when the pick was decoded. `nil` for every other
+    /// pick. `triangleIndex` of such a result is the cell index (`y * width + x`).
+    public let heightfield: HeightfieldHit?
+
     /// `true` only for a result decoded from a legacy 32-bit value with `init(rawValue:...)`.
     private let legacyWrapped: Bool
 
@@ -135,7 +140,20 @@ public struct PickResult: Sendable, Equatable {
     ) {
         self.init(
             decoded: PickEncoding.decode(pickValue), pickValue: pickValue, indexMap: indexMap,
-            layerMap: layerMap, legacyWrapped: false)
+            layerMap: layerMap, legacyWrapped: false, heightfields: [:])
+    }
+
+    /// As `init(pickValue:indexMap:layerMap:)`, resolving a hit on a heightfield body in
+    /// `heightfields` (body id to handle) to its cell data.
+    init?(
+        pickValue: UInt64,
+        indexMap: [Int: String],
+        layerMap: [String: PickLayer],
+        heightfields: [String: Heightfield]
+    ) {
+        self.init(
+            decoded: PickEncoding.decode(pickValue), pickValue: pickValue, indexMap: indexMap,
+            layerMap: layerMap, legacyWrapped: false, heightfields: heightfields)
     }
 
     /// Decodes a value in the pre-#160 R32Uint layout, `objectIndex (16) | primitiveID (14) << 16 |
@@ -170,14 +188,17 @@ public struct PickResult: Sendable, Equatable {
         }
         self.init(
             decoded: decoded, pickValue: wide ?? PickEncoding.noHit, indexMap: indexMap,
-            layerMap: layerMap, legacyWrapped: wrapped)
+            layerMap: layerMap, legacyWrapped: wrapped, heightfields: [:])
     }
 
     private init?(
         decoded: PickEncoding.Decoded?, pickValue: UInt64, indexMap: [Int: String],
-        layerMap: [String: PickLayer], legacyWrapped: Bool
+        layerMap: [String: PickLayer], legacyWrapped: Bool, heightfields: [String: Heightfield]
     ) {
         guard let decoded, let bodyID = indexMap[Int(decoded.objectIndex)] else { return nil }
+        self.heightfield =
+            decoded.kind == .face
+            ? heightfields[bodyID]?.hit(cellIndex: decoded.primitiveIndex) : nil
 
         self.bodyID = bodyID
         self.bodyIndex = Int(decoded.objectIndex)

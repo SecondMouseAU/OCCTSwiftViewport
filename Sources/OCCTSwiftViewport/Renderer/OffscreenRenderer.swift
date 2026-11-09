@@ -498,9 +498,6 @@ private struct SampledPipelines {
     let stencilMaskPipeline: MTLRenderPipelineState?
     let stencilMaskDirectPipeline: MTLRenderPipelineState?
 
-    /// Heightfield surface pipelines (issue #139 spike).
-    let heightfield: HeightfieldPipelines?
-
     init?(device: MTLDevice, library: MTLLibrary, sampleCount: Int) {
         let depthFormat: MTLPixelFormat = .depth32Float_stencil8
         let vertexDesc = RendererSharedSetup.interleavedVertexDescriptor()
@@ -563,8 +560,6 @@ private struct SampledPipelines {
         stencilMaskDirectPipeline = RendererSharedSetup.makeStencilMaskPipelineState(
             device: device, library: library, sampleCount: sampleCount,
             depthFormat: depthFormat, vertexDescriptor: directVertexDesc)
-        heightfield = HeightfieldPipelines(
-            device: device, library: library, sampleCount: sampleCount, depthFormat: depthFormat)
     }
 }
 
@@ -651,15 +646,17 @@ public final class OffscreenRenderer: Sendable {
     private var bodyGeneration: [String: UInt64] = [:]
 
     // Heightfield bodies (issue #139 spike): GPU state per body id, built on first use.
-    private var heightfieldShared: HeightfieldShared?
-    private var heightfieldPipelinesBySamples: [Int: HeightfieldPipelines] = [:]
-    private var heightfieldStates: [String: HeightfieldGPU] = [:]
-    private var heightfieldPlanPool: FrameBufferPool?
+    private lazy var heightfieldCache = HeightfieldRenderCache(device: device, library: library)
     /// Draws every heightfield tile at this level (tests).
-    var heightfieldForcedLevel: Int?
-    /// A heightfield mesh cell is at most about this wide on screen. 2 px made 1.7M micro-triangles
-    /// at 1668 x 1194 and cost 23 ms on an M4 with MSAA 4; 4 px costs 2.5 ms.
-    var heightfieldTargetPixels: Float = 4
+    var heightfieldForcedLevel: Int? {
+        get { heightfieldCache.forcedLevel }
+        set { heightfieldCache.forcedLevel = newValue }
+    }
+    /// A heightfield mesh cell is at most about this wide on screen.
+    var heightfieldTargetPixels: Float {
+        get { heightfieldCache.targetPixels }
+        set { heightfieldCache.targetPixels = newValue }
+    }
     /// CPU seconds the last `render` spent encoding, and GPU seconds its main command buffer ran
     /// (`gpuEndTime - gpuStartTime`); for the spike's measurements.
     private(set) var lastEncodeSeconds: Double = 0
@@ -780,7 +777,6 @@ public final class OffscreenRenderer: Sendable {
             ensureBuffers(for: body, options: options, refinement: refinement)
         }
         pruneBufferCache(keeping: bodies)
-        let heightfieldBodies = syncHeightfields(bodies, sampleCount: sampleCount)
 
         // Scene-adaptive clip planes (issue #57): fit near/far to the visible
         // geometry so depth precision isn't crushed by a fixed 0.01/10000 range.
@@ -891,18 +887,9 @@ public final class OffscreenRenderer: Sendable {
 
         // Heightfields: upload the tiles edited since the last draw, then choose each tile's level
         // of detail for this camera (issue #139 spike).
-        var heightfieldPlans: [String: HeightfieldDrawPlan] = [:]
-        if !heightfieldBodies.isEmpty, let planPool = heightfieldPlanPool {
-            for (body, state) in heightfieldBodies {
-                state.encodeUpdates(commandBuffer: commandBuffer)
-                heightfieldPlans[body.id] = state.makePlan(
-                    view: HeightfieldView(
-                        model: body.transform, view: viewMatrix, projection: projMatrix,
-                        viewportHeight: Float(h), targetPixels: heightfieldTargetPixels,
-                        forcedLevel: heightfieldForcedLevel),
-                    pool: planPool, commandBuffer: commandBuffer)
-            }
-        }
+        let heightfieldEntries = heightfieldCache.prepare(
+            bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
+            projection: projMatrix, viewportHeight: Float(h))
 
         // Tessellation factors for this camera and output size (#165), which the mesh stage
         // subdivides by too (#175). Never load-governed, so the same options always give the same
@@ -1405,9 +1392,12 @@ public final class OffscreenRenderer: Sendable {
         }
 
         // Heightfield surfaces (issue #139 spike).
-        if displayMode.showsSurfaces, let heightfieldPipelines = pipelines.heightfield {
-            for (body, state) in heightfieldBodies where body.renderLayer == .geometry {
-                guard let plan = heightfieldPlans[body.id] else { continue }
+        if displayMode.showsSurfaces,
+            let heightfieldPipelines = heightfieldCache.pipelines(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        {
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                let body = entry.body
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
                 var bodyUniforms = BodyUniforms(
@@ -1423,7 +1413,7 @@ public final class OffscreenRenderer: Sendable {
                 if shadowEnabled, let shadowTex = shadowMapManager.texture {
                     mainEncoder.setFragmentTexture(shadowTex, index: 1)
                 }
-                state.encodeShadedDraws(encoder: mainEncoder, plan: plan)
+                entry.state.encodeShadedDraws(encoder: mainEncoder, plan: entry.plan)
             }
         }
 
@@ -2113,36 +2103,10 @@ public final class OffscreenRenderer: Sendable {
         return false
     }
 
-    /// Creates or refreshes the GPU state of every visible heightfield body, drops the state of
-    /// bodies no longer passed, and returns the bodies to draw with their state.
-    private func syncHeightfields(_ bodies: [ViewportBody], sampleCount: Int) -> [(
-        ViewportBody, HeightfieldGPU
-    )] {
-        var drawn: [(ViewportBody, HeightfieldGPU)] = []
-        var active = Set<String>()
-        for body in bodies {
-            guard let field = body.heightfield else { continue }
-            active.insert(body.id)
-            guard body.isVisible else { continue }
-            if heightfieldShared == nil {
-                heightfieldShared = HeightfieldShared(device: device, library: library)
-            }
-            guard let shared = heightfieldShared else { continue }
-            if heightfieldPlanPool == nil { heightfieldPlanPool = FrameBufferPool(device: device) }
-            if heightfieldStates[body.id]?.field !== field {
-                heightfieldStates[body.id] = HeightfieldGPU(
-                    field: field, device: device, shared: shared)
-            }
-            if let state = heightfieldStates[body.id] { drawn.append((body, state)) }
-        }
-        for id in heightfieldStates.keys where !active.contains(id) {
-            heightfieldStates.removeValue(forKey: id)
-        }
-        return drawn
-    }
-
     /// The GPU state of the heightfield body `id`; exposed for tests.
-    func heightfieldState(forBodyID id: String) -> HeightfieldGPU? { heightfieldStates[id] }
+    func heightfieldState(forBodyID id: String) -> HeightfieldGPU? {
+        heightfieldCache.states[id]
+    }
 
     /// The command queue, for tests that read GPU resources back.
     var testCommandQueue: MTLCommandQueue { commandQueue }

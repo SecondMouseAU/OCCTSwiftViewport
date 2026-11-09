@@ -174,7 +174,7 @@ public final class PivotStrategy {
             guard body.isVisible && body.renderLayer == .geometry else { continue }
 
             // Skip if generation hasn't changed
-            if generationCache[body.id] == body.generation { continue }
+            if generationCache[body.id] == body.boundsKey { continue }
 
             // Recompute BB
             if let bb = body.boundingBox {
@@ -182,7 +182,7 @@ public final class PivotStrategy {
             } else {
                 bbCache.removeValue(forKey: body.id)
             }
-            generationCache[body.id] = body.generation
+            generationCache[body.id] = body.boundsKey
         }
 
         // Prune stale entries

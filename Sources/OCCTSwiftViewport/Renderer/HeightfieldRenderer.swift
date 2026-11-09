@@ -150,6 +150,103 @@ struct HeightfieldDrawPlan {
     var tileCount: Int { levelHistogram.reduce(0, +) }
 }
 
+// MARK: - Per-renderer cache
+
+/// What one renderer keeps for all of its heightfield bodies: the shared kernel and index
+/// buffers, the pipelines per sample count, one `HeightfieldGPU` per body id, and the pool the
+/// per-frame instance buffers come from.
+@MainActor
+final class HeightfieldRenderCache {
+
+    /// One heightfield body to draw this frame.
+    struct Entry {
+        let body: ViewportBody
+        /// The body's draw-order pick index (its ordinal among the visible bodies).
+        let objectIndex: UInt32
+        let state: HeightfieldGPU
+        let plan: HeightfieldDrawPlan
+    }
+
+    private let device: MTLDevice
+    private let library: MTLLibrary
+    private var shared: HeightfieldShared?
+    private var pipelinesBySamples: [Int: HeightfieldPipelines] = [:]
+    private var pickPipeline: MTLRenderPipelineState?
+    private(set) var states: [String: HeightfieldGPU] = [:]
+    private lazy var planPool = FrameBufferPool(device: device)
+
+    /// Draws every tile at this level (tests).
+    var forcedLevel: Int?
+    /// A mesh cell is at most about this wide on screen. 2 px made 1.7M micro-triangles at
+    /// 1668 x 1194 and cost 24 ms on an M4 with MSAA 4; 4 px costs under 3 ms.
+    var targetPixels: Float = 4
+
+    init(device: MTLDevice, library: MTLLibrary) {
+        self.device = device
+        self.library = library
+    }
+
+    func pipelines(sampleCount: Int, depthFormat: MTLPixelFormat) -> HeightfieldPipelines? {
+        if let cached = pipelinesBySamples[sampleCount] { return cached }
+        guard
+            let built = HeightfieldPipelines(
+                device: device, library: library, sampleCount: sampleCount,
+                depthFormat: depthFormat)
+        else { return nil }
+        pipelinesBySamples[sampleCount] = built
+        return built
+    }
+
+    /// The pick pipeline: `rg32Uint` colour and `depth32Float`, one sample, like every pick pass.
+    func pickPipelineState() -> MTLRenderPipelineState? {
+        if let pickPipeline { return pickPipeline }
+        pickPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_pick", library: library,
+            vertexFunction: "heightfield_pick_vertex",
+            fragmentFunction: "heightfield_pick_fragment", colorPixelFormat: .rg32Uint,
+            depthPixelFormat: .depth32Float)
+        return pickPipeline
+    }
+
+    /// Creates or refreshes the GPU state of every visible heightfield body, drops the state of
+    /// bodies no longer passed, encodes the pending uploads at the head of `commandBuffer`, and
+    /// plans each body's tiles for this camera.
+    func prepare(
+        bodies: [ViewportBody], commandBuffer: MTLCommandBuffer, view: simd_float4x4,
+        projection: simd_float4x4, viewportHeight: Float
+    ) -> [Entry] {
+        var entries: [Entry] = []
+        var active = Set<String>()
+        var objectIndex: UInt32 = 0
+        for body in bodies {
+            guard let field = body.heightfield else {
+                if body.isVisible { objectIndex += 1 }
+                continue
+            }
+            active.insert(body.id)
+            guard body.isVisible else { continue }
+            let index = objectIndex
+            objectIndex += 1
+            if shared == nil { shared = HeightfieldShared(device: device, library: library) }
+            guard let shared else { continue }
+            if states[body.id]?.field !== field {
+                states[body.id] = HeightfieldGPU(field: field, device: device, shared: shared)
+            }
+            guard let state = states[body.id] else { continue }
+            state.encodeUpdates(commandBuffer: commandBuffer)
+            let plan = state.makePlan(
+                view: HeightfieldView(
+                    model: body.transform, view: view, projection: projection,
+                    viewportHeight: viewportHeight, targetPixels: targetPixels,
+                    forcedLevel: forcedLevel),
+                pool: planPool, commandBuffer: commandBuffer)
+            entries.append(Entry(body: body, objectIndex: index, state: state, plan: plan))
+        }
+        for id in states.keys where !active.contains(id) { states.removeValue(forKey: id) }
+        return entries
+    }
+}
+
 // MARK: - Per-body GPU state
 
 /// The GPU copy of one `Heightfield` for one renderer.
@@ -558,6 +655,13 @@ final class HeightfieldGPU {
         encoder.setFragmentTexture(heights, index: 5)
         encoder.setFragmentTexture(attributes, index: 6)
         encoder.setFragmentBuffer(rampBuffer, offset: 0, index: 4)
+        encodeDraws(encoder: encoder, plan: plan, setFragmentParams: true)
+    }
+
+    /// Draws every planned tile with the pick pipeline already set on `encoder`; the fragment
+    /// stage reads the draw parameters (field size) and the caller binds the body uniforms.
+    func encodePickDraws(encoder: MTLRenderCommandEncoder, plan: HeightfieldDrawPlan) {
+        encoder.setVertexTexture(heights, index: 0)
         encodeDraws(encoder: encoder, plan: plan, setFragmentParams: true)
     }
 

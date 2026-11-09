@@ -42,6 +42,20 @@ public struct HeightfieldRegion: Sendable, Hashable {
     }
 }
 
+/// A pick that landed on a heightfield: the cell and what it held when the pick was decoded.
+public struct HeightfieldHit: Sendable, Hashable {
+    /// The cell, column `x` and row `y`.
+    public let cell: SIMD2<Int>
+    /// `y * width + x`, which is also ``PickResult/triangleIndex``.
+    public let cellIndex: Int
+    /// The cell's height.
+    public let height: Float
+    /// The cell's attribute (0 = untouched).
+    public let attribute: UInt8
+    /// The cell's id when the field ``Heightfield/tracksIDs``, else `nil`.
+    public let id: UInt32?
+}
+
 /// How a heightfield's heights are stored on the GPU.
 public enum HeightfieldPrecision: Sendable, Hashable {
     /// 32-bit floats (`r32Float`). The default.
@@ -190,6 +204,17 @@ public final class Heightfield: @unchecked Sendable {
         }
     }
 
+    /// The pick payload for cell index `cellIndex` (`y * width + x`), or `nil` outside the field.
+    func hit(cellIndex: Int) -> HeightfieldHit? {
+        guard cellIndex >= 0, cellIndex < width * height else { return nil }
+        let x = cellIndex % width
+        let y = cellIndex / width
+        guard let cell = sample(x: x, y: y) else { return nil }
+        return HeightfieldHit(
+            cell: SIMD2(x, y), cellIndex: cellIndex, height: cell.height, attribute: cell.attribute,
+            id: cell.id)
+    }
+
     /// The cell containing the body-local point `(x, y)`, or `nil` outside the field.
     public func cell(atLocal point: SIMD2<Float>) -> SIMD2<Int>? {
         let c = (point - origin) / cellSize
@@ -313,6 +338,118 @@ public final class Heightfield: @unchecked Sendable {
             if lo != s.minHeight || hi != s.maxHeight { s.boundsVersion &+= 1 }
             s.minHeight = lo
             s.maxHeight = hi
+        }
+    }
+
+    // MARK: - Ray casting
+
+    /// The first hit of a body-local ray on the full-resolution surface, by walking the grid.
+    ///
+    /// Walks the quads the ray's XY projection crosses (Amanatides and Woo), skipping a quad whose
+    /// corner heights the ray passes clear of, and tests the two triangles the renderer draws per
+    /// quad. Exact at any level of detail, so it can refine a GPU pick. `direction` need not be
+    /// unit length; the distance is in its units. The cost is one step per quad crossed, so a ray
+    /// across a 2000-cell field is a few thousand steps.
+    ///
+    /// - Returns: The hit's distance and the cell it lies in, or `nil`.
+    public func raycast(
+        origin o: SIMD3<Float>, direction d: SIMD3<Float>, maxDistance: Float = .infinity
+    ) -> (distance: Float, cell: SIMD2<Int>)? {
+        let cs = cellSize
+        // The surface spans the cell centres.
+        let lo = SIMD2(origin.x + 0.5 * cs.x, origin.y + 0.5 * cs.y)
+        let quadsX = width - 1
+        let quadsY = height - 1
+        guard quadsX > 0, quadsY > 0 else { return nil }
+        let hi = SIMD2(lo.x + Float(quadsX) * cs.x, lo.y + Float(quadsY) * cs.y)
+        let range = heightRange
+
+        // Slab test against the surface's box.
+        var tEnter: Float = 0
+        var tExit = maxDistance
+        let boxLo = SIMD3(lo.x, lo.y, range.lowerBound)
+        let boxHi = SIMD3(hi.x, hi.y, range.upperBound)
+        for axis in 0..<3 {
+            if abs(d[axis]) < 1e-12 {
+                if o[axis] < boxLo[axis] || o[axis] > boxHi[axis] { return nil }
+            } else {
+                var t0 = (boxLo[axis] - o[axis]) / d[axis]
+                var t1 = (boxHi[axis] - o[axis]) / d[axis]
+                if t0 > t1 { swap(&t0, &t1) }
+                tEnter = max(tEnter, t0)
+                tExit = min(tExit, t1)
+                if tEnter > tExit { return nil }
+            }
+        }
+
+        let tStart = tEnter
+        let tEnd = tExit
+        return state.withLock { s in
+            func h(_ x: Int, _ y: Int) -> Float { s.heights[y * width + x] }
+            let start = o + d * tStart
+            var qx = min(max(Int(((start.x - lo.x) / cs.x).rounded(.down)), 0), quadsX - 1)
+            var qy = min(max(Int(((start.y - lo.y) / cs.y).rounded(.down)), 0), quadsY - 1)
+            let stepX = d.x > 0 ? 1 : -1
+            let stepY = d.y > 0 ? 1 : -1
+            func nextBoundary(_ q: Int, step: Int, base: Float, size: Float) -> Float {
+                base + Float(step > 0 ? q + 1 : q) * size
+            }
+            var tMaxX =
+                abs(d.x) < 1e-12
+                ? Float.infinity
+                : (nextBoundary(qx, step: stepX, base: lo.x, size: cs.x) - o.x) / d.x
+            var tMaxY =
+                abs(d.y) < 1e-12
+                ? Float.infinity
+                : (nextBoundary(qy, step: stepY, base: lo.y, size: cs.y) - o.y) / d.y
+            let tDeltaX = abs(d.x) < 1e-12 ? Float.infinity : cs.x / abs(d.x)
+            let tDeltaY = abs(d.y) < 1e-12 ? Float.infinity : cs.y / abs(d.y)
+            var tIn = tStart
+
+            while qx >= 0, qx < quadsX, qy >= 0, qy < quadsY, tIn <= tEnd {
+                let tOut = min(min(tMaxX, tMaxY), tEnd)
+                let h00 = h(qx, qy)
+                let h10 = h(qx + 1, qy)
+                let h01 = h(qx, qy + 1)
+                let h11 = h(qx + 1, qy + 1)
+                let top = max(max(h00, h10), max(h01, h11))
+                let bottom = min(min(h00, h10), min(h01, h11))
+                let zIn = o.z + d.z * tIn
+                let zOut = o.z + d.z * tOut
+                if min(zIn, zOut) <= top + 1e-4 && max(zIn, zOut) >= bottom - 1e-4 {
+                    let x0 = lo.x + Float(qx) * cs.x
+                    let y0 = lo.y + Float(qy) * cs.y
+                    let p00 = SIMD3(x0, y0, h00)
+                    let p10 = SIMD3(x0 + cs.x, y0, h10)
+                    let p01 = SIMD3(x0, y0 + cs.y, h01)
+                    let p11 = SIMD3(x0 + cs.x, y0 + cs.y, h11)
+                    let ray = Ray(origin: o, direction: d)
+                    var best: Float?
+                    for t in [
+                        ray.intersectsTriangle(v0: p00, v1: p10, v2: p11),
+                        ray.intersectsTriangle(v0: p00, v1: p11, v2: p01),
+                    ] {
+                        if let t, t >= 0, t <= maxDistance, best == nil || t < best! { best = t }
+                    }
+                    if let best {
+                        let hit = o + d * best
+                        let cx = min(
+                            max(Int(((hit.x - origin.x) / cs.x).rounded(.down)), 0), width - 1)
+                        let cy = min(
+                            max(Int(((hit.y - origin.y) / cs.y).rounded(.down)), 0), height - 1)
+                        return (best, SIMD2(cx, cy))
+                    }
+                }
+                tIn = tOut
+                if tMaxX < tMaxY {
+                    qx += stepX
+                    tMaxX += tDeltaX
+                } else {
+                    qy += stepY
+                    tMaxY += tDeltaY
+                }
+            }
+            return nil
         }
     }
 

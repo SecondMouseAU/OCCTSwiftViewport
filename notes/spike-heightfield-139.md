@@ -174,5 +174,74 @@ Findings from the numbers:
 - Blitting one command per tile (1,600 per frame in the disjoint case) was replaced by runs; not measured
   before/after separately, since the total is small either way.
 
+## Phase 3: picking
+
+**Gate: PASSED** for acceptance 3 (cell, height, attribute, id through the live renderer's real pick
+pass); accuracy at coarse levels is a **finding** (below), with a CPU refinement that fixes it.
+
+### What was built
+- `heightfield_pick_vertex` (the same `hfDisplace`) and `heightfield_pick_fragment`, which stamps
+  `packPickID(object, cellIndex, kind 0)` where `cellIndex = y * width + x` of the pixel's position on the
+  drawn surface, computed from the interpolated grid position, so it is exact laterally at any level.
+  No new `PrimitiveKind`: the result is an ordinary `.face` pick whose `triangleIndex` is the cell index
+  (the third kind value stays free; adding an enum case would break exhaustive switches, as feared).
+  The pick pipeline lives in `HeightfieldRenderCache` and is 1 sample, `rg32Uint`, `depth32Float` like the
+  other pick pipelines.
+- **PickResult extension**: one additive optional field, `PickResult.heightfield: HeightfieldHit?`
+  (`cell`, `cellIndex`, `height`, `attribute`, `id`). The decoder resolves it from a `[bodyID: Heightfield]`
+  snapshot captured with the index map each frame, reading the CPU mirror at decode time, so the three
+  decode paths (exact, neighbourhood, region) all carry it, behind a defaulted parameter (no signature
+  breaks). The values are as of the pick, not as of the frame that was drawn.
+- The live `ViewportRenderer` got the heightfield cache, the update/plan step at the head of the frame
+  (`prepare`), the shaded draw and the pick draw. That is about 70 lines in `ViewportRenderer.swift`
+  and made `renderHeadlessBGRA` + `performPick` the test vehicle, as asked.
+- `Heightfield.raycast(origin:direction:)`: Amanatides-Woo walk of the quads the ray crosses, skipping a
+  quad the ray passes clear of, testing the two triangles the GPU draws. Hooked into
+  `SceneRaycast.cast` (a 6-line branch before `TrianglePositions`), so `PivotStrategy` and
+  focus-on-point work on a heightfield.
+- Bounds: `ViewportBody.boundingBox` has a heightfield branch (surface footprint x running height range).
+
+### Evidence
+- Exact pick, 300 x 200 field with distinct height/attribute/id in every cell, top-down: 56 pixels across the
+  field, every one returned the analytically expected cell, its height and attribute equal the mirror's, and
+  the id equals `x * 1000 + y`; `triangleIndex == cellIndex`, kind face.
+- A mesh body above the field wins its pixels and carries no heightfield payload; off-field pixels miss; the
+  field's `bodyIndex` is its draw-order index. A pick after `replace` (no new frame) sees the new height,
+  attribute and id. A region pick returns every distinct cell under the rectangle (between 300 and 500 distinct cells for a rectangle about 20 x 20 cells).
+- `Heightfield.raycast` equals a brute-force every-quad intersection on 600 random rays (from above,
+  grazing, from below, a non-unit cell size and a non-zero origin): same hit/miss, same distance to 1e-3.
+  Cost: 75 us for a near-grazing ray across 2000 cells in a DEBUG build.
+- `SceneRaycast.cast` hits a scaled and translated heightfield body and honours clip planes.
+
+### Pick accuracy at coarse levels (the honest part)
+The GPU pick hits the DRAWN (coarse, min-lowered) surface, so the cell is where the view ray meets that
+surface, not the true one. The error in cells is about `(true - coarse height) * tan(angle off vertical)`.
+Measured at 57 degrees off vertical, 1000 x 1000 cells, 90+ picks per cell (distance in cells between the
+GPU-picked cell and the exact `raycast` cell):
+
+| terrain | level 0 | level 1 | level 2 | level 3 | level 4 | natural (4 px) |
+|---|---|---|---|---|---|---|
+| smooth hills, median / p90 / max | 0 / 0 / 1 | 1 / 1 / 2 | 1.4 / 3 / 5 | 4 / 7 / 11 | 7 / 16 / 30 | 1 / 3 / 8 |
+| plateaus with 30-unit steps | 0 / 0 / 0 | 0 / 2 / 8 | 2 / 17 / 68 | 6 / 58 / 77 | 22 / 89 / 143 | 2 / 9 / 68 |
+| cell-scale roughness (+-10) | 0 / 0 / 4 | 18 / 30 / 42 | 22 / 36 / 74 | 25 / 40 / 82 | 29 / 47 / 94 | 21 / 36 / 74 |
+
+So: exact at level 0; a cell or two on smooth ground at the natural level; **tens of cells beside a tall step
+or on very rough ground at an oblique angle**, because min-lowering moves the drawn surface by the step
+height there. **Recommendation: use the GPU pick for body and approximate cell, then refine with
+`Heightfield.raycast` along the same view ray** (microseconds), which is exact at every level; a top-down
+pick is already exact at every level. The refinement is not wired into `performPick` (it needs the
+ray, which the pick pass does not have); doing so is a small follow-up in the controller.
+
+### Bounds invalidation (found by a failing test)
+`PivotStrategy` caches each body's box keyed by `body.generation`. A heightfield edit leaves the
+generation alone, so after an edit raised the surface the cached box kept the old top and a ray that should
+hit the raised block missed (a control run without the fix fails the test). Fixed with a `boundsKey`
+(`generation` mixed with the field's `boundsVersion`, which `replace` bumps only when the running
+min/max grow). Sites that read `body.boundingBox` directly (the renderers' per-frame scene bounds, the
+live renderer's `cachedLocalBounds` which has no buffer entry for a heightfield body) are always current;
+`ViewportController.overlayBoundsCache` is keyed by generation too but is overlay-only. Any future cache
+keyed by `generation` must use `boundsKey`. The running range never shrinks, so bounds can be loose;
+`recomputeHeightRange()` is the O(cells) reset.
+
 ## Open questions / for the on-device session
 (Filled in as the phases land.)

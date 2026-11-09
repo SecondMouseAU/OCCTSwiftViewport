@@ -130,6 +130,14 @@ public struct ViewportBody: Identifiable, Sendable {
     /// and `generation` therefore hold the same geometry.
     public private(set) var generation: UInt64
 
+    /// What a per-body bounds cache keys on: `generation`, plus the heightfield's bounds version.
+    ///
+    /// A heightfield is edited in place, so its bounds can grow while `generation` stays put.
+    var boundsKey: UInt64 {
+        guard let heightfield else { return generation }
+        return generation &* 1_000_003 &+ heightfield.boundsVersion
+    }
+
     /// Takes a fresh generation after a geometry field changed (not called during `init`).
     private mutating func geometryDidChange() {
         generation = Self.nextGeneration()
