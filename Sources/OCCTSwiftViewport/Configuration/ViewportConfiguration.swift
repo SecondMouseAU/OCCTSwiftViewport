@@ -213,9 +213,12 @@ public enum UniformTessellationFactor: Sendable, Equatable {
     /// and raises it again when there is headroom, with hysteresis so it does not oscillate.
     ///
     /// GPU frame time is longer for a frame that follows an idle GPU, which is every frame of a
-    /// debug build (its CPU-side encoding leaves the GPU idle). A debug build can therefore settle
-    /// on a lower factor than the same app in release (#238). Use `.fixed(_:)` to compare quality
-    /// across builds, and measure GPU time in a release build.
+    /// debug build (its CPU-side encoding leaves the GPU idle) and the first frame after a pause
+    /// (#238). The governor therefore counts a frame toward lowering the factor only when the GPU
+    /// was busy for at least 95% of the time since the previous frame ended, that is, when it is
+    /// the bottleneck (#241). A frame that follows an idle GPU can confirm headroom but never
+    /// shows overload, so a debug build or on-demand drawing keeps the factor where it was. Use
+    /// `.fixed(_:)` to compare quality across builds, and measure GPU time in a release build.
     case loadAdaptive(minimum: Int = 4)
     /// Always tessellate at this factor (clamped to `1...tessellationMaxFactor`).
     case fixed(Int)
@@ -503,9 +506,10 @@ public struct ViewportConfiguration: Sendable {
     /// The factor used when `adaptiveTessellation` is `false` (default `.loadAdaptive()`).
     ///
     /// `.loadAdaptive(minimum:)` scales the factor between `minimum` and
-    /// `tessellationMaxFactor` from the measured GPU frame time, the thermal state and Low
-    /// Power Mode. `.fixed(_:)` pins it. Off-screen renders always use the configured factor
-    /// (`tessellationMaxFactor` for `.loadAdaptive`), so their output stays deterministic.
+    /// `tessellationMaxFactor` from the measured GPU frame time (counted as overload only
+    /// while the GPU is saturated), the thermal state and Low Power Mode. `.fixed(_:)` pins it.
+    /// Off-screen renders always use the configured factor (`tessellationMaxFactor` for
+    /// `.loadAdaptive`), so their output stays deterministic.
     public var uniformTessellationFactor: UniformTessellationFactor
 
     // MARK: - Temporal Anti-Aliasing
