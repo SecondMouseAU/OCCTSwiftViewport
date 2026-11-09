@@ -476,20 +476,22 @@ struct MeshletHighlightTests {
         #expect(meshlet.red > plain.red * 98 / 100, "mesh \(meshlet) vs standard \(plain)")
     }
 
-    @Test("Offscreen: half-highlighted mesh-shader bodies show the same highlight as standard")
+    @Test("Offscreen: half-highlighted mesh-shader bodies show the same highlight as tessellation")
     func offscreenHalfHighlight() throws {
         guard Self.supportsMeshShaders else { return }
         var options = ParityRender.options(displayMode: .shaded)
         options.renderingQuality = .maximum
         let meshlet = Self.counts(
             try ParityRender.render([Self.highlightedSphere(everyOther: true)], options).pixels)
-        options.renderingQuality = .standard
-        let plain = Self.counts(
+        // Meshlets subdivide each triangle like PN tessellation (#175), and the highlight is
+        // drawn on that surface, so `.enhanced` is the reference rather than the flat mesh.
+        options.renderingQuality = .enhanced
+        let tessellated = Self.counts(
             try ParityRender.render([Self.highlightedSphere(everyOther: true)], options).pixels)
-        #expect(plain.red > 100, "test premise: some highlight: \(plain)")
+        #expect(tessellated.red > 100, "test premise: some highlight: \(tessellated)")
         #expect(
-            abs(meshlet.red - plain.red) <= max(plain.red / 50, 4),
-            "mesh \(meshlet) vs standard \(plain)")
+            abs(meshlet.red - tessellated.red) <= max(tessellated.red / 50, 4),
+            "mesh \(meshlet) vs tessellated \(tessellated)")
     }
 
     @Test("Live: a fully highlighted mesh-shader body is highlighted edge to edge")

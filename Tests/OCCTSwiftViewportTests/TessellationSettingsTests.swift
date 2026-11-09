@@ -288,7 +288,11 @@ struct TessellationSettingsTests {
                 return
             }
             #expect(standard > 0)
-            #expect(maximum == standard, "standard \(standard) vs maximum \(maximum)")
+            // Meshlets subdivide the cap like PN tessellation (#175), which rounds its outline by
+            // a few pixels; a wrongly culled meshlet would take the whole cap with it.
+            #expect(
+                abs(maximum - standard) <= max(standard / 50, 4),
+                "standard \(standard) vs maximum \(maximum)")
         }
     }
 

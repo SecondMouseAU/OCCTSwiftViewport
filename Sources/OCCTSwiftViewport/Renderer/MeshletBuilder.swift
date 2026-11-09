@@ -11,10 +11,25 @@ import simd
 
 /// Maximum vertices per meshlet.
 ///
-/// This and `kMeshletMaxTriangles` match the mesh shader's threadgroup output limits, so one
-/// meshlet always fits in a single threadgroup's output.
+/// The meshlet's own vertices, before any PN subdivision. The mesh stage splits a subdivided
+/// meshlet across several threadgroups (`kMeshletMaxSegments`), so these no longer bound the
+/// threadgroup's output.
 let kMeshletMaxVertices: Int = 64
 let kMeshletMaxTriangles: Int = 64
+
+/// Threads in one mesh threadgroup (`PN_MESH_THREADS` in Shaders.metal).
+///
+/// Each thread loops over the chunk's output vertices and primitives, so it does not have to
+/// match them.
+let kMeshletMeshThreads: Int = 128
+
+/// The most segments per edge a meshlet triangle is subdivided into (`PN_MAX_SEGMENTS` in
+/// Shaders.metal), so the mesh-shader path caps `tessellationMaxFactor` here (#175).
+///
+/// At 16 one triangle's 153 vertices and 256 primitives fit the 256 vertices and 512 primitives a
+/// mesh threadgroup can write, and a segment of the 4 px adaptive target spans a 64 px edge. The
+/// tessellated path allows up to 64.
+let kMeshletMaxSegments: Int = 16
 
 /// Descriptor for a single meshlet, uploaded to the GPU as raw bytes.
 ///
@@ -39,6 +54,11 @@ struct MeshletBuffers {
     let vertexIndexBuffer: MTLBuffer  // UInt32: global vertex indices (meshlet-local → global)
     let triangleIndexBuffer: MTLBuffer  // UInt8: meshlet-local triangle indices (3 per tri)
     let meshletCount: Int
+    /// The body's PN patches and per-frame tessellation factors.
+    ///
+    /// The mesh stage subdivides each triangle with them (#175). Set by `makeRefinementBuffers`;
+    /// a meshlet draw needs it.
+    var tessellation: TessellationBuffers?
 }
 
 /// Builds meshlets from triangle mesh data on CPU.

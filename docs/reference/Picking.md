@@ -82,7 +82,7 @@ G (bits 32–63 of pickValue) : bits  0–29 primitiveID (30 bits: triangle/segm
 
 The CPU keeps the texel as one `UInt64`, `pickValue = G << 32 | R` (Metal lays the texel out R then G, so a little-endian `UInt64` load of it is exactly that). `PickResult.pickValue` is that value, and `init?(pickValue:indexMap:layerMap:)` decodes it.
 
-For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data. Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
+For face picks the primitive ID is always the **input triangle index**, on every rendering quality: the standard pipeline uses `[[primitive_id]]`, the tessellated pipeline (`.enhanced`) uses the patch ID (one PN patch per input triangle), and the mesh-shader pipeline (`.maximum` on Apple9+ GPUs) passes the global triangle index as per-primitive data, the same for every sub-triangle of a subdivided input triangle (#175). Before v1.2.3 the tessellated path reported the B-Rep face index and the mesh-shader path a meshlet-local index (0–63).
 
 ### Limits
 

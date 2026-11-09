@@ -867,9 +867,10 @@ public final class OffscreenRenderer: Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
-        // Tessellation factors for this camera and output size (#165). Never load-governed, so
-        // the same options always give the same image. Overlay bodies draw untessellated.
-        if refinement.tessellation, let tessellationManager {
+        // Tessellation factors for this camera and output size (#165), which the mesh stage
+        // subdivides by too (#175). Never load-governed, so the same options always give the same
+        // image. Overlay bodies draw untessellated.
+        if refinement.tessellation || refinement.meshShaders, let tessellationManager {
             let batch: [(TessellationBuffers, simd_float4x4)] = bodies.compactMap { body in
                 guard body.isVisible, body.renderLayer == .geometry,
                     let tess = bodyBufferCache[body.id]?.tessellation
@@ -963,12 +964,20 @@ public final class OffscreenRenderer: Sendable {
             return options.hoveredBodyID == body.id ? 2 : 0
         }
 
-        /// The PN patches `encodeSurface` draws a body's surface from, or `nil` when it draws the
-        /// plain mesh; the highlight, selection mask and outline follow it (#202).
+        /// The PN patches `encodeSurface` draws a body's surface from through the hardware
+        /// tessellator, or `nil` when it draws the plain mesh or its meshlets; the highlight,
+        /// selection mask and outline follow it (#202).
         func drawnPatches(_ buffers: BodyBuffersOffscreen) -> TessellationBuffers? {
             guard buffers.normalBuffer == nil, refined?.tessellatedShaded != nil else { return nil }
             if buffers.meshlets != nil, refined?.meshShaded != nil { return nil }
             return buffers.tessellation
+        }
+
+        /// The meshlets a body's surface is drawn from, or `nil` (#175). The highlight, selection
+        /// mask and stencil mask follow the subdivided surface like `drawnPatches`.
+        func drawnMeshlets(_ buffers: BodyBuffersOffscreen) -> MeshletBuffers? {
+            guard buffers.normalBuffer == nil, refined?.meshShaded != nil else { return nil }
+            return buffers.meshlets
         }
 
         // Selection mask (#209): the selected and hovered geometry bodies rasterised, without a
@@ -983,14 +992,15 @@ public final class OffscreenRenderer: Sendable {
                 buffers.indexCount > 0
             else { continue }
             let patches = drawnPatches(buffers)
+            let meshlets = drawnMeshlets(buffers)
             selectionMaskDraws.append(
                 SelectionMaskDraw(
                     code: selectionState(of: body), modelMatrix: body.transform,
                     vertexBuffer: vb, normalBuffer: buffers.normalBuffer, indexBuffer: ib,
-                    indexCount: buffers.indexCount, patches: patches,
+                    indexCount: buffers.indexCount, patches: patches, meshlets: meshlets,
                     worldBounds: SelectionMaskDraw.worldBounds(
                         local: body.boundingBox, transform: body.transform,
-                        tessellated: patches != nil)))
+                        tessellated: patches != nil || meshlets != nil)))
         }
         let outlineParams = RendererSharedSetup.selectionOutlineParams(
             selected: options.selectionOutline, hovered: options.hoverOutline)
@@ -1005,6 +1015,7 @@ public final class OffscreenRenderer: Sendable {
         {
             selectionMaskTexture = mask
             maskPipelines.tessellated = refined?.tessellatedSelectionMask
+            maskPipelines.mesh = refined?.meshSelectionMask
             RendererSharedSetup.encodeSelectionMaskPass(
                 commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
                 pipelines: maskPipelines, uniforms: makeUniforms())
@@ -1260,6 +1271,27 @@ public final class OffscreenRenderer: Sendable {
                     ? pipelines.highlightDirectPipeline : pipelines.highlightPipeline
             else { return }
             mainEncoder.setDepthStencilState(highlightDepthState)
+            // Over a mesh-shader surface the highlight is biased toward the viewer so it wins the
+            // depth tie with `meshlet_mesh`'s position (#213).
+            let overMeshlets =
+                buffers.normalBuffer == nil && buffers.meshlets != nil
+                && refined?.meshShaded != nil
+            if overMeshlets, let meshlets = buffers.meshlets,
+                let meshHighlight = refined?.meshHighlight
+            {
+                // On the subdivided surface the shaded pass drew (#175).
+                RendererSharedSetup.setHighlightDepthBias(
+                    on: mainEncoder, overMeshletSurface: true)
+                mainEncoder.setFragmentBytes(
+                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
+                RendererSharedSetup.encodeMeshletDraw(
+                    encoder: mainEncoder, pipeline: meshHighlight, meshlets: meshlets,
+                    uniforms: &uniforms)
+                RendererSharedSetup.setHighlightDepthBias(
+                    on: mainEncoder, overMeshletSurface: false)
+                return
+            }
             if let patches = drawnPatches(buffers), let tessellated = refined?.tessellatedHighlight
             {
                 mainEncoder.setFragmentBytes(
@@ -1278,11 +1310,6 @@ public final class OffscreenRenderer: Sendable {
             mainEncoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             mainEncoder.setFragmentBuffer(styleBuffer, offset: 0, index: 2)
-            // Over a mesh-shader surface the highlight is biased toward the viewer so it wins the
-            // depth tie with `meshlet_mesh`'s position (#213).
-            let overMeshlets =
-                buffers.normalBuffer == nil && buffers.meshlets != nil
-                && refined?.meshShaded != nil
             if overMeshlets {
                 RendererSharedSetup.setHighlightDepthBias(
                     on: mainEncoder, overMeshletSurface: true)
@@ -1495,6 +1522,13 @@ public final class OffscreenRenderer: Sendable {
             uniforms.modelMatrix = body.transform
             outlinedBodyIDs.insert(body.id)
             mainEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+            if let meshlets = drawnMeshlets(buffers), let meshStencil = refined?.meshStencilMask {
+                // The subdivided mesh-shader silhouette (#175).
+                RendererSharedSetup.encodeMeshletDraw(
+                    encoder: mainEncoder, pipeline: meshStencil, meshlets: meshlets,
+                    uniforms: &uniforms)
+                continue
+            }
             if let patches = drawnPatches(buffers),
                 let tessellated = refined?.tessellatedStencilMask
             {
@@ -2001,10 +2035,10 @@ public final class OffscreenRenderer: Sendable {
         uniforms: inout U,
         vertexColors: RendererSharedSetup.VertexColorBinding? = nil
     ) -> Bool {
-        guard buffers.normalBuffer == nil, let vb = buffers.vertexBuffer else { return false }
+        guard buffers.normalBuffer == nil, buffers.vertexBuffer != nil else { return false }
         if let meshlets = buffers.meshlets, let meshPipeline {
             RendererSharedSetup.encodeMeshletDraw(
-                encoder: encoder, pipeline: meshPipeline, meshlets: meshlets, vertexBuffer: vb,
+                encoder: encoder, pipeline: meshPipeline, meshlets: meshlets,
                 uniforms: &uniforms, vertexColors: vertexColors)
             return true
         }
@@ -2093,7 +2127,8 @@ public final class OffscreenRenderer: Sendable {
 
         let refined = RendererSharedBuffers.makeRefinementBuffers(
             for: body, smoothedVertexData: smoothed, mesh: mesh,
-            tessellationManager: refinement.tessellation ? tessellationManager : nil,
+            tessellationManager: refinement.tessellation || refinement.meshShaders
+                ? tessellationManager : nil,
             buildMeshlets: refinement.meshShaders, creaseAngle: options.normalSmoothingCreaseAngle,
             device: device, commandQueue: commandQueue)
 

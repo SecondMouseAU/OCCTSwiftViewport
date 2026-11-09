@@ -197,7 +197,10 @@ public enum RenderingQuality: Sendable {
     case standard
     /// Standard + GPU hardware tessellation with PN triangles (Apple3+).
     case enhanced
-    /// Enhanced + mesh shaders with per-meshlet culling (Apple9+ / M3+, falls back to enhanced).
+    /// Enhanced, drawn by mesh shaders (Apple9+ / M3+, falls back to enhanced): per-meshlet
+    /// culling, and the same PN-triangle subdivision as `.enhanced`, done in the mesh stage from
+    /// the same per-frame factors (#175). The mesh stage subdivides each edge into at most 16
+    /// segments, so `tessellationMaxFactor` above 16 is capped there.
     case maximum
 }
 
@@ -440,9 +443,10 @@ public struct ViewportConfiguration: Sendable {
     /// Angle in radians above which `autoSmoothNormals` leaves an edge sharp.
     ///
     /// Edges whose adjacent faces differ by more than this keep their crease; anything flatter
-    /// gets its normals averaged. Defaults to roughly 30°. PN-triangle tessellation (`.enhanced`,
-    /// and `.maximum` without mesh shaders) uses the same angle: a patch edge whose end normals
-    /// differ by more stays flat, and anything smoother bulges (#202). Raising it rounds coarse
+    /// gets its normals averaged. Defaults to roughly 30°. The PN-triangle patches of `.enhanced`
+    /// and `.maximum` (hardware tessellation, or subdivision in the mesh stage) use the same angle:
+    /// a patch edge whose end normals differ by more stays flat, and anything smoother bulges
+    /// (#202). Raising it rounds coarse
     /// meshes, but also smooths shading across sharper edges when `autoSmoothNormals` is on.
     public var normalSmoothingCreaseAngle: Float
 
@@ -479,7 +483,8 @@ public struct ViewportConfiguration: Sendable {
     /// The renderer clamps this to `2...64` and rounds odd values up to even, since Metal caps
     /// the factor at 64 and the fractional-even partitioning these pipelines use needs an even
     /// value. The tessellated pipelines are built with the value in effect when the renderer is
-    /// created; a later increase is capped to that value.
+    /// created; a later increase is capped to that value. The mesh-shader path of `.maximum`
+    /// subdivides each edge into at most 16 segments, so it caps the factor there (#175).
     public var tessellationMaxFactor: Int
 
     /// Whether tessellation adapts to screen-space edge length (default `true`).

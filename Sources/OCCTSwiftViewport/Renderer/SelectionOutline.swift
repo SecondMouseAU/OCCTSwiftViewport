@@ -21,11 +21,15 @@ struct SelectionMaskDraw {
     let indexCount: Int
     /// The PN patches the body's surface is drawn from, or `nil` for its plain mesh.
     let patches: TessellationBuffers?
+    /// The meshlets the body's surface is drawn from at `.maximum`, or `nil`; they win over
+    /// `patches` (#175).
+    var meshlets: MeshletBuffers?
     /// World-space bounds, for the outline's scissor rectangle; `nil` means unknown.
     let worldBounds: BoundingBox?
 
     /// World-space bounds for `worldBounds`: `local` moved by `transform`, grown by a quarter of
-    /// its diagonal when the surface is tessellated, since PN patches bulge past the flat mesh.
+    /// its diagonal when the surface is tessellated or drawn from subdivided meshlets, since PN
+    /// patches bulge past the flat mesh.
     nonisolated static func worldBounds(
         local: BoundingBox?, transform: simd_float4x4, tessellated: Bool
     ) -> BoundingBox? {
@@ -48,6 +52,8 @@ struct SelectionMaskPipelines {
     let direct: MTLRenderPipelineState
     /// `nil` when tessellation is unavailable; tessellated bodies then mask their plain mesh.
     var tessellated: MTLRenderPipelineState?
+    /// `nil` unless mesh shaders are in use; meshlet bodies are then masked through it (#175).
+    var mesh: MTLRenderPipelineState?
 }
 
 extension RendererSharedSetup {
@@ -132,6 +138,19 @@ extension RendererSharedSetup {
         return pipelines
     }
 
+    /// The selection-mask pipeline for meshlet bodies (#175): `meshlet_depth_mesh` +
+    /// `selection_mask_fragment`, so the mask covers the subdivided surface that was drawn.
+    ///
+    /// `nil` when the device rejects the mesh pipeline.
+    static func makeMeshShaderSelectionMaskPipelineState(
+        device: MTLDevice, library: MTLLibrary, label: String = "selection_mask_mesh"
+    ) -> MTLRenderPipelineState? {
+        try? makeMeshShaderPipelineState(
+            device: device, library: library, meshFunction: "meshlet_depth_mesh",
+            fragmentFunction: "selection_mask_fragment",
+            colorPixelFormat: selectionMaskPixelFormat, depthPixelFormat: .invalid, label: label)
+    }
+
     /// The outline pipeline: a full-screen triangle that dilates the selection mask.
     ///
     /// It draws into the main pass; paired with `makeStencilTestState(device:)` it lands only where the stencil is not 1.
@@ -195,6 +214,11 @@ extension RendererSharedSetup {
             var code = draw.code
             encoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
             encoder.setFragmentBytes(&code, length: MemoryLayout<UInt32>.size, index: 2)
+            if let meshlets = draw.meshlets, let mesh = pipelines.mesh {
+                encodeMeshletDraw(
+                    encoder: encoder, pipeline: mesh, meshlets: meshlets, uniforms: &bodyUniforms)
+                continue
+            }
             if let patches = draw.patches, let tessellated = pipelines.tessellated {
                 encodeTessellatedDraw(
                     encoder: encoder, pipeline: tessellated, tessellation: patches,
