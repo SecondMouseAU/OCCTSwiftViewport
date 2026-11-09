@@ -100,6 +100,27 @@ enum HeightfieldScene {
         return out
     }
 
+    /// Writes BGRA8 `pixels` as a PNG, for looking at a failing render.
+    static func writePNG(_ pixels: [UInt8], width: Int, height: Int, to path: String) {
+        var copy = pixels
+        let image = copy.withUnsafeMutableBytes { raw in
+            CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(
+                    rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                        | CGBitmapInfo.byteOrder32Little.rawValue
+                ).rawValue
+            )?.makeImage()
+        }
+        guard let image,
+            let dest = CGImageDestinationCreateWithURL(
+                URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil)
+        else { return }
+        CGImageDestinationAddImage(dest, image, nil)
+        CGImageDestinationFinalize(dest)
+    }
+
     static func pixels(_ image: CGImage) -> (pixels: [UInt8], width: Int, height: Int) {
         let (p, w, h) = ParityRender.bgra(image)
         return (p, w, h)

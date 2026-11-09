@@ -946,6 +946,19 @@ public final class OffscreenRenderer: Sendable {
                     enc.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
+                    // Heightfield surfaces cast shadows too (issue #139 spike).
+                    if let heightfieldShadow = heightfieldCache.shadowPipelineState() {
+                        enc.setRenderPipelineState(heightfieldShadow)
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP, modelMatrix: entry.body.transform)
+                            enc.setVertexBytes(
+                                &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                index: 1)
+                            entry.state.encodeDepthDraws(encoder: enc, plan: entry.plan)
+                        }
+                    }
+
                     // Overlay bodies are UI affordances and cast no shadows, as in the live pass.
                     for body in bodies where body.isVisible && body.renderLayer == .geometry {
                         guard let buffers = bodyBufferCache[body.id],
@@ -1666,6 +1679,7 @@ public final class OffscreenRenderer: Sendable {
                 pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
                 orthographic: projMatrix.columns.3.w > 0.5,
                 refined: refined,
+                heightfieldEntries: heightfieldEntries,
                 makeUniforms: makeUniforms
             )
         }
@@ -1793,6 +1807,7 @@ public final class OffscreenRenderer: Sendable {
         pixelsPerUnit: Float,
         orthographic: Bool,
         refined: RefinedPipelines?,
+        heightfieldEntries: [HeightfieldRenderCache.Entry],
         makeUniforms: () -> Uniforms
     ) {
         guard let compositePipeline = ssaoCompositePipeline,
@@ -1809,6 +1824,18 @@ public final class OffscreenRenderer: Sendable {
         depthPass.depthAttachment.clearDepth = 1.0
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthPass) {
             encoder.setDepthStencilState(depthState)
+            // Heightfield surfaces write depth too (issue #139 spike).
+            if let heightfieldDepth = heightfieldCache.depthPipelineState() {
+                encoder.setRenderPipelineState(heightfieldDepth)
+                for entry in heightfieldEntries where ViewportRenderer.writesSSAODepth(entry.body) {
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = entry.body.transform
+                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    encoder.setFragmentBytes(
+                        &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                    entry.state.encodeDepthDraws(encoder: encoder, plan: entry.plan)
+                }
+            }
             for body in bodies where body.isVisible && ViewportRenderer.writesSSAODepth(body) {
                 guard let buffers = bodyBufferCache[body.id],
                     let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,

@@ -444,6 +444,37 @@ struct HeightfieldUpdateTests {
         #expect(c.pixels == reference.pixels)
     }
 
+    @Test("Half-precision heights render as full precision does, in half the upload")
+    func halfPrecision() throws {
+        guard let full = OffscreenRenderer(), let half = OffscreenRenderer() else {
+            Issue.record("Metal device unavailable; skipping")
+            return
+        }
+        guard HeightfieldGPU.supportsHalf else { return }
+        // Heights on a 1/8 grid below 256 are exact in half precision, so the images must match.
+        let size = 300
+        let heights = (0..<(size * size)).map { i -> Float in
+            (HeightfieldScene.noise(i % size, i / size) * 100).rounded() / 8
+        }
+        let a = Heightfield(width: size, height: size, heights: heights, precision: .float32)
+        let b = Heightfield(width: size, height: size, heights: heights, precision: .float16)
+        let view = HeightfieldUpdates.TopDown(
+            pivot: SIMD3(150, 150, 0), scale: 320, width: 200, height: 200)
+        let opts = options(view)
+        let imageA = HeightfieldScene.pixels(
+            try #require(full.render(bodies: [HeightfieldScene.body(a)], options: opts)))
+        let imageB = HeightfieldScene.pixels(
+            try #require(half.render(bodies: [HeightfieldScene.body(b)], options: opts)))
+        #expect(imageA.pixels == imageB.pixels)
+        let bytesA = try #require(full.heightfieldState(forBodyID: "field")).uploadedBytes
+        let bytesB = try #require(half.heightfieldState(forBodyID: "field")).uploadedBytes
+        let heightBytesA = size * size * 4
+        let heightBytesB = size * size * 2
+        // Attributes are one byte per cell either way.
+        #expect(bytesA - bytesB >= (heightBytesA - heightBytesB) * 9 / 10)
+        #expect(try #require(half.heightfieldState(forBodyID: "field")).pixelFormat == .r16Float)
+    }
+
     @Test("Changing the ramp recolours without touching the textures")
     func rampChangeUploadsNothing() throws {
         guard let renderer = OffscreenRenderer() else {

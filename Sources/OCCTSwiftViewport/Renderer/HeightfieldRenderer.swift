@@ -172,6 +172,8 @@ final class HeightfieldRenderCache {
     private var shared: HeightfieldShared?
     private var pipelinesBySamples: [Int: HeightfieldPipelines] = [:]
     private var pickPipeline: MTLRenderPipelineState?
+    private var shadowPipeline: MTLRenderPipelineState?
+    private var depthPipeline: MTLRenderPipelineState?
     private(set) var states: [String: HeightfieldGPU] = [:]
     private lazy var planPool = FrameBufferPool(device: device)
 
@@ -195,6 +197,26 @@ final class HeightfieldRenderCache {
         else { return nil }
         pipelinesBySamples[sampleCount] = built
         return built
+    }
+
+    /// The shadow-map pipeline (depth only, `depth32Float`), as `shadow_vertex` + `shadow_clip_fragment`.
+    func shadowPipelineState() -> MTLRenderPipelineState? {
+        if let shadowPipeline { return shadowPipeline }
+        shadowPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_shadow", library: library,
+            vertexFunction: "heightfield_shadow_vertex",
+            fragmentFunction: "shadow_clip_fragment", depthPixelFormat: .depth32Float)
+        return shadowPipeline
+    }
+
+    /// The SSAO / silhouette depth prepass pipeline (depth only, `depth32Float`).
+    func depthPipelineState() -> MTLRenderPipelineState? {
+        if let depthPipeline { return depthPipeline }
+        depthPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_depth", library: library,
+            vertexFunction: "heightfield_depth_vertex",
+            fragmentFunction: "depth_only_clip_fragment", depthPixelFormat: .depth32Float)
+        return depthPipeline
     }
 
     /// The pick pipeline: `rg32Uint` colour and `depth32Float`, one sample, like every pick pass.
@@ -663,6 +685,12 @@ final class HeightfieldGPU {
     func encodePickDraws(encoder: MTLRenderCommandEncoder, plan: HeightfieldDrawPlan) {
         encoder.setVertexTexture(heights, index: 0)
         encodeDraws(encoder: encoder, plan: plan, setFragmentParams: true)
+    }
+
+    /// Draws every planned tile with the shadow or depth-only pipeline already set on `encoder`.
+    func encodeDepthDraws(encoder: MTLRenderCommandEncoder, plan: HeightfieldDrawPlan) {
+        encoder.setVertexTexture(heights, index: 0)
+        encodeDraws(encoder: encoder, plan: plan, setFragmentParams: false)
     }
 
     func encodeDraws(

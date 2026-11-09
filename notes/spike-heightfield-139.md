@@ -1,6 +1,6 @@
 # Spike: dynamic heightfield surface (issue #139)
 
-**Status: IN PROGRESS.** Branch `spike/heightfield-139`, cut from `origin/main` at `0751a58`
+**Status: COMPLETE (phases 1-4 landed, gates passed).** Branch `spike/heightfield-139`, cut from `origin/main` at `0751a58`
 (v1.3.1). Research prototype, not a PR. Commits are `spike: phase N ...`.
 
 Question: can the viewport draw a 2000 x 2000-cell height grid, updated in place by rectangle,
@@ -243,5 +243,120 @@ live renderer's `cachedLocalBounds` which has no buffer entry for a heightfield 
 keyed by `generation` must use `boundsKey`. The running range never shrinks, so bounds can be loose;
 `recomputeHeightRange()` is the O(cells) reset.
 
-## Open questions / for the on-device session
-(Filled in as the phases land.)
+## Phase 4: integration cost
+
+**Gate: PASSED.** Shadow and SSAO / silhouette depth are wired in BOTH renderers; the live shaded pass was
+cheap (it came with phase 3's `prepare` call).
+
+### Depth equality across vertex functions (unknown 1)
+`depthEqualAcrossPasses`: one 500 x 500 field with a rotating, non-uniformly scaled, translated body
+transform and a perspective camera, drawn through the real shaded (`heightfield_vertex` +
+`heightfield_fragment`), shadow (`heightfield_shadow_vertex`, the light matrix set to the camera's) and
+depth-only (`heightfield_depth_vertex`) pipelines into three depth textures, then read back. **All 65,536
+pixels are bit-identical (worst difference 0.0) for the natural levels (several in use, seams included),
+forced level 0 and forced level 3.** About 14,000 pixels are covered, and a second test proves the
+comparison can fail (level 0 against level 4 differ in more than 500 pixels). The reason it holds: every
+pass calls the one MSL function `hfDisplace`, and the plan (levels, instances, seam levels) is computed once
+per frame and shared.
+
+Also checked: shadow casting (a 40-high block throws a shadow over 3,738 pixels, identical count in the live
+and the offscreen renderer), silhouettes see the field's depth (1,040 pixels, identical in both), section
+planes cut it (the footprint halves), live and offscreen shaded output are pixel-identical (0 differing
+pixels, shadows on), float16 heights render identically to float32 for exactly representable values at half
+the height upload.
+
+### Cost of the extra passes (M4, release, 2000 x 2000, 1668 x 1194, MSAA 4, 4 px target)
+| passes | GPU ms |
+|---|---|
+| shaded only | 2.6 |
+| shaded + shadow map + SSAO + silhouettes | 5.2 |
+
+Draw count: one instanced draw per level present per pass. The test camera has 2 levels in use, so 2 draws per
+pass, 8 across shaded + shadow + depth + pick (a mesh body is 1 per pass, 4); the worst case is 7 levels x 4
+passes = 28 draws. CPU encode of the whole `render` call, plan included, is 0.13 ms in release; the plan
+(levels for 1,014 tiles, neighbour levels, frustum cull, instance buffer) is 0.12 ms. A tile costs 16 bytes
+of instance data; 1,014 tiles is 16 KB per frame.
+
+### Remaining integration sites (unknown 5)
+Done in the spike: shaded opaque (both), shadow (both), SSAO / silhouette depth prepass (both), pick (live;
+the offscreen renderer has no pick pass at all), section planes (every fragment stage), bounds
+(`boundingBox`, which feeds scene bounds, clip-plane fitting, shadow framing, grid and axes sizing, camera
+fit), `SceneRaycast`, `PivotStrategy` cache, per-body frustum culling (the tile cull replaces it).
+
+| site | renderers | what is needed | estimate |
+|---|---|---|---|
+| Translucent surface (`opacity < 1`, `.xray`) | live transparent pass, offscreen transparent pass | Today an alpha < 1 field draws in the opaque pass, blended but writing depth. Defer to the sorted pass with the no-write depth state (no cull order needed for a sheet), depth-sort by world bounds, skip the depth prepass (`writesSSAODepth` already does), decide pick | 1 day |
+| Selection mask + stencil mark + outline (#209) | both (`selectionMaskDraws`, `stencilMask` loops) | Tint already works (`isSelected`). The outline needs the mask pass (`heightfield_depth_vertex` + `selection_mask_fragment`) and a stencil-only pipeline for the mark, plus a loop in each place | 1 day |
+| Wire / edges display mode, `edgeDrawRange`, `edgeColors` | both | A heightfield has no edge geometry. `.wireframe` currently draws nothing for it. A lattice would need per-level line index buffers and a `heightfield_wire_vertex` pipeline | 1-2 days, only if wanted |
+| Clip-plane tile culling | both | Correct already (fragment discard); culling whole tiles against the planes is perf only | 0.5 day |
+| Shadow tile culling | both | The shadow pass reuses the camera's tile list, so an off-screen tile casts no shadow. Needs a second plan against the light frustum (0.12 ms) | 0.5 day |
+| Overlay layer (`renderLayer == .overlay`) | both | Not drawn. Draw in the overlay pass with always-pass depth, or document as unsupported | 0.5 day |
+| Per-triangle highlight (`triangleStyles`) | both | N/A by construction: the per-cell attribute ramp is the equivalent. `highlight` pipelines skip heightfield bodies | 0 |
+| Vertex colours (`vertexColorMode`) | both | N/A: the ramp replaces them | 0 |
+| Tessellation, mesh shaders (`renderingQuality`), normal smoothing | both | N/A: a heightfield bypasses them | 0 |
+| TAA | live | The jittered projection reaches the plan and every draw, so it works. A surface that is being edited ghosts in the history like any animated body (not tested) | 0.5 day to check |
+| Offscreen pick | offscreen | There is no pick pass in `OffscreenRenderer` for any body. A shared one would serve all body kinds | inherited gap |
+| Refine a pick with `raycast` | live | `performPick` has no ray; the refinement belongs in the controller where the camera is known | 0.5 day |
+| Public configuration | both | Level-of-detail target (pixels), maybe tile size; currently internal vars | 0.5 day |
+| Limits and failure paths | both | Fields wider than the device's 16,384-texel limit (the padded texture) fail `HeightfieldGPU.init`, which today silently draws nothing; a throwing or logging path is needed. Intel Macs have no `Float16`, so `.float16` falls back to float32 there | 0.5 day |
+| Docs, cookbook, CHANGELOG bullets, DocFigures | n/a | per `docs-current.md` | 1-2 days |
+
+Roughly **6-9 working days** to finish, none of it risky; the renderer-side structure is the same
+`prepare` call, plan and per-level draw helper in every case.
+
+## Answers to the five unknowns
+
+1. **Displacement consistency and seams**: one shared MSL function, verified bit-identical across shaded,
+   shadow and depth, and a crack-free proof with a negative control. Seams: snap the finer edge to the coarser
+   neighbour, with corner levels as the max of four tiles; no skirts. Cost: 8 neighbour levels packed in the
+   per-tile instance (4 bytes).
+2. **Hazard-free upload**: dirty-tile runs staged through a `FrameBufferPool` buffer, blitted at the head of the
+   command buffer into private textures, returned in the completion handler. 12 dirty tiles: 0.12 ms GPU,
+   0.05 ms CPU; 797 tiles (15.6 MB): 1.3 ms GPU, 0.8 ms CPU. Latency: an edit made before a frame is in that
+   frame (same command buffer), one frame of CPU-to-screen.
+3. **Pick payload**: cell index in the existing G channel (kind face), no new enum case; height, attribute and
+   id from the CPU mirror through an additive `PickResult.heightfield`. CPU raycast: a grid walk, 75 us for a
+   grazing 2,000-cell ray in a debug build (exact, matches brute force). Bounds invalidation: the running
+   range, plus `boundsKey` for caches keyed by `generation` (found by a failing test).
+4. **Draw count x passes and CPU encode**: see above; 2-7 draws per pass, 0.13 ms.
+5. **Remaining integration breadth**: the table above.
+
+## Go / no-go
+
+**GO**, to build it for real, with these conditions:
+- Default to a **4 px mesh-cell target** (2 px is a 9x cost cliff) and expose it.
+- Treat **min-lowered coarse levels as a known visual/pick trade-off** and give the owner the
+  `s - 1` versus `s / 2` window decision (steps within 1.5 versus 1 mesh cells, pits keep full depth versus
+  part of it). Refine picks with `Heightfield.raycast`.
+- Budget the 6-9 days above, and the iPad measurement before promising 60 fps there.
+
+Main risk: **the iPad GPU's micro-triangle and MSAA behaviour**. On an M4 the same 2M-triangle surface as a
+plain mesh costs 45 ms and the heightfield at 4 px costs 2.6 ms, but the cliff between 2 px (24 ms) and 4 px
+(2.6 ms) shows how sensitive it is to triangle size, and an older A-series GPU will have its cliff elsewhere.
+Second risk: `replace` on the caller's thread (4-7 ms for 200 x 130 x 120 in release).
+
+## For the on-device session (DirectMeshVerify rig)
+Build a field of 2000 x 2000 with the `HeightfieldScene` terrain and measure, on the iPad, in a RELEASE build:
+1. GPU frame time (`gpuEndTime - gpuStartTime`) for the orbiting camera at the native resolution, MSAA 4 and 1,
+   mesh-cell target 2, 3, 4, 6, 8 px: find the cliff.
+2. The same with shadows + SSAO + silhouettes on.
+3. 200 `replace` calls of 130 x 120 per frame, sliding and disjoint: `replace` CPU ms, `uploadedBytes`, update
+   GPU ms (`HeightfieldGPU.timedUpdate`), and whether the frame holds 16.6 ms.
+4. `.float16` versus `.float32`: frame time and upload.
+5. Sustained 60 fps over several minutes (thermal), memory (a 2000 x 2000 field is 16 MB + 5 MB pyramid + 4 MB
+   attributes, plus the pick texture), and a GPU frame capture of the vertex-stage texture fetches.
+6. Whether `texture.read(coord, level)` on a mipmapped `r16Float` texture written by a compute kernel behaves on
+   A-series as on the M4 (it was only run on the M4).
+Run the bench with `VIEWPORT_SPIKE_PERF=1 swift test -c release -Xswiftc -enable-testing --filter
+HeightfieldPerformanceTests` on the Mac; the iPad needs the rig.
+
+## Adjacent findings (not fixed)
+- `OffscreenRenderer` has no pick pass for any body type; headless picks need `ViewportRenderer`.
+- Caches keyed by `ViewportBody.generation` (`PivotStrategy`, `ViewportController.overlayBoundsCache`) assume
+  geometry only changes with the generation. That holds for mesh bodies and broke for an in-place mutable
+  handle; a general `boundsKey`-style hook would stop the pattern recurring.
+- In a debug `swift test` run the GPU times were 2-4x worse than in a release run (observed on the same
+  scenes; plausibly an unoptimised metallib, not confirmed), so any GPU timing from a debug test run is
+  misleading, and nothing warns about it.
+- `ViewportBody` has no way to say "this field changed" to SwiftUI diffing; here that is intentional (the
+  MTKView redraws every frame), but a consumer using on-demand drawing would need a redraw call.

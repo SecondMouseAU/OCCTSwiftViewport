@@ -3535,3 +3535,37 @@ fragment PickFragmentOut heightfield_pick_fragment(
     out.pickID = packPickID(bodyUniforms.objectIndex, uint(cell.y) * params.size.x + uint(cell.x), 0u);
     return out;
 }
+
+// MARK: Heightfield shadow and depth
+
+vertex ShadowVertexOut heightfield_shadow_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant ShadowUniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    ShadowVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
+}
+
+vertex PickVertexOut heightfield_depth_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    PickVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
+}

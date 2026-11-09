@@ -110,8 +110,8 @@ struct HeightfieldPerformanceTests {
         let field = HeightfieldScene.terrainField(width: 2000, height: 2000)
         let body = HeightfieldScene.body(field)
         func measure(
-            _ name: String, mode: DisplayMode = .shaded, msaa: Int = 4, target: Float = 2,
-            forced: Int? = nil, size: (Int, Int) = (1668, 1194)
+            _ name: String, mode: DisplayMode = .shaded, msaa: Int = 4, target: Float = 4,
+            forced: Int? = nil, size: (Int, Int) = (1668, 1194), allPasses: Bool = false
         ) {
             renderer.heightfieldTargetPixels = target
             renderer.heightfieldForcedLevel = forced
@@ -127,6 +127,13 @@ struct HeightfieldPerformanceTests {
                 var options = HeightfieldScene.options(
                     width: size.0, height: size.1, camera: camera, displayMode: mode)
                 options.msaaSampleCount = msaa
+                if allPasses {
+                    // Shadow map, SSAO and silhouettes: the shadow and depth prepasses draw the
+                    // field again.
+                    options.lightingConfiguration.shadowsEnabled = true
+                    options.lightingConfiguration.enableSSAO = true
+                    options.enableSilhouettes = true
+                }
                 _ = renderer.render(bodies: [body], options: options)
                 if frame >= 5 { gpu.append(renderer.lastGPUSeconds * 1e3) }
                 if let plan = renderer.heightfieldState(forBodyID: "field")?.lastPlan {
@@ -139,15 +146,16 @@ struct HeightfieldPerformanceTests {
                     format: "VARIANT %@: gpu %.2f ms (%d tiles, levels %@)", name, Self.median(gpu),
                     tiles, "\(histogram)"))
         }
-        measure("shaded msaa4 target2")
-        measure("unlit msaa4 target2", mode: .unlit)
-        measure("shaded msaa1 target2", msaa: 1)
-        measure("shaded msaa4 target4", target: 4)
+        measure("shaded msaa4 target2", target: 2)
+        measure("unlit msaa4 target2", mode: .unlit, target: 2)
+        measure("shaded msaa1 target2", msaa: 1, target: 2)
+        measure("shaded msaa4 target4")
+        measure("shaded msaa4 target4 + shadows + SSAO + silhouettes", allPasses: true)
         measure("shaded msaa4 target8", target: 8)
         measure("shaded msaa4 forced L3", forced: 3)
         measure("shaded msaa4 forced L5", forced: 5)
         measure("shaded msaa4 forced L6", forced: 6)
-        measure("shaded msaa4 target2 1024x768", size: (1024, 768))
+        measure("shaded msaa4 target2 1024x768", target: 2, size: (1024, 768))
     }
 
     @Test("The same surface as an ordinary mesh body, for comparison")

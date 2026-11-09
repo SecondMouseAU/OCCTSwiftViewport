@@ -1632,6 +1632,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     shadowEncoder.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
+                    // Heightfield surfaces cast shadows too (issue #139 spike).
+                    if let heightfieldShadow = heightfieldCache.shadowPipelineState() {
+                        shadowEncoder.setRenderPipelineState(heightfieldShadow)
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP,
+                                modelMatrix: entry.body.transform)
+                            shadowEncoder.setVertexBytes(
+                                &shadowUniforms, length: MemoryLayout<ShadowUniformsSwift>.size,
+                                index: 1)
+                            entry.state.encodeDepthDraws(encoder: shadowEncoder, plan: entry.plan)
+                        }
+                    }
+
                     for body in bodies where body.isVisible {
                         guard let buffers = bodyBufferCache[body.id] else { continue }
                         // Overlay bodies don't cast shadows — they are UI affordances.
@@ -2901,6 +2915,20 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             if let depthEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthOnlyPass)
             {
                 depthEncoder.setDepthStencilState(depthState)
+
+                // Heightfield surfaces write depth too (issue #139 spike).
+                if let heightfieldDepth = heightfieldCache.depthPipelineState() {
+                    depthEncoder.setRenderPipelineState(heightfieldDepth)
+                    for entry in heightfieldEntries where Self.writesSSAODepth(entry.body) {
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = entry.body.transform
+                        depthEncoder.setVertexBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        depthEncoder.setFragmentBytes(
+                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+                        entry.state.encodeDepthDraws(encoder: depthEncoder, plan: entry.plan)
+                    }
+                }
 
                 objectIndex = 0
                 for body in bodies where body.isVisible {
