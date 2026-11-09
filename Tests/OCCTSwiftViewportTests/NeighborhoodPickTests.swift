@@ -64,19 +64,19 @@ struct NeighborhoodPickClampTests {
 struct NeighborhoodPickSelectionTests {
 
     private static let map: [Int: String] = [0: "a", 1: "b", 2: "c"]
-    private static let bg = PickResult.sentinel
+    private static let bg = PickResult.noHit
 
-    private static func face(_ body: UInt32, _ primitive: UInt32) -> UInt32 {
-        (UInt32(PrimitiveKind.face.rawValue) << 30) | (primitive << 16) | body
+    private static func face(_ body: UInt32, _ primitive: UInt32) -> UInt64 {
+        PickEncoding.encode(objectIndex: body, primitiveIndex: primitive, kind: .face)
     }
-    private static func edge(_ body: UInt32, _ primitive: UInt32) -> UInt32 {
-        (UInt32(PrimitiveKind.edge.rawValue) << 30) | (primitive << 16) | body
+    private static func edge(_ body: UInt32, _ primitive: UInt32) -> UInt64 {
+        PickEncoding.encode(objectIndex: body, primitiveIndex: primitive, kind: .edge)
     }
-    private static func vertex(_ body: UInt32, _ primitive: UInt32) -> UInt32 {
-        (UInt32(PrimitiveKind.vertex.rawValue) << 30) | (primitive << 16) | body
+    private static func vertex(_ body: UInt32, _ primitive: UInt32) -> UInt64 {
+        PickEncoding.encode(objectIndex: body, primitiveIndex: primitive, kind: .vertex)
     }
 
-    private static func pick(_ values: [UInt32], width: Int, center: SIMD2<Int>) -> PickResult? {
+    private static func pick(_ values: [UInt64], width: Int, center: SIMD2<Int>) -> PickResult? {
         ViewportRenderer.bestNeighborhoodPickResult(
             values, width: width, center: center, indexMap: map, layerMap: [:])
     }

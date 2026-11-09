@@ -664,10 +664,7 @@ public final class ViewportController: ObservableObject {
     /// `measurementMode != .none`. Only `.face` picks yield a point; edge/vertex
     /// picks and misses are ignored. The point is the ray/triangle intersection
     /// in world space (respecting the body's transform), then fed to
-    /// `addMeasurementPoint(_:)`. On a body with more than
-    /// `PickResult.maxPrimitivesPerKind` triangles the wrapped triangle index is
-    /// resolved first; a pick that cannot be resolved is ignored rather than
-    /// measured on the wrong triangle.
+    /// `addMeasurementPoint(_:)`.
     public func handleMeasurementPick(
         result: PickResult?,
         ndc: SIMD2<Float>,
@@ -682,50 +679,16 @@ public final class ViewportController: ObservableObject {
         let ray = Ray.fromCamera(
             ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio,
             sceneBounds: Self.worldBounds(of: body))
-        // A wrapped index (body over 16,384 triangles) would intersect the wrong triangle.
-        let resolved = Self.resolveAmbiguousFacePick(result, ray: ray, bodies: bodies)
-        guard !resolved.isPrimitiveIndexAmbiguous,
-            let point = body.worldHitPoint(ray: ray, triangleIndex: resolved.triangleIndex)
+        guard let point = body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex)
         else {
             return
         }
         addMeasurementPoint(point)
     }
 
-    /// Resolves an ambiguous face pick for the tap at `ndc` against the current camera.
-    ///
-    /// The view layer calls this before `handlePick(result:ndc:)`, so `pickResult` carries the
-    /// exact triangle even on bodies with more than `PickResult.maxPrimitivesPerKind` triangles.
-    func resolveAmbiguousFacePick(
-        _ result: PickResult?, ndc: SIMD2<Float>, bodies: [ViewportBody], aspectRatio: Float
-    ) -> PickResult? {
-        guard let result, result.isPrimitiveIndexAmbiguous, result.kind == .face else {
-            return result
-        }
-        let ray = Ray.fromCamera(
-            ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio,
-            sceneBounds: Self.body(for: result, in: bodies).flatMap(Self.worldBounds(of:)))
-        return Self.resolveAmbiguousFacePick(result, ray: ray, bodies: bodies)
-    }
-
     /// The world-space bounds of `body`, which an orthographic pick ray starts in front of.
     nonisolated static func worldBounds(of body: ViewportBody) -> BoundingBox? {
         body.boundingBox?.transformed(by: body.transform)
-    }
-
-    /// Replaces a wrapped face-pick triangle index with the exact one under `ray`.
-    ///
-    /// Returns `result` unchanged unless it is an `isPrimitiveIndexAmbiguous` `.face` pick. If the
-    /// CPU ray test finds no candidate triangle, the result is returned still flagged ambiguous.
-    /// Pure, so it is unit-testable without a GPU.
-    nonisolated static func resolveAmbiguousFacePick(
-        _ result: PickResult, ray: Ray, bodies: [ViewportBody]
-    ) -> PickResult {
-        guard result.isPrimitiveIndexAmbiguous, result.kind == .face,
-            let body = body(for: result, in: bodies),
-            let exact = body.resolveWrappedTriangleIndex(result.triangleIndex, ray: ray)
-        else { return result }
-        return result.resolvingPrimitiveIndex(exact)
     }
 
     /// The body a pick names: by draw-order index when that still matches the ID, else by ID.

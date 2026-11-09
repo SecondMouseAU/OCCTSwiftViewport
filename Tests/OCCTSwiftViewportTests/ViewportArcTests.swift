@@ -91,11 +91,11 @@ struct ViewportArcTests {
 
     @Test("Arc pick value decodes to .edge with the arc index as triangleIndex")
     func arcPickDecode() {
-        // The arc pick fragment emits objectIndex | (arcIndex << 16) | (1 << 30).
+        // The arc pick fragment packs (objectIndex, arcIndex | kind 1 << 30).
         let objectIndex: UInt32 = 7
         let arcIndex: UInt32 = 3
-        let raw = objectIndex | ((arcIndex & 0x3FFF) << 16) | (1 << 30)
-        let result = PickResult(rawValue: raw, indexMap: [7: "ring"])
+        let raw = PickEncoding.encode(objectIndex: objectIndex, primitiveIndex: arcIndex, kind: .edge)
+        let result = PickResult(pickValue: raw, indexMap: [7: "ring"])
         #expect(result?.bodyID == "ring")
         #expect(result?.kind == .edge)
         #expect(result?.triangleIndex == Int(arcIndex))   // arc index

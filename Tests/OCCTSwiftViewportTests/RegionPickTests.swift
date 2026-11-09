@@ -80,28 +80,52 @@ struct RegionPickClampTests {
 @Suite("Region pick row-stride alignment")
 struct RegionPickAlignmentTests {
 
+    @Test("The pick texel is 8 bytes: RG32Uint (#160)")
+    func texelIsEightBytes() {
+        #expect(PickEncoding.bytesPerTexel == 8)
+    }
+
     @Test("A width whose byte count already lands on 256 is unchanged")
     func alreadyAligned() {
-        // 64 pixels * 4 bytes = 256, exactly one alignment unit.
-        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 64) == 256)
+        // 32 pixels * 8 bytes = 256, exactly one alignment unit.
+        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 32) == 256)
     }
 
     @Test("A narrow region still gets padded up to a full 256-byte row")
     func narrowRegionPadsToMinimum() {
-        // 1 pixel * 4 bytes = 4, far short of 256.
+        // 1 pixel * 8 bytes = 8, far short of 256.
         #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 1) == 256)
     }
 
     @Test("A width just over an alignment boundary rounds up to the next one")
     func roundsUpPastBoundary() {
-        // 65 pixels * 4 bytes = 260 -> next multiple of 256 is 512.
-        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 65) == 512)
+        // 33 pixels * 8 bytes = 264 -> next multiple of 256 is 512.
+        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 33) == 512)
     }
 
     @Test("A wide region aligns without adding a spurious extra unit")
     func wideRegionAlignsExactly() {
-        // 128 pixels * 4 bytes = 512, exactly two alignment units.
-        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 128) == 512)
+        // 64 pixels * 8 bytes = 512, exactly two alignment units.
+        #expect(ViewportRenderer.alignedBytesPerRow(forWidth: 64) == 512)
+    }
+
+    @Test("De-striding keeps the live texels of each padded row and skips the padding")
+    func destrideSkipsPadding() {
+        let width = 3
+        let height = 2
+        let bytesPerRow = ViewportRenderer.alignedBytesPerRow(forWidth: width)
+        var bytes = [UInt64](repeating: 0xDEAD_BEEF_DEAD_BEEF, count: bytesPerRow / 8 * height)
+        let rowStride = bytesPerRow / 8
+        for row in 0..<height {
+            for column in 0..<width {
+                bytes[row * rowStride + column] = UInt64(row * 10 + column + 1)
+            }
+        }
+        let texels = bytes.withUnsafeBytes {
+            PickEncoding.texels(
+                from: $0.baseAddress!, bytesPerRow: bytesPerRow, width: width, height: height)
+        }
+        #expect(texels == [1, 2, 3, 11, 12, 13])
     }
 }
 
@@ -113,7 +137,7 @@ struct RegionPickDecodeTests {
     @Test("Repeated pixels over the same primitive de-duplicate to one result")
     func dedupesRepeatedPrimitive() {
         // Same face on body 5, primitive 42, seen at every pixel in the region.
-        let raw: UInt32 = (0 << 30) | (42 << 16) | 5
+        let raw = PickEncoding.encode(objectIndex: 5, primitiveIndex: 42, kindBits: 0)
         let results = ViewportRenderer.decodeRegionPickResults(
             Array(repeating: raw, count: 9), indexMap: Self.map, layerMap: [:]
         )
@@ -124,8 +148,8 @@ struct RegionPickDecodeTests {
 
     @Test("Sentinel (background) pixels are excluded")
     func excludesSentinel() {
-        let hit: UInt32 = (0 << 30) | (1 << 16) | 0
-        let values = [PickResult.sentinel, hit, PickResult.sentinel, PickResult.sentinel]
+        let hit = PickEncoding.encode(objectIndex: 0, primitiveIndex: 1, kindBits: 0)
+        let values = [PickResult.noHit, hit, PickResult.noHit, PickResult.noHit]
         let results = ViewportRenderer.decodeRegionPickResults(values, indexMap: Self.map, layerMap: [:])
         #expect(results.count == 1)
         #expect(results.first?.bodyID == "a")
@@ -134,16 +158,16 @@ struct RegionPickDecodeTests {
     @Test("An all-background region decodes to an empty array")
     func allBackgroundIsEmpty() {
         let results = ViewportRenderer.decodeRegionPickResults(
-            Array(repeating: PickResult.sentinel, count: 25), indexMap: Self.map, layerMap: [:]
+            Array(repeating: PickResult.noHit, count: 25), indexMap: Self.map, layerMap: [:]
         )
         #expect(results.isEmpty)
     }
 
     @Test("Distinct primitives are preserved in order of first appearance")
     func preservesFirstAppearanceOrder() {
-        let faceB: UInt32 = (0 << 30) | (1 << 16) | 5    // body b, face 1
-        let edgeA: UInt32 = (1 << 30) | (2 << 16) | 0    // body a, edge 2
-        let faceC: UInt32 = (0 << 30) | (3 << 16) | 7    // body c, face 3
+        let faceB = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 0)    // body b, face 1
+        let edgeA = PickEncoding.encode(objectIndex: 0, primitiveIndex: 2, kindBits: 1)    // body a, edge 2
+        let faceC = PickEncoding.encode(objectIndex: 7, primitiveIndex: 3, kindBits: 0)    // body c, face 3
         // faceB repeats later, so it must not shift its position or duplicate it.
         let values = [faceB, edgeA, faceB, faceC, edgeA]
         let results = ViewportRenderer.decodeRegionPickResults(values, indexMap: Self.map, layerMap: [:])
@@ -153,8 +177,8 @@ struct RegionPickDecodeTests {
 
     @Test("A raw value whose objectIndex has no map entry is dropped, not crashed on")
     func unknownObjectIndexDropped() {
-        let unknown: UInt32 = (0 << 30) | (1 << 16) | 999
-        let known: UInt32 = (0 << 30) | (1 << 16) | 0
+        let unknown = PickEncoding.encode(objectIndex: 999, primitiveIndex: 1, kindBits: 0)
+        let known = PickEncoding.encode(objectIndex: 0, primitiveIndex: 1, kindBits: 0)
         let results = ViewportRenderer.decodeRegionPickResults([unknown, known], indexMap: Self.map, layerMap: [:])
         #expect(results.count == 1)
         #expect(results.first?.bodyID == "a")
@@ -162,7 +186,7 @@ struct RegionPickDecodeTests {
 
     @Test("Results route through the same PickLayer map performPick uses")
     func respectsLayerMap() {
-        let raw: UInt32 = (0 << 30) | (1 << 16) | 5
+        let raw = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 0)
         let results = ViewportRenderer.decodeRegionPickResults(
             [raw], indexMap: Self.map, layerMap: ["b": .widget]
         )
@@ -171,8 +195,8 @@ struct RegionPickDecodeTests {
 
     @Test("Region results compose with PickResultFilter exactly like a single performPick result")
     func composesWithPickResultFilter() {
-        let face: UInt32 = (0 << 30) | (1 << 16) | 0
-        let edge: UInt32 = (1 << 30) | (1 << 16) | 5
+        let face = PickEncoding.encode(objectIndex: 0, primitiveIndex: 1, kindBits: 0)
+        let edge = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 1)
         let results = ViewportRenderer.decodeRegionPickResults([face, edge], indexMap: Self.map, layerMap: [:])
         let facesOnly = results.filter(PickResultFilter.faces.matches)
         #expect(facesOnly.count == 1)
@@ -215,8 +239,8 @@ struct RegionPickSelectionFilterTests {
 
     @Test("No filter set passes every result through unchanged")
     func noFilterPassesThrough() {
-        let face: UInt32 = (0 << 30) | (1 << 16) | 0
-        let edge: UInt32 = (1 << 30) | (1 << 16) | 5
+        let face = PickEncoding.encode(objectIndex: 0, primitiveIndex: 1, kindBits: 0)
+        let edge = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 1)
         let results = ViewportRenderer.decodeRegionPickResults([face, edge], indexMap: Self.map, layerMap: [:])
         let routed = ViewportController.applySelectionFilter(results, filter: nil)
         #expect(routed.count == 2)
@@ -224,8 +248,8 @@ struct RegionPickSelectionFilterTests {
 
     @Test("A user-geometry result failing the filter is dropped")
     func filterDropsFailingUserGeometry() {
-        let face: UInt32 = (0 << 30) | (1 << 16) | 0
-        let edge: UInt32 = (1 << 30) | (1 << 16) | 5
+        let face = PickEncoding.encode(objectIndex: 0, primitiveIndex: 1, kindBits: 0)
+        let edge = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 1)
         let results = ViewportRenderer.decodeRegionPickResults([face, edge], indexMap: Self.map, layerMap: [:])
         let routed = ViewportController.applySelectionFilter(results, filter: .faces)
         #expect(routed.map(\.kind) == [.face])
@@ -233,7 +257,7 @@ struct RegionPickSelectionFilterTests {
 
     @Test("A widget-layer result bypasses the filter, mirroring handlePick(result:)")
     func widgetLayerBypassesFilter() {
-        let widgetEdge: UInt32 = (1 << 30) | (1 << 16) | 5
+        let widgetEdge = PickEncoding.encode(objectIndex: 5, primitiveIndex: 1, kindBits: 1)
         let layerMap: [String: PickLayer] = ["b": .widget]
         let results = ViewportRenderer.decodeRegionPickResults([widgetEdge], indexMap: Self.map, layerMap: layerMap)
         // .faces filter would normally reject an edge, but it's on the widget layer.

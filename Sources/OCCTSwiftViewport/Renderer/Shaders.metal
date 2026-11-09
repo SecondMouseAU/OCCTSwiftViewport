@@ -689,9 +689,21 @@ struct PickVertexOut {
     float3 worldPosition;    // for clip plane testing
 };
 
+// The pick target is RG32Uint (#160). Pick encoding, one texel per pixel (must stay in sync with
+// PickEncoding.swift, which the readback decodes with):
+//   R : objectIndex (32 bits); 0xFFFFFFFF = no object
+//   G : bits 0-29 primitiveID (30 bits, masked), bits 30-31 kind (0=face, 1=edge, 2=vertex)
 struct PickFragmentOut {
-    uint pickID [[color(0)]];
+    uint2 pickID [[color(0)]];
 };
+
+// Every pick fragment packs through this, so the layout lives in one place. A body whose object
+// index is the reserved 0xFFFFFFFF writes the cleared (no-hit) texel, so it hides what is behind
+// it but picks as a miss.
+inline uint2 packPickID(uint objectIndex, uint primitiveID, uint kind) {
+    if (objectIndex == 0xFFFFFFFFu) return uint2(0xFFFFFFFFu);
+    return uint2(objectIndex, (primitiveID & 0x3FFFFFFFu) | (kind << 30));
+}
 
 // True when `worldPosition` lies on the clipped (negative) side of any active section plane.
 // Same test the shaded/wireframe/highlight fragments run inline; the pick, depth-prepass,
@@ -773,10 +785,7 @@ vertex PickVertexOut pick_line_vertex(
     return out;
 }
 
-// Pick encoding (must stay in sync with PickResult decoder):
-//   bits  0-15 : objectIndex (16 bits)
-//   bits 16-29 : primitiveID (14 bits, masked)
-//   bits 30-31 : kind        (2 bits — 0=face, 1=edge, 2=vertex)
+// Face pick — kind=0 (layout: see PickFragmentOut).
 fragment PickFragmentOut pick_fragment(
     PickVertexOut in [[stage_in]],
     constant Uniforms &uniforms [[buffer(1)]],
@@ -785,7 +794,7 @@ fragment PickFragmentOut pick_fragment(
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (0u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, primitiveID, 0u);
     return out;
 }
 
@@ -800,8 +809,7 @@ fragment PickFragmentOut pick_line_fragment(
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | (((firstSegment + primitiveID) & 0x3FFFu) << 16)
-        | (1u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, firstSegment + primitiveID, 1u);
     return out;
 }
 
@@ -816,7 +824,7 @@ fragment PickFragmentOut pick_arc_fragment(
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((arcPrimID & 0x3FFFu) << 16) | (1u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, arcPrimID, 1u);
     return out;
 }
 
@@ -850,7 +858,7 @@ fragment PickFragmentOut pick_point_fragment(
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((primitiveID & 0x3FFFu) << 16) | (2u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, primitiveID, 2u);
     return out;
 }
 
@@ -1423,7 +1431,7 @@ fragment PickFragmentOut pick_quad_edge_fragment(
     }
     uint segmentID = primSource.y != 0u ? primSource.x : primSource.x + primitiveID / 6u;
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((segmentID & 0x3FFFu) << 16) | (1u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, segmentID, 1u);
     return out;
 }
 
@@ -2491,7 +2499,7 @@ vertex TessPatchPickVertexOut tessellated_pick_vertex(
 
 // Pick fragment for tessellated patches — uses the patch (input triangle) index, not
 // primitive_id, which would count post-tessellation sub-triangles.
-// Kind tag stays 0 (face). primitiveID truncated to 14 bits to match decoder layout.
+// Kind tag stays 0 (face).
 fragment PickFragmentOut tessellated_pick_fragment(
     TessPatchPickVertexOut in [[stage_in]],
     constant Uniforms& uniforms [[buffer(1)]],
@@ -2499,7 +2507,7 @@ fragment PickFragmentOut tessellated_pick_fragment(
 ) {
     if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((in.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, in.triangleIndex, 0u);
     return out;
 }
 
@@ -2847,7 +2855,7 @@ fragment PickFragmentOut meshlet_pick_fragment(
 ) {
     if (isClippedBySectionPlanes(in.vert.worldPosition, uniforms)) discard_fragment();
     PickFragmentOut out;
-    out.pickID = bodyUniforms.objectIndex | ((in.prim.triangleIndex & 0x3FFFu) << 16) | (0u << 30);
+    out.pickID = packPickID(bodyUniforms.objectIndex, in.prim.triangleIndex, 0u);
     return out;
 }
 

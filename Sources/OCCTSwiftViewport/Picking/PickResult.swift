@@ -7,7 +7,7 @@ import Foundation
 
 /// Sub-shape kind that a pick can resolve to.
 ///
-/// Encoded into the top 2 bits of the GPU pick texture so a single readback
+/// Encoded into the top 2 bits of the pick texture's G channel, so a single readback
 /// disambiguates faces / edges / vertices. The renderer's pick pass renders
 /// each kind with a distinct fragment shader that stamps the appropriate tag.
 public enum PrimitiveKind: UInt8, Sendable, Hashable {
@@ -18,44 +18,53 @@ public enum PrimitiveKind: UInt8, Sendable, Hashable {
 
 /// Result of a GPU-accelerated pick operation.
 ///
-/// Decodes the raw R32Uint value from the pick ID buffer into a body ID,
-/// primitive index, and primitive kind. The encoding is:
+/// Decodes a texel of the RG32Uint pick texture into a body ID, primitive index, and primitive
+/// kind. The texel is two 32-bit channels, kept together as one `UInt64` (`pickValue`):
 ///
-///     bits  0-15 : objectIndex   (16 bits)
-///     bits 16-29 : primitiveID   (14 bits, triangle/segment/point index)
-///     bits 30-31 : kind          ( 2 bits, 0=face, 1=edge, 2=vertex)
+///     R (low 32 bits)  : objectIndex   (32 bits, draw-order body index; 0xFFFF_FFFF = none)
+///     G (high 32 bits) : bits  0-29 primitiveID (30 bits, triangle/segment/point index)
+///                        bits 30-31 kind        ( 2 bits, 0=face, 1=edge, 2=vertex)
 ///
 /// `triangleIndex` is preserved as the historical name; semantically it is the
 /// **primitive index** for the matched kind (triangle for face picks, line
 /// segment for edge picks, point for vertex picks).
 ///
-/// ## Limits of the 32-bit encoding
+/// ## Limits
 ///
-/// - **Bodies:** at most `maxPickableBodies` (65,536) visible bodies get a pick ID per frame,
-///   counted in draw order. A body past that limit still occludes in the pick pass but reads back
-///   as a miss (`nil`), so it can never be confused with another body.
-/// - **Primitives:** the primitive field holds `maxPrimitivesPerKind` (16,384) values. On a body
-///   with more primitives of the picked kind, the GPU reports the true index modulo 16,384, and
-///   `isPrimitiveIndexAmbiguous` is `true`. The built-in tap path resolves ambiguous **face** picks
-///   back to the exact triangle with a CPU ray test (see
-///   `ViewportBody.resolveWrappedTriangleIndex(_:ray:)`); edge and vertex picks stay ambiguous.
+/// - **Bodies:** up to `maxPickableBodies` (4,294,967,295) visible bodies get a pick ID per frame,
+///   counted in draw order.
+/// - **Primitives:** the primitive field holds `maxPrimitivesPerKind` (1,073,741,824) values per
+///   kind, far past any mesh the renderer can hold.
+///
+/// Before issue #160 the target was R32Uint and these were 65,536 bodies and 16,384 primitives,
+/// with `isPrimitiveIndexAmbiguous` flagging a wrapped index. The index is now always exact.
 public struct PickResult: Sendable, Equatable {
 
-    /// Sentinel value indicating no hit (background or non-pickable overlay).
+    /// The pre-#160 R32Uint "no hit" value.
+    ///
+    /// The pick texture is now RG32Uint and is cleared to `noHit`. This constant remains only
+    /// for code that still builds legacy 32-bit values for `init(rawValue:...)`.
+    @available(
+        *, deprecated,
+        message: "The pick texture is RG32Uint now; use PickResult.noHit with pickValue."
+    )
     public static let sentinel: UInt32 = 0xFFFF_FFFF
 
-    /// Number of visible bodies that can receive a pick ID in one frame (object indices
-    /// `0...0xFFFF`).
+    /// The pick texel of a pixel with no pickable geometry: both channels `0xFFFF_FFFF`.
     ///
-    /// Bodies beyond this count, in draw order, are drawn into the pick pass with the no-hit
-    /// sentinel: they still hide what is behind them, but picking them returns `nil`.
-    public static let maxPickableBodies = 1 << 16
+    /// `init?(pickValue:indexMap:layerMap:)` returns `nil` for this value, and for any value
+    /// whose object index is `0xFFFF_FFFF`.
+    public static let noHit: UInt64 = PickEncoding.noHit
 
-    /// Number of distinct primitive indices the 14-bit primitive field can carry per kind.
+    /// Number of visible bodies that can receive a pick ID in one frame (object indices
+    /// `0...0xFFFF_FFFE`; `0xFFFF_FFFF` means "no object").
+    public static let maxPickableBodies = Int(PickEncoding.noObject)
+
+    /// Number of distinct primitive indices the 30-bit primitive field can carry per kind.
     ///
-    /// A pick on a body with more primitives of that kind reports `index % maxPrimitivesPerKind`
-    /// and sets `isPrimitiveIndexAmbiguous`.
-    public static let maxPrimitivesPerKind = 1 << 14
+    /// A primitive index past this wraps modulo `maxPrimitivesPerKind`. No mesh the renderer can
+    /// hold gets near it.
+    public static let maxPrimitivesPerKind = 1 << Int(PickEncoding.primitiveBits)
 
     /// The ID string of the picked body.
     public let bodyID: String
@@ -66,24 +75,17 @@ public struct PickResult: Sendable, Equatable {
     /// The primitive index within the body, interpreted according to `kind`:
     /// triangle for `.face`, line segment for `.edge`, point for `.vertex`.
     ///
-    /// When `isPrimitiveIndexAmbiguous` is `true`, this is only the true index modulo
-    /// `maxPrimitivesPerKind`: the real primitive is one of `triangleIndex + k * 16_384`.
+    /// Always the exact index: it maps through `indices`, `faceIndices`, `edgeIndices` and
+    /// `vertexIndices` directly, however many primitives the body has.
     public let triangleIndex: Int
-
-    /// `true` when the picked body has more than `maxPrimitivesPerKind` primitives of the picked
-    /// kind, so `triangleIndex` may have wrapped.
-    ///
-    /// Do not map an ambiguous index through `faceIndices` or `edgeIndices` directly. For face
-    /// picks, resolve it with `ViewportBody.resolveWrappedTriangleIndex(_:ray:)`. The built-in tap
-    /// path already does this before publishing `ViewportController.pickResult`, and leaves the
-    /// flag set only when the CPU ray test could not settle it.
-    public let isPrimitiveIndexAmbiguous: Bool
 
     /// Sub-shape kind the picked primitive belongs to.
     public let kind: PrimitiveKind
 
-    /// The raw encoded value read from the pick buffer.
-    public let rawValue: UInt32
+    /// The pick texel this result was decoded from, as `G << 32 | R`.
+    ///
+    /// See the type's layout.
+    public let pickValue: UInt64
 
     /// Which pick stream this result belongs to.
     ///
@@ -91,85 +93,98 @@ public struct PickResult: Sendable, Equatable {
     /// `widgetPickResult`, so widget hits never leak into the user selection stream.
     public let pickLayer: PickLayer
 
-    /// Decodes a raw pick-buffer value into a result, naming the body through `indexMap`.
+    /// `true` only for a result decoded from a legacy 32-bit value with `init(rawValue:...)`.
+    private let legacyWrapped: Bool
+
+    /// Always `false` for a result decoded from the RG32Uint pick texture: `triangleIndex` is
+    /// exact.
     ///
-    /// Fails with `nil` in three cases: `rawValue` is the no-hit sentinel, its packed kind bits
-    /// do not name a `PrimitiveKind`, or its object index is absent from `indexMap`.
+    /// Before issue #160 this flagged an index that had wrapped modulo 16,384.
+    @available(
+        *, deprecated,
+        message: "Pick indices no longer wrap; triangleIndex is always exact."
+    )
+    public var isPrimitiveIndexAmbiguous: Bool { legacyWrapped }
+
+    /// The value the pre-#160 R32Uint pick target would have held for this pick, packed as
+    /// `objectIndex (16) | primitiveID (14) << 16 | kind (2) << 30`.
+    ///
+    /// Lossy: a body index past 65,535 or a primitive index past 16,383 wraps. Use `pickValue`,
+    /// which is exact.
+    @available(*, deprecated, message: "Lossy; use pickValue, which is exact.")
+    public var rawValue: UInt32 {
+        PickEncoding.encodeLegacy(
+            objectIndex: bodyIndex, primitiveIndex: triangleIndex, kind: kind)
+    }
+
+    /// Decodes a pick texel into a result, naming the body through `indexMap`.
+    ///
+    /// Fails with `nil` in three cases: the object index is `0xFFFF_FFFF` (the no-hit texel,
+    /// `noHit`), the packed kind bits do not name a `PrimitiveKind`, or the object index is absent
+    /// from `indexMap`.
     ///
     /// - Parameters:
-    ///   - rawValue: The R32Uint value read back from the GPU.
+    ///   - pickValue: The RG32Uint texel read back from the GPU, as `G << 32 | R`.
     ///   - indexMap: Mapping from objectIndex (Int) to body ID (String).
     ///   - layerMap: Optional mapping from body ID to its `PickLayer`. Bodies
     ///     not present in the map are treated as `.userGeometry`.
+    public init?(
+        pickValue: UInt64,
+        indexMap: [Int: String],
+        layerMap: [String: PickLayer] = [:]
+    ) {
+        self.init(
+            decoded: PickEncoding.decode(pickValue), pickValue: pickValue, indexMap: indexMap,
+            layerMap: layerMap, legacyWrapped: false)
+    }
+
+    /// Decodes a value in the pre-#160 R32Uint layout, `objectIndex (16) | primitiveID (14) << 16 |
+    /// kind (2) << 30`, naming the body through `indexMap`.
+    ///
+    /// The renderer no longer produces this layout; use `init(pickValue:indexMap:layerMap:)`. The
+    /// decoded result carries the equivalent wide `pickValue`.
+    ///
+    /// - Parameters:
+    ///   - rawValue: A legacy 32-bit pick value. `0xFFFF_FFFF` is the no-hit value.
+    ///   - indexMap: Mapping from objectIndex (Int) to body ID (String).
+    ///   - layerMap: Optional mapping from body ID to its `PickLayer`.
     ///   - ambiguousKinds: Optional mapping from body ID to the primitive kinds whose count on that
-    ///     body exceeds `maxPrimitivesPerKind`. The renderer builds it each frame. A pick of a
-    ///     listed kind on a listed body sets `isPrimitiveIndexAmbiguous`.
+    ///     body exceeds 16,384. A pick of a listed kind on a listed body reports
+    ///     `isPrimitiveIndexAmbiguous`, as the legacy decoder did.
+    @available(*, deprecated, message: "Use init(pickValue:indexMap:layerMap:).")
     public init?(
         rawValue: UInt32,
         indexMap: [Int: String],
         layerMap: [String: PickLayer] = [:],
         ambiguousKinds: [String: Set<PrimitiveKind>] = [:]
     ) {
-        guard rawValue != Self.sentinel else { return nil }
+        let decoded = PickEncoding.decodeLegacy(rawValue)
+        let wide = decoded.map {
+            PickEncoding.encode(
+                objectIndex: $0.objectIndex, primitiveIndex: UInt32($0.primitiveIndex),
+                kind: $0.kind)
+        }
+        var wrapped = false
+        if let decoded, let bodyID = indexMap[Int(decoded.objectIndex)] {
+            wrapped = ambiguousKinds[bodyID]?.contains(decoded.kind) ?? false
+        }
+        self.init(
+            decoded: decoded, pickValue: wide ?? PickEncoding.noHit, indexMap: indexMap,
+            layerMap: layerMap, legacyWrapped: wrapped)
+    }
 
-        let objectIndex = Int(rawValue & 0xFFFF)
-        let primitiveID = Int((rawValue >> 16) & 0x3FFF)
-        let rawKind = UInt8((rawValue >> 30) & 0x3)
-        guard let kind = PrimitiveKind(rawValue: rawKind) else { return nil }
-
-        guard let bodyID = indexMap[objectIndex] else { return nil }
+    private init?(
+        decoded: PickEncoding.Decoded?, pickValue: UInt64, indexMap: [Int: String],
+        layerMap: [String: PickLayer], legacyWrapped: Bool
+    ) {
+        guard let decoded, let bodyID = indexMap[Int(decoded.objectIndex)] else { return nil }
 
         self.bodyID = bodyID
-        self.bodyIndex = objectIndex
-        self.triangleIndex = primitiveID
-        self.kind = kind
-        self.rawValue = rawValue
+        self.bodyIndex = Int(decoded.objectIndex)
+        self.triangleIndex = decoded.primitiveIndex
+        self.kind = decoded.kind
+        self.pickValue = pickValue
         self.pickLayer = layerMap[bodyID] ?? .userGeometry
-        self.isPrimitiveIndexAmbiguous = ambiguousKinds[bodyID]?.contains(kind) ?? false
-    }
-
-    private init(copying other: PickResult, triangleIndex: Int, isPrimitiveIndexAmbiguous: Bool) {
-        self.bodyID = other.bodyID
-        self.bodyIndex = other.bodyIndex
-        self.triangleIndex = triangleIndex
-        self.kind = other.kind
-        self.rawValue = other.rawValue
-        self.pickLayer = other.pickLayer
-        self.isPrimitiveIndexAmbiguous = isPrimitiveIndexAmbiguous
-    }
-
-    /// Returns a copy whose `triangleIndex` is the exact, resolved `index` and whose
-    /// `isPrimitiveIndexAmbiguous` is `false`.
-    func resolvingPrimitiveIndex(_ index: Int) -> PickResult {
-        PickResult(copying: self, triangleIndex: index, isPrimitiveIndexAmbiguous: false)
-    }
-
-    // MARK: - Encoding guards
-
-    /// Object index a body at draw-order position `ordinal` writes into the pick pass.
-    ///
-    /// The ordinal itself while it fits the 16-bit object field, otherwise `sentinel`. The pick
-    /// shaders OR the object index into the packed value, so a sentinel object index reads back
-    /// as a miss for every primitive instead of bleeding into the primitive bits of another pick.
-    static func pickObjectIndex(forOrdinal ordinal: UInt32) -> UInt32 {
-        ordinal < UInt32(maxPickableBodies) ? ordinal : sentinel
-    }
-
-    /// Primitive kinds whose count exceeds `maxPrimitivesPerKind`, so picks of that kind wrap.
-    ///
-    /// - Parameters:
-    ///   - triangleCount: Triangles drawn in the face pick pass.
-    ///   - edgeSegmentCount: Largest edge primitive index range: line segments, or arcs for the
-    ///     analytic arc pass, whichever is larger.
-    ///   - pointCount: Points drawn in the vertex pick pass.
-    /// - Returns: The kinds whose picks on this body can wrap; empty for most bodies.
-    static func ambiguousKinds(
-        triangleCount: Int, edgeSegmentCount: Int, pointCount: Int
-    ) -> Set<PrimitiveKind> {
-        var kinds: Set<PrimitiveKind> = []
-        if triangleCount > maxPrimitivesPerKind { kinds.insert(.face) }
-        if edgeSegmentCount > maxPrimitivesPerKind { kinds.insert(.edge) }
-        if pointCount > maxPrimitivesPerKind { kinds.insert(.vertex) }
-        return kinds
+        self.legacyWrapped = legacyWrapped
     }
 }

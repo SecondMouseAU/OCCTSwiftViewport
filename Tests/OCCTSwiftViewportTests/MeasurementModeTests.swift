@@ -30,10 +30,9 @@ struct MeasurementModeTests {
 
     // Decoded face PickResult for body `objectIndex`, triangle `primitiveID`.
     private static func facePick(objectIndex: UInt32, primitiveID: UInt32, indexMap: [Int: String]) -> PickResult {
-        let raw: UInt32 = (UInt32(PrimitiveKind.face.rawValue) << 30)
-            | ((primitiveID & 0x3FFF) << 16)
-            | (objectIndex & 0xFFFF)
-        return PickResult(rawValue: raw, indexMap: indexMap, layerMap: [:])!
+        let raw = PickEncoding.encode(
+            objectIndex: objectIndex, primitiveIndex: primitiveID, kind: .face)
+        return PickResult(pickValue: raw, indexMap: indexMap, layerMap: [:])!
     }
 
     // Camera at +Z looking down -Z at the origin (identity rotation).
@@ -252,8 +251,8 @@ struct MeasurementModeTests {
         #expect(c.pendingMeasurementPoints.isEmpty)
 
         // An edge pick (not a surface) does nothing.
-        let edgeRaw = (UInt32(PrimitiveKind.edge.rawValue) << 30) | 0
-        let edge = PickResult(rawValue: edgeRaw, indexMap: map, layerMap: [:])!
+        let edgeRaw = PickEncoding.encode(objectIndex: 0, primitiveIndex: 0, kind: .edge)
+        let edge = PickResult(pickValue: edgeRaw, indexMap: map, layerMap: [:])!
         c.handleMeasurementPick(result: edge, ndc: .zero, bodies: bodies, aspectRatio: 1)
         #expect(c.pendingMeasurementPoints.isEmpty)
     }
