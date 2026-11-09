@@ -4,6 +4,68 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-09
+
+Fixes a v1.3.0 regression (the renderers were `nil` in plain SwiftPM builds) and ships the follow-ups that
+were waiting on the colour-pipeline release: per-vertex and per-segment colours, an SSAO blur,
+configurable selection tints and ambient colours, a pick target without the old body and primitive
+limits, and PN subdivision on the mesh-shader path. Nothing is source-incompatible (the old pick API is
+deprecated, not removed), but a few defaults change visibly: **read "Changed" before upgrading.**
+
+### Changed (read before upgrading)
+- **SSAO is blurred by default** (#188). The occlusion is computed in its own pass and smoothed with a
+  depth-aware 4x4 blur (it never crosses silhouettes) before it is composited, which removes the fine
+  period-4 texture the old ordered dither left on large flat faces. The result is slightly softer.
+  `LightingConfiguration.ssaoBlur = false` restores the 1.3.0 output.
+- **With an environment map loaded, the hemisphere ambient is multiplied by `1 - environmentIntensity`**
+  (#168), so it no longer stacks on the map's own diffuse light. A default scene with an HDR is no longer
+  washed out. `LightingConfiguration.environmentReplacesAmbient = false` restores the old look.
+- **`renderingQuality = .maximum` (mesh shaders, Apple9 GPUs) now subdivides with PN triangles** (#175),
+  from the same per-frame factors as `.enhanced`, so those surfaces are as round as hardware-tessellated
+  ones instead of faceted. `tessellationMaxFactor`, `adaptiveTessellation` and `uniformTessellationFactor`
+  now act on meshlets; the mesh stage caps an edge at 16 segments (`.enhanced` still allows 64). On a
+  low-poly mesh it costs more than the old flat `.maximum` (a 280-triangle sphere went from 2.1 to 4.8 ms
+  per frame on an M4) and less than `.enhanced`. Only verified on an M4.
+- **The GPU pick target is RG32Uint instead of R32Uint** (#160). The pick texture and each pick readback
+  are 8 bytes per pixel, twice what they were (16.6 MB at 1920x1080). `PickResult.maxPickableBodies` is
+  now 4,294,967,295 (was 65,536) and `maxPrimitivesPerKind` 1,073,741,824 (was 16,384).
+- **Orthographic clip planes follow the scene's depth, not the eye** (#217).
+  `CameraState.clipPlanes(sceneBounds:)` may return a negative `near` for an orthographic camera, so the
+  edge depth fade, SSAO and silhouettes no longer change with where the orthographic eye sits, and their
+  thresholds are relative to the height of the view instead of the eye's distance.
+- A highlight over a mesh-shader surface is drawn with a small depth bias toward the viewer (#213).
+
+### Added
+- **Per-vertex colours for mesh bodies** (#142). `VertexColorMode` (`.ignored` default, `.multiply`,
+  `.replace`) and `ViewportBody.vertexColorMode`: `ViewportBody.vertexColors` (one per mesh vertex) is
+  interpolated across each triangle on the interleaved, direct-mesh, PN-tessellated and mesh-shader paths,
+  in the opaque, translucent, x-ray, `.unlit` and overlay passes, live and offscreen. Empty or
+  mismatched-count colours fall back to `color`; RGB only (opacity still comes from `color.w`). The default
+  `.ignored` leaves every existing render unchanged. `ViewportBody.directMesh(...)` takes `vertexColors:`,
+  `vertexColorMode:` and `vertexColorSpace:`.
+- **`AuthoredColorSpace`** (`.sRGB` default, `.linear`), with `ViewportBody.vertexColorSpace` and
+  `ViewportBody.edgeColorSpace`: the colour space per-element colours are authored in. `.sRGB` draws them
+  as given; `.linear` treats them as linear light (lit surfaces use them as linear albedo, unlit surfaces,
+  edges and points encode them for display, and interpolation happens in linear light). Changing a space
+  does not bump `generation`.
+- **Per-segment edge colours and a visible range** (#140). `ViewportBody.edgeColors` (RGBA per flattened
+  edge segment), `edgeDrawRange` (`Range<Int>?`, draws and picks only those segments, so a playhead can
+  reveal a path every frame without uploading anything) and `edgeSegmentCount`. Honoured by the
+  quad-expanded and native edge paths, overlay edges and `OffscreenRenderer`; picks report absolute
+  segment indices.
+- **`LightingConfiguration.ssaoBlur`** (default `true`, see Changed) and
+  **`LightingConfiguration.environmentReplacesAmbient`** (default `true`, see Changed).
+- **Configurable selection and hover tint** (#174). `SelectionTintStyle`, `ViewportConfiguration.selectionTint`
+  and `.hoverTint`, and the matching `OffscreenRenderOptions` properties: colour and strength of the
+  surface wash on selected and hovered bodies, `.off` for outline-only selection.
+- **Configurable ambient tints and procedural environment colours** (#189).
+  `LightingConfiguration.ambientTintNegativeX`, `.ambientTintPositiveX`, `.ambientTintNegativeY`,
+  `.ambientTintPositiveY` and `.proceduralEnvironmentGroundColor`, `.proceduralEnvironmentHorizonColor`,
+  `.proceduralEnvironmentSkyColor` (sRGB; defaults unchanged).
+- `PickResult.pickValue` (`UInt64`), `PickResult.init?(pickValue:indexMap:layerMap:)` and
+  `PickResult.noHit`: the exact RG32Uint pick texel and its decoder.
+- `_VertexColorMode` and `_AuthoredColorSpace` re-exports.
+
 ### Fixed
 - **`ViewportRenderer()` and `OffscreenRenderer()` returned `nil` in plain SwiftPM builds** (regression in
   v1.3.0, from #212). The shared `RendererSharedSetup.loadLibrary` only tried the build-time
@@ -14,6 +76,43 @@ All notable changes to OCCTSwiftViewport are documented in this file.
   workflow was red on `main` from #212 onward while the suite passed on developer Macs.
 - A render pipeline or the shader library failing to build is now logged (pipeline label, vertex and
   fragment function, device and Metal error) instead of silently surfacing as a `nil` renderer.
+- **Picks on large scenes are exact** (#160). Taps, `performPick`, neighborhood picks and region picks on
+  bodies with more than 16,384 triangles, edge segments, arcs or points, and scenes with more than 65,536
+  visible bodies, report the exact primitive and body. Edge, vertex and region picks were previously left
+  ambiguous and bodies past 65,535 could not be picked.
+- **The HDR skybox is no longer skewed** (#228). Its view rays were normalised at the three corners of the
+  full-screen triangle before interpolation (about 4 degrees at the centre of a square frame and 20 at
+  2:1) and unprojected through an ill-conditioned inverse, which put tilted views 1 to 2 degrees off. Each
+  panorama feature now appears where its world direction projects, at any aspect ratio and orientation.
+- **The mesh-shader shadow pass bound the wrong uniforms** (#229). It bound the 128-byte `ShadowUniforms`
+  where `meshlet_object` declares the 656-byte `Uniforms`, which aborted under `MTL_DEBUG_LAYER=1` and read
+  past the bound range otherwise. It has its own `meshlet_shadow_object` now.
+- **Quad-edge draws bound 344 bytes of `EdgeUniforms` where the shaders declare 352** (#231): variable-width
+  and dashed edges, per-segment colours and edge picking aborted under Metal API validation and read past
+  the bound range otherwise. The struct is padded to 352 bytes on both sides.
+- **Native edges win over steep faces on small drawables**, drawn and picked (#193): the depth bias is 3 px
+  of the render target, not a fixed fraction of NDC height.
+- **Normals use the inverse transpose of the model matrix** (#213), so bodies with non-uniform scale or
+  shear are lit correctly on the shaded, direct-mesh, tessellated and mesh-shader paths.
+- `OffscreenRenderer` fits the orthographic clip planes for an `explicitOrthoBounds` projection on a
+  perspective camera (#217).
+- Documented and tested that equirect panoramas are not mirrored: the centre column faces world +X and
+  u grows toward -Y (#168).
+
+### Deprecated
+- `PickResult.rawValue`, `PickResult.init(rawValue:...)`, `PickResult.sentinel`,
+  `PickResult.isPrimitiveIndexAmbiguous` and `ViewportBody.resolveWrappedTriangleIndex(_:ray:)`. They keep
+  compiling; `rawValue` is now a lossy 16/14/2 packing and `isPrimitiveIndexAmbiguous` is always `false`.
+  Use `pickValue`. Removing them later would be a breaking change.
+
+### Docs and tooling
+- Examples that used nonexistent API (`controller.bodies`, `controller.pick(at:)`, `focusOnBounds()`,
+  `viewProjectionMatrix`, `setCameraState`, `ViewportConfiguration.default`, `DistanceMeasurement(from:to:)`,
+  `Camera`) now use the real API, and the stale "decodes orthographic depth as perspective depth" sentences
+  are gone (#227). `docs/metal-architecture.md` carries a banner saying it is a historical RealityKit-era
+  document (#232).
+- CI runs the whole suite a second time with `MTL_DEBUG_LAYER=1`, which turns a bound buffer smaller than
+  the struct its shader declares into a test failure (#229, #231).
 
 ## [1.3.0] - 2026-11-08
 
