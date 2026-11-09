@@ -37,6 +37,29 @@ Within that `7 x 7` neighbourhood the pick prefers a vertex over an edge over a 
 
 ---
 
+## Picking without a view
+
+The same pick pass runs headlessly. `OffscreenRenderer` stamps the same RG32Uint texture and
+decodes it with the same `PickResult`, so a server-side renderer, a snapshot tool or a test harness
+can ask what is under a pixel without a live viewport:
+
+```swift
+let renderer = OffscreenRenderer()!
+let options = OffscreenRenderOptions(matching: controller, width: 1024, height: 768)
+
+let hit = renderer.performPick(bodies: bodies, at: SIMD2(512, 384), options: options)
+let box = renderer.performRegionPick(
+    bodies: bodies, rect: CGRect(x: 100, y: 100, width: 300, height: 200), options: options)
+```
+
+For the same scene and camera the result equals the live `performPick` and `performRegionPick`.
+`options.pickRadius` and `options.selectionFilter` play the roles of
+`PickingConfiguration.pickRadius` and `ViewportController.selectionFilter`. To pick many pixels
+of one scene, call `renderPickMap(bodies:options:)` once and use the returned `OffscreenPickMap`.
+See [Offscreen Rendering](offscreen-rendering.md#picking-headlessly).
+
+---
+
 ## Reading a pick result
 
 After a tap, the renderer reads the pick texture and populates `ViewportController.pickResult` (a `@Published` property). Subscribe with Combine or read it directly in SwiftUI:

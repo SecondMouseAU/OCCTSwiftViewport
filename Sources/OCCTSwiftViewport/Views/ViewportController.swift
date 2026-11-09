@@ -609,6 +609,16 @@ public final class ViewportController: ObservableObject {
         return results.filter { $0.pickLayer == .widget || filter.matches($0) }
     }
 
+    /// The single-result form of `applySelectionFilter(_:filter:)`: a widget-layer hit passes, a
+    /// user-geometry hit that fails the filter is a miss.
+    nonisolated static func applySelectionFilter(
+        _ result: PickResult?,
+        filter: PickResultFilter?
+    ) -> PickResult? {
+        guard let result, let filter else { return result }
+        return result.pickLayer == .widget || filter.matches(result) ? result : nil
+    }
+
     // MARK: - Measurement Interaction
 
     /// Number of world points a measurement of the given mode requires before it

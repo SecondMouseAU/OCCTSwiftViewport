@@ -47,6 +47,7 @@ extension RendererSharedBuffers {
     ///   - viewportSize: Render-target size in pixels.
     ///   - quadExpansion: Also expand the samples to quad strips (`EdgeLineConfiguration` width
     ///     and dashes).
+    /// - Returns: One draw per non-empty arc, with the line and quad-strip vertices they index.
     static func sampleArcs(
         bodies: [(body: ViewportBody, objectIndex: UInt32, hasMesh: Bool)],
         displayMode: DisplayMode,

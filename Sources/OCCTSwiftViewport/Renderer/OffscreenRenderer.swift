@@ -115,8 +115,11 @@ public enum RenderAppearance: Sendable, Hashable {
 /// stays deterministic: a uniform factor never follows system load (see
 /// `uniformTessellationFactor`).
 ///
-/// What the offscreen path does **not** reproduce: TAA, depth of field, frustum culling, and the
-/// GPU pick pass.
+/// The GPU pick pass runs on request, not with every render: `OffscreenRenderer.renderPickMap(...)`,
+/// `performPick(...)` and `performRegionPick(...)` stamp the same pick texture a live viewport does
+/// and decode it with the same `PickResult`. `pickRadius` and `selectionFilter` configure them.
+///
+/// What the offscreen path does **not** reproduce: TAA, depth of field, and frustum culling.
 public struct OffscreenRenderOptions: Sendable {
     public var width: Int
     public var height: Int
@@ -289,6 +292,25 @@ public struct OffscreenRenderOptions: Sendable {
     /// lookups.
     public var measurements: [ViewportMeasurement]
 
+    /// Pick tolerance radius in pixels for the offscreen pick, matching
+    /// `PickingConfiguration.pickRadius`.
+    ///
+    /// `0` (the default) picks the exact pixel. Above `0`, a pick samples the
+    /// `(2 * pickRadius + 1)` square around the pixel and returns the best hit, a vertex over an
+    /// edge over a face and the nearest of equals. Clamped to `0...32` on set.
+    public var pickRadius: Int = 0 {
+        didSet {
+            let clamped = min(max(0, pickRadius), 32)
+            if clamped != pickRadius { pickRadius = clamped }
+        }
+    }
+
+    /// Constrains what the offscreen pick returns, matching `ViewportController.selectionFilter`.
+    ///
+    /// A pick that fails the filter is a miss, with the live widget bypass: a hit on a
+    /// `PickLayer.widget` body is returned unfiltered.
+    public var selectionFilter: PickResultFilter?
+
     /// Creates render options.
     ///
     /// Every scene default is read from `ViewportController.defaultConfiguration` (and
@@ -343,7 +365,9 @@ public struct OffscreenRenderOptions: Sendable {
         tessellationMaxFactor: Int = ViewportController.defaultConfiguration.tessellationMaxFactor,
         adaptiveTessellation: Bool = ViewportController.defaultConfiguration.adaptiveTessellation,
         uniformTessellationFactor: UniformTessellationFactor =
-            ViewportController.defaultConfiguration.uniformTessellationFactor
+            ViewportController.defaultConfiguration.uniformTessellationFactor,
+        pickRadius: Int = ViewportController.defaultConfiguration.pickingConfiguration.pickRadius,
+        selectionFilter: PickResultFilter? = nil
     ) {
         self.width = width
         self.height = height
@@ -385,13 +409,16 @@ public struct OffscreenRenderOptions: Sendable {
         self.tessellationMaxFactor = tessellationMaxFactor
         self.adaptiveTessellation = adaptiveTessellation
         self.uniformTessellationFactor = uniformTessellationFactor
+        self.pickRadius = min(max(0, pickRadius), 32)
+        self.selectionFilter = selectionFilter
     }
 
     /// Options that reproduce what a controller's live viewport currently shows.
     ///
     /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
-    /// selection and hover, and every `ViewportConfiguration` field the offscreen path honours.
-    /// Measurements are not copied; pass resolved ones in `measurements` to draw them.
+    /// selection and hover, the pick radius and selection filter, and every `ViewportConfiguration`
+    /// field the offscreen path honours. Measurements are not copied; pass resolved ones in
+    /// `measurements` to draw them.
     ///
     /// With `debugDisableTessellation` on, which switches the live view's tessellation and mesh
     /// shaders off, the options use `.standard`.
@@ -435,7 +462,9 @@ public struct OffscreenRenderOptions: Sendable {
             renderingQuality: config.renderingQuality,
             tessellationMaxFactor: config.tessellationMaxFactor,
             adaptiveTessellation: config.adaptiveTessellation,
-            uniformTessellationFactor: config.uniformTessellationFactor
+            uniformTessellationFactor: config.uniformTessellationFactor,
+            pickRadius: config.pickingConfiguration.pickRadius,
+            selectionFilter: controller.selectionFilter
         )
         // `debugDisableTessellation` switches the live view's refinement off.
         if controller.debugDisableTessellation { renderingQuality = .standard }
@@ -645,6 +674,14 @@ public final class OffscreenRenderer: Sendable {
     private var bodyBufferCache: [String: BodyBuffersOffscreen] = [:]
     private var bodyGeneration: [String: UInt64] = [:]
 
+    // GPU pick pass, built on the first pick so renders that never pick pay nothing.
+    private let pickTextureManager: PickTextureManager
+    private var pickDepthTexture: MTLTexture?
+    private var basePickPipelines: PickPipelines?
+    private var refinedPickPipelines: [PickPipelineKey: RefinedPickPipelines] = [:]
+    /// Point-sprite pick vertices by body ID, rebuilt when the body's generation changes.
+    private var pickPointBuffers: [String: (generation: UInt64, buffer: MTLBuffer)] = [:]
+
     // MARK: - Init
 
     public init?() {
@@ -730,6 +767,7 @@ public final class OffscreenRenderer: Sendable {
         guard let matcap = RendererSharedSetup.makeMatcapTexture(device: device) else { return nil }
         self.matcapTexture = matcap
         self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
+        self.pickTextureManager = PickTextureManager(device: device)
     }
 
     // MARK: - Public API
@@ -760,48 +798,16 @@ public final class OffscreenRenderer: Sendable {
         }
         pruneBufferCache(keeping: bodies)
 
-        // Scene-adaptive clip planes (issue #57): fit near/far to the visible
-        // geometry so depth precision isn't crushed by a fixed 0.01/10000 range.
-        // The shadow frustum below reuses these model bounds, before the grid/axes widen them
-        // for the clip fit (issue #183).
-        let modelBounds = RendererSharedSetup.sceneBounds(of: bodies)
-        let gridAxisSettings = GridAxisSettings(
-            options: options, sceneBounds: modelBounds,
-            background: options.resolvedBackgroundColor)
-
-        // An orthographic eye in front of the bodies, overlays and axes, as `MetalViewportView`
-        // keeps the live one (#215): an eye inside the scene would near-clip it.
-        let cameraState = Self.renderCamera(options: options) {
-            RendererSharedSetup.orthographicEyeBounds(
-                modelBounds: modelBounds, bodies: bodies, settings: gridAxisSettings,
-                showAxes: options.showAxes, cameraState: options.cameraState)
-        }
-        let viewMatrix = cameraState.viewMatrix
-        let sceneBounds = GridAxisGeometry.clipBounds(
-            sceneBounds: modelBounds,
-            settings: gridAxisSettings,
-            cameraState: options.cameraState,
-            showGrid: options.showGrid,
-            showAxes: options.showAxes
-        )
-        // The planes are fitted as orthographic whenever the projection is, including an
-        // `explicitOrthoBounds` one on a perspective camera (#217).
-        var clipCamera = cameraState
-        clipCamera.isOrthographic = Self.isOrthographic(options)
-        let clip = clipCamera.clipPlanes(
-            sceneBounds: RendererSharedSetup.clipFitBounds(
-                sceneBounds, includingOverlaysOf: bodies,
-                in: Self.wideViewFrustum(options: options, camera: cameraState),
-                // Orthographic: cap overlays as the eye placement does, as live (#215).
-                capBasis: Self.isOrthographic(options)
-                    ? RendererSharedSetup.overlayCapBasis(
-                        modelBounds: modelBounds, settings: gridAxisSettings,
-                        showAxes: options.showAxes, cameraState: options.cameraState) : nil))
-        let nearClip: Float = clip.near
-        let farClip: Float = clip.far
-
-        let projMatrix = Self.projectionMatrix(options: options, near: nearClip, far: farClip)
-        let viewProjection = projMatrix * viewMatrix
+        // The camera, projection and scene-fitted clip planes, shared with the pick pass.
+        let setup = OffscreenFrameSetup(bodies: bodies, options: options)
+        let modelBounds = setup.modelBounds
+        let gridAxisSettings = setup.gridAxisSettings
+        let cameraState = setup.cameraState
+        let viewMatrix = setup.viewMatrix
+        let nearClip = setup.nearClip
+        let farClip = setup.farClip
+        let projMatrix = setup.projMatrix
+        let viewProjection = setup.viewProjection
 
         let lighting = options.lightingConfiguration
 
@@ -819,8 +825,6 @@ public final class OffscreenRenderer: Sendable {
             options.edgeIntensity)
         let shadowParams2 = SIMD4<Float>(
             lighting.shadowLightSize, lighting.shadowSearchRadius, 0, 0)
-        let (clipPlaneVecs, clipPlaneCount) = RendererSharedSetup.packClipPlanes(
-            options.clipPlanes)
 
         // Auto-load (or clear) the environment named by lighting.environmentMapURL/Data.
         environmentMapManager.sync(with: lighting, commandQueue: commandQueue)
@@ -832,27 +836,9 @@ public final class OffscreenRenderer: Sendable {
         )
 
         func makeUniforms() -> Uniforms {
-            Uniforms(
-                viewProjection: viewProjection,
-                viewMatrix: viewMatrix,
-                // Parallel view vectors in orthographic, as live (#215).
-                cameraPosition: RendererSharedSetup.shadingEyePosition(
-                    of: cameraState, orthographic: Self.isOrthographic(options)),
-                nearPlane: nearClip,
-                farPlane: farClip,
-                lighting: lighting,
-                lightViewProjection: lightVP,
-                shadowParams: shadowParams,
-                shadowParams2: shadowParams2,
-                iblParams: iblParams,
-                clipPlanes: clipPlaneVecs,
-                clipPlaneCount: clipPlaneCount,
-                unlit: options.displayMode == .unlit,
-                flatShading: !options.displayMode.usesSmoothShading,
-                viewportSize: SIMD2(Float(w), Float(h)),
-                selectionTint: options.selectionTint,
-                hoverTint: options.hoverTint
-            )
+            setup.uniforms(
+                options: options, lightViewProjection: lightVP, shadowParams: shadowParams,
+                shadowParams2: shadowParams2, iblParams: iblParams)
         }
 
         // SSAO / silhouette composite, gated as the live renderer gates it. It reads the main
@@ -868,33 +854,10 @@ public final class OffscreenRenderer: Sendable {
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
         // Tessellation factors for this camera and output size (#165), which the mesh stage
-        // subdivides by too (#175). Never load-governed, so the same options always give the same
-        // image. Overlay bodies draw untessellated.
-        if refinement.tessellation || refinement.meshShaders, let tessellationManager {
-            let batch: [(TessellationBuffers, simd_float4x4)] = bodies.compactMap { body in
-                guard body.isVisible, body.renderLayer == .geometry,
-                    let tess = bodyBufferCache[body.id]?.tessellation
-                else {
-                    return nil
-                }
-                return (tess, body.transform)
-            }
-            if !batch.isEmpty, let computeEncoder = commandBuffer.makeComputeCommandEncoder() {
-                let maxFactor = TessellationManager.clampedMaxFactor(options.tessellationMaxFactor)
-                tessellationManager.updateTessFactors(
-                    tessBuffers: batch,
-                    viewProjectionMatrix: viewProjection,
-                    viewportSize: SIMD2<Float>(Float(w), Float(h)),
-                    adaptive: options.adaptiveTessellation,
-                    maxFactor: RendererSharedBuffers.deterministicTessellationFactor(
-                        requestedMaxFactor: options.tessellationMaxFactor,
-                        pipelineMaxFactor: maxFactor,
-                        adaptive: options.adaptiveTessellation,
-                        policy: options.uniformTessellationFactor),
-                    encoder: computeEncoder)
-                computeEncoder.endEncoding()
-            }
-        }
+        // subdivides by too (#175).
+        encodeTessellationFactors(
+            commandBuffer: commandBuffer, bodies: bodies, options: options,
+            refinement: refinement, viewProjection: viewProjection)
 
         // Shadow pass
         if shadowEnabled {
@@ -1694,6 +1657,152 @@ public final class OffscreenRenderer: Sendable {
         return (attrs[.size] as? Int) ?? 0
     }
 
+    // MARK: - GPU picking
+
+    /// Runs the GPU pick pass for `bodies` and reads the whole pick texture back.
+    ///
+    /// The pass is the live viewport's: the same pipelines, the same `PickEncoding`, and the same
+    /// body kinds (interleaved and direct-mesh faces, tessellated and mesh-shader surfaces
+    /// at `renderingQuality`, edges, arcs, vertices, point-cloud and overlay bodies), with
+    /// `clipPlanes`, each body's `transform` and `displayMode` applied. The frame is the one
+    /// `render(bodies:options:)` draws for the same options. Bodies are numbered in draw order
+    /// over the visible ones, as live, so `PickResult.bodyIndex` agrees with a live viewport
+    /// showing the same list.
+    ///
+    /// Synchronous: it returns once the GPU has finished. Pick as many pixels, neighbourhoods and
+    /// regions from the result as you like; it costs one render.
+    ///
+    /// - Returns: The pick texture, or `nil` when the size is not positive or a texture,
+    ///   pipeline or command buffer cannot be made.
+    public func renderPickMap(
+        bodies: [ViewportBody], options: OffscreenRenderOptions = .init()
+    ) -> OffscreenPickMap? {
+        let w = options.width
+        let h = options.height
+        guard w > 0, h > 0 else { return nil }
+
+        // The refined surface paths `render` would use, so the pick sees the surface the image
+        // shows and shares its cached buffers.
+        let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
+        let refined = refinedPipelines(for: options, sampleCount: sampleCount)
+        let refinement = refined?.refinement(canTessellate: tessellationManager != nil) ?? .none
+        for body in bodies where body.isVisible {
+            ensureBuffers(for: body, options: options, refinement: refinement)
+        }
+        pruneBufferCache(keeping: bodies)
+        let activeIDs = Set(bodies.map(\.id))
+        pickPointBuffers = pickPointBuffers.filter { activeIDs.contains($0.key) }
+
+        pickTextureManager.ensureSize(width: w, height: h)
+        if pickDepthTexture?.width != w || pickDepthTexture?.height != h {
+            pickDepthTexture = RendererSharedSetup.makePickDepthTexture(
+                device: device, width: w, height: h)
+        }
+        guard let pickTexture = pickTextureManager.texture, let pickDepth = pickDepthTexture,
+            let pipelines = pickPipelines(for: refinement, options: options),
+            let commandBuffer = commandQueue.makeCommandBuffer()
+        else { return nil }
+
+        let setup = OffscreenFrameSetup(bodies: bodies, options: options)
+        encodeTessellationFactors(
+            commandBuffer: commandBuffer, bodies: bodies, options: options,
+            refinement: refinement, viewProjection: setup.viewProjection)
+
+        // Every visible body in draw order, with the index its texels carry.
+        var indexMap: [Int: String] = [:]
+        var layerMap: [String: PickLayer] = [:]
+        var pickBodies: [PickPassBody] = []
+        var arcBodies: [(body: ViewportBody, objectIndex: UInt32, hasMesh: Bool)] = []
+        for body in bodies where body.isVisible {
+            let objectIndex = UInt32(pickBodies.count)
+            indexMap[Int(objectIndex)] = body.id
+            layerMap[body.id] = body.pickLayer
+            let buffers = pickPassBuffers(for: body)
+            pickBodies.append(
+                PickPassBody(body: body, objectIndex: objectIndex, buffers: buffers))
+            arcBodies.append((body, objectIndex, buffers.indexCount > 0))
+        }
+
+        // Arcs sampled for this camera, one draw each so an arc pick reports its arc index.
+        let edgeConfig = options.edgeLineConfiguration
+        let sampled = RendererSharedBuffers.sampleArcs(
+            bodies: arcBodies, displayMode: options.displayMode,
+            viewProjection: setup.viewProjection, viewportSize: SIMD2(Float(w), Float(h)),
+            quadExpansion: edgeConfig.useQuadExpansion && pipelines.quadEdge != nil)
+
+        guard
+            let pickEncoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: RendererSharedSetup.makePickPassDescriptor(
+                    color: pickTexture, depth: pickDepth))
+        else { return nil }
+        RendererSharedSetup.encodePickPass(
+            encoder: pickEncoder, bodies: pickBodies,
+            frame: PickPassFrame(
+                pipelines: pipelines, depthState: depthState, overlayDepthState: overlayDepthState,
+                displayMode: options.displayMode, useMeshShaders: refinement.meshShaders,
+                useTessellation: refinement.tessellation, edgeConfiguration: edgeConfig,
+                viewportSize: SIMD2(Float(w), Float(h)), contentScale: 1, arcs: sampled.draws,
+                arcLineBuffer: RendererSharedBuffers.makeEdgeBuffer(
+                    device: device, edgeVertices: sampled.lineVertices),
+                arcQuadBuffer: RendererSharedBuffers.makeEdgeBuffer(
+                    device: device, edgeVertices: sampled.quadVertices),
+                makeUniforms: {
+                    setup.uniforms(
+                        options: options,
+                        shadowParams: SIMD4<Float>(0, 0, 0, options.edgeIntensity))
+                }))
+        pickEncoder.endEncoding()
+
+        // Read the whole texture back, rows padded as the live region pick pads them.
+        let bytesPerRow = ViewportRenderer.alignedBytesPerRow(forWidth: w)
+        let byteCount = bytesPerRow * h
+        guard let readback = device.makeBuffer(length: byteCount, options: .storageModeShared),
+            let blit = commandBuffer.makeBlitCommandEncoder()
+        else { return nil }
+        blit.copy(
+            from: pickTexture, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: w, height: h, depth: 1),
+            to: readback, destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
+            destinationBytesPerImage: byteCount)
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        guard commandBuffer.status == .completed else { return nil }
+
+        return OffscreenPickMap(
+            width: w, height: h, pickRadius: options.pickRadius,
+            selectionFilter: options.selectionFilter,
+            texels: PickEncoding.texels(
+                from: readback.contents(), bytesPerRow: bytesPerRow, width: w, height: h),
+            indexMap: indexMap, layerMap: layerMap)
+    }
+
+    /// What is under `pixel` of the frame `render(bodies:options:)` draws for `options`.
+    ///
+    /// The offscreen counterpart of `ViewportRenderer.performPick(at:completion:)`: an exact-pixel
+    /// pick, or the `options.pickRadius` neighbourhood, filtered by `options.selectionFilter`.
+    /// Synchronous, and it renders the pick pass on every call; to pick many pixels of one scene,
+    /// call `renderPickMap(bodies:options:)` once.
+    ///
+    /// - Returns: The pick, or `nil` for background, a filtered-out hit or a failed render.
+    public func performPick(
+        bodies: [ViewportBody], at pixel: SIMD2<Int>, options: OffscreenRenderOptions = .init()
+    ) -> PickResult? {
+        renderPickMap(bodies: bodies, options: options)?.pick(at: pixel)
+    }
+
+    /// Every distinct primitive under `rect` (render pixels) of the frame `render(bodies:options:)`
+    /// draws for `options`, in scan order of first appearance.
+    ///
+    /// The offscreen counterpart of `ViewportRenderer.performRegionPick(rect:completion:)`,
+    /// filtered by `options.selectionFilter`. Synchronous; see `performPick(bodies:at:options:)`.
+    public func performRegionPick(
+        bodies: [ViewportBody], rect: CGRect, options: OffscreenRenderOptions = .init()
+    ) -> [PickResult] {
+        renderPickMap(bodies: bodies, options: options)?.pickRegion(rect) ?? []
+    }
+
     // MARK: - Private
 
     /// Single-sample colour + depth targets for the SSAO / silhouette composite, or `nil` if they
@@ -1837,6 +1946,103 @@ public final class OffscreenRenderer: Sendable {
         encoder.setFragmentBytes(&params, length: MemoryLayout<SSAOParamsSwift>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+    }
+
+    /// The pick pipelines for `refinement`: the always-built set, plus the tessellated and
+    /// mesh-shader face pipelines the render's refined paths need, built on first use.
+    private func pickPipelines(
+        for refinement: SurfaceRefinement, options: OffscreenRenderOptions
+    ) -> PickPipelines? {
+        if basePickPipelines == nil {
+            basePickPipelines = PickPipelines(device: device, library: library)
+        }
+        guard var pipelines = basePickPipelines else { return nil }
+        guard refinement.tessellation || refinement.meshShaders else { return pipelines }
+
+        let key = PickPipelineKey(
+            maxFactor: TessellationManager.clampedMaxFactor(options.tessellationMaxFactor),
+            meshShaders: refinement.meshShaders)
+        let refined: RefinedPickPipelines
+        if let cached = refinedPickPipelines[key] {
+            refined = cached
+        } else {
+            refined = RefinedPickPipelines(
+                tessellated: try? RendererSharedSetup.makeTessellatedPickPipelineState(
+                    device: device, library: library, maxFactor: key.maxFactor,
+                    label: "offscreen_tessellated_pick"),
+                meshShader: key.meshShaders
+                    ? try? RendererSharedSetup.makeMeshShaderPickPipelineState(
+                        device: device, library: library, label: "offscreen_mesh_pick")
+                    : nil)
+            refinedPickPipelines[key] = refined
+        }
+        pipelines.tessellated = refined.tessellated
+        pipelines.meshShader = refined.meshShader
+        return pipelines
+    }
+
+    /// The buffers the pick pass draws for `body`; empty for a body with none, such as one that
+    /// only has arcs.
+    private func pickPassBuffers(for body: ViewportBody) -> PickPassBuffers {
+        guard let buffers = bodyBufferCache[body.id] else { return PickPassBuffers() }
+        var pickBuffers = PickPassBuffers(
+            vertexBuffer: buffers.vertexBuffer, normalBuffer: buffers.normalBuffer,
+            indexBuffer: buffers.indexBuffer, indexCount: buffers.indexCount,
+            edgeVertexBuffer: buffers.edgeVertexBuffer,
+            edgePrimitiveCount: buffers.edgeVertexCount / EdgeSegmentStyle.nativeVerticesPerSegment,
+            quadEdgeVertexBuffer: buffers.quadEdgeVertexBuffer,
+            quadEdgeVertexCount: buffers.quadEdgeVertexCount, tessellation: buffers.tessellation,
+            meshlets: buffers.meshlets)
+        if !body.vertices.isEmpty {
+            // Point sprites for vertex picking, which `render` does not need: built on first pick.
+            if pickPointBuffers[body.id]?.generation != body.generation,
+                let buffer = RendererSharedBuffers.makePointPickBuffer(
+                    device: device, vertices: body.vertices)
+            {
+                pickPointBuffers[body.id] = (body.generation, buffer)
+            }
+            pickBuffers.pointVertexBuffer = pickPointBuffers[body.id]?.buffer
+            pickBuffers.pointVertexCount =
+                pickBuffers.pointVertexBuffer != nil ? body.vertices.count : 0
+        }
+        return pickBuffers
+    }
+
+    /// Updates the per-patch tessellation factors for this camera and output size (#165), which the
+    /// mesh stage subdivides by too (#175), before any pass that draws a refined surface.
+    ///
+    /// Never load-governed, so the same options always give the same image. Overlay bodies draw
+    /// untessellated.
+    private func encodeTessellationFactors(
+        commandBuffer: MTLCommandBuffer, bodies: [ViewportBody], options: OffscreenRenderOptions,
+        refinement: SurfaceRefinement, viewProjection: simd_float4x4
+    ) {
+        guard refinement.tessellation || refinement.meshShaders, let tessellationManager else {
+            return
+        }
+        let batch: [(TessellationBuffers, simd_float4x4)] = bodies.compactMap { body in
+            guard body.isVisible, body.renderLayer == .geometry,
+                let tess = bodyBufferCache[body.id]?.tessellation
+            else {
+                return nil
+            }
+            return (tess, body.transform)
+        }
+        guard !batch.isEmpty, let computeEncoder = commandBuffer.makeComputeCommandEncoder()
+        else { return }
+        let maxFactor = TessellationManager.clampedMaxFactor(options.tessellationMaxFactor)
+        tessellationManager.updateTessFactors(
+            tessBuffers: batch,
+            viewProjectionMatrix: viewProjection,
+            viewportSize: SIMD2<Float>(Float(options.width), Float(options.height)),
+            adaptive: options.adaptiveTessellation,
+            maxFactor: RendererSharedBuffers.deterministicTessellationFactor(
+                requestedMaxFactor: options.tessellationMaxFactor,
+                pipelineMaxFactor: maxFactor,
+                adaptive: options.adaptiveTessellation,
+                policy: options.uniformTessellationFactor),
+            encoder: computeEncoder)
+        computeEncoder.endEncoding()
     }
 
     private func ensureTextures(width: Int, height: Int, sampleCount: Int) {
@@ -2157,6 +2363,18 @@ public final class OffscreenRenderer: Sendable {
 }
 
 // MARK: - Private Types
+
+/// What distinguishes one set of offscreen tessellated / mesh-shader pick pipelines from another.
+private struct PickPipelineKey: Hashable {
+    let maxFactor: Int
+    let meshShaders: Bool
+}
+
+/// The refined face-pick pipelines for one `PickPipelineKey`.
+private struct RefinedPickPipelines {
+    let tessellated: MTLRenderPipelineState?
+    let meshShader: MTLRenderPipelineState?
+}
 
 private struct BodyBuffersOffscreen {
     let vertexBuffer: MTLBuffer?

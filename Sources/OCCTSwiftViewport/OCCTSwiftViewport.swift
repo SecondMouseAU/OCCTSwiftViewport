@@ -40,6 +40,7 @@ public typealias _ViewportRenderer = ViewportRenderer
 public typealias _OffscreenRenderer = OffscreenRenderer
 public typealias _OffscreenRenderOptions = OffscreenRenderOptions
 public typealias _OffscreenRenderError = OffscreenRenderError
+public typealias _OffscreenPickMap = OffscreenPickMap
 public typealias _OrthoBounds = OrthoBounds
 
 // Configuration

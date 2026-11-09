@@ -29,9 +29,10 @@ struct PickPipelines {
     /// normal@2), so a body from `ViewportBody.directMesh(...)` is stamped without an interleave.
     let shadedDirect: MTLRenderPipelineState
 
-    /// Edge pick as native lines; `pick_line_vertex` carries `wireframe_vertex`'s depth bias, so
-    /// an edge wins the pick over the face it lies on (#182). Also draws arcs when quad
-    /// expansion is off.
+    /// Edge pick as native lines.
+    ///
+    /// `pick_line_vertex` carries `wireframe_vertex`'s depth bias, so an edge wins the pick over
+    /// the face it lies on (#182).
     let line: MTLRenderPipelineState?
 
     /// Arc pick as native lines; stamps the arc index rather than the segment index.
@@ -204,8 +205,10 @@ struct PickPassFrame {
 
 extension RendererSharedSetup {
 
-    /// Encodes the 1x pick pass: every pickable body's faces, edges, arcs and vertices, stamped
-    /// into `encoder`'s RG32Uint attachment as `PickEncoding` packs them.
+    /// Encodes the 1x pick pass into `encoder`.
+    ///
+    /// Every pickable body's faces, edges, arcs and vertices are stamped into the RG32Uint
+    /// attachment as `PickEncoding` packs them.
     ///
     /// Both renderers call this, so a headless pick and a live one cannot drift apart. `bodies`
     /// lists every visible body in draw order, including ones with no mesh, so arc-only bodies
@@ -232,7 +235,8 @@ extension RendererSharedSetup {
             uniforms.modelMatrix = body.transform
             var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
 
-            if frame.useMeshShaders, let ml = buffers.meshlets, let msPipeline = pipelines.meshShader
+            if frame.useMeshShaders, let ml = buffers.meshlets,
+                let msPipeline = pipelines.meshShader
             {
                 pickEncoder.setFragmentBytes(
                     &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
