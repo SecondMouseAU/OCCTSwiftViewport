@@ -23,6 +23,10 @@ swift test --filter CameraStateTests
 # Run a single test
 swift test --filter "CameraStateTests/Default initialization"
 
+# Run the whole suite under Metal API validation (CI does; catches a bound buffer smaller than
+# the struct the shader declares, which is otherwise silent undefined behaviour)
+MTL_DEBUG_LAYER=1 swift test
+
 # Clean build (use if stale PCH errors after renames)
 swift package clean && swift build
 
@@ -80,7 +84,7 @@ All Metal shaders are in `Sources/OCCTSwiftViewport/Renderer/Shaders.metal`. The
 - **Swift side:** `Renderer/ViewportRenderer.swift` (search for `struct Uniforms` and `struct BodyUniforms`)
 - **Metal side:** `Renderer/Shaders.metal` (search for `struct Uniforms` and `struct BodyUniforms`)
 
-When modifying: maintain identical field order, matching types (`SIMD4<Float>` ↔ `float4`, `UInt32` ↔ `uint`), and 16-byte alignment for SIMD types.
+When modifying: maintain identical field order, matching types (`SIMD4<Float>` ↔ `float4`, `UInt32` ↔ `uint`), and 16-byte alignment for SIMD types. `EdgeUniforms` follows the same rule. A Metal struct's size is rounded up to its alignment, but Swift's `MemoryLayout.size` is not, so end the Swift struct with explicit padding until `size == stride` (`UniformBufferSizeTests` checks the scene pipelines' bound structs against the sizes the shaders declare).
 
 ### Camera System
 

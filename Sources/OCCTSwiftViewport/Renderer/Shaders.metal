@@ -1222,6 +1222,7 @@ struct EdgeUniforms {
     uint     dashPatternType;
     float2   viewportSize;
     float2   _pad;
+    float2   _pad2;  // explicit tail pad: Swift binds sizeof(EdgeUniforms) = 352 bytes (#231)
 };
 
 vertex QuadEdgeVertexOut quad_edge_vertex(
