@@ -301,6 +301,21 @@ private struct BodyBuffers {
     let localBoundingBox: BoundingBox?
 }
 
+extension PickPassBuffers {
+    fileprivate init(_ buffers: BodyBuffers) {
+        self.init(
+            vertexBuffer: buffers.vertexBuffer, normalBuffer: buffers.normalBuffer,
+            indexBuffer: buffers.indexBuffer, indexCount: buffers.indexCount,
+            edgeVertexBuffer: buffers.edgeVertexBuffer,
+            edgePrimitiveCount: buffers.edgePrimitiveCount,
+            quadEdgeVertexBuffer: buffers.quadEdgeVertexBuffer,
+            quadEdgeVertexCount: buffers.quadEdgeVertexCount,
+            pointVertexBuffer: buffers.pointVertexBuffer,
+            pointVertexCount: buffers.pointVertexCount, tessellation: buffers.tessellation,
+            meshlets: buffers.meshlets)
+    }
+}
+
 // MARK: - Frame Render Targets
 
 /// The attachment set one frame is encoded into.
@@ -337,10 +352,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// One sampled arc of this frame: its vertex range in the frame's arc line buffer
     /// (`start`/`count`) and in its quad-strip buffer (`quadStart`/`quadCount`).
-    private typealias FrameArcDraw = (
-        body: ViewportBody, objectIndex: UInt32, arcIndex: Int, start: Int, count: Int,
-        quadStart: Int, quadCount: Int
-    )
+    private typealias FrameArcDraw = RendererSharedBuffers.SampledArcDraw
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -361,36 +373,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let quadEdgeSegmentPipeline: MTLRenderPipelineState?
     private let gridPipeline: MTLRenderPipelineState
     private let axisPipeline: MTLRenderPipelineState
-    // 1x pick-only pipelines (pick texture is always sampleCount=1)
-    private let pickShadedPipeline: MTLRenderPipelineState
-    /// Direct-mesh face-pick pipeline (Option A).
+    /// The 1x pick-only pipelines every renderer builds (the pick texture is always
+    /// sampleCount=1): faces, direct-mesh faces, edges, arcs, quad edges and vertex sprites.
     ///
-    /// `pick_vertex` with the two-buffer descriptor (position@0 / normal@2) so direct-mesh bodies
-    /// are stamped into the RG32Uint pick texture. The pick vertex shader reads only position; the
-    /// normal binding satisfies attribute 1.
-    private let pickShadedDirectPipeline: MTLRenderPipelineState
-    /// Line-primitive pick pipeline for edge picking.
-    ///
-    /// `pick_line_vertex` carries `wireframe_vertex`'s depth bias, so a native edge wins the pick
-    /// over the face it lies on (issue #182); the fragment emits kind=1 in the pick encoding.
-    /// `pickArcPipeline` uses the same vertex shader.
-    private let pickLinePipeline: MTLRenderPipelineState?
-    private let pickArcPipeline: MTLRenderPipelineState?
-    /// Quad-expanded edge + arc pick pipeline, so the pick footprint matches the visible width.
-    private let pickQuadEdgePipeline: MTLRenderPipelineState?
-    /// Point-sprite pick pipeline for vertex picking.
-    ///
-    /// The vertex shader writes `[[point_size]]` so individual points have a clickable
-    /// footprint; the fragment emits kind=2.
-    private let pickPointPipeline: MTLRenderPipelineState?
+    /// The tessellated and mesh-shader face pipelines are `tessellatedPickPipeline` and
+    /// `meshShaderPickPipeline`; `pickPipelines` joins them.
+    private let basePickPipelines: PickPipelines
     /// MSAA point-sprite pipeline for visible point-cloud bodies.
     ///
     /// Renders a `.point` body's `vertices` as disc-masked point sprites with a world-space
     /// radius projected to screen pixels.
     private let visiblePointPipeline: MTLRenderPipelineState?
-    /// `.lessEqual` depth state used by the edge + vertex pick sub-passes so
-    /// edges/points coplanar with a face win the pick over the face.
-    private let pickEdgeOrPointDepthState: MTLDepthStencilState
     // Depth-only pipeline for SSAO depth pass
     private let depthOnlyPipeline: MTLRenderPipelineState
     /// Direct-mesh depth-only pipeline (Option A).
@@ -500,6 +493,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// own planes otherwise. Internal so tests can check that a body's first frame is fitted
     /// (#157).
     private(set) var lastFrameClipPlanes: (near: Float, far: Float)?
+
+    /// Every pick pipeline: the always-built set plus the tessellated and mesh-shader face ones,
+    /// where this renderer built them.
+    private var pickPipelines: PickPipelines {
+        var pipelines = basePickPipelines
+        pipelines.tessellated = tessellatedPickPipeline
+        pipelines.meshShader = meshShaderPickPipeline
+        return pipelines
+    }
 
     /// Depth texture for the 1x pick pass (separate from the MSAA depth).
     private var pickDepthTexture: MTLTexture?
@@ -691,62 +693,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         self.skyboxDepthState = RendererSharedSetup.makeDepthStencilState(
             device: device, compareFunction: .always, isDepthWriteEnabled: false)
 
-        // --- 1x pick-only pipeline (RG32Uint, no MSAA) ---
+        // --- 1x pick-only pipelines (RG32Uint, no MSAA), shared with OffscreenRenderer ---
 
-        guard
-            let pickShadedPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "pick_shaded", library: library,
-                vertexFunction: "pick_vertex", fragmentFunction: "pick_fragment",
-                colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-                vertexDescriptor: vertexDesc)
-        else {
+        guard let basePickPipelines = PickPipelines(device: device, library: library) else {
             return nil
         }
-        self.pickShadedPipeline = pickShadedPipeline
-
-        // Direct-mesh face-pick pipeline (Option A): same pick shaders, two-buffer descriptor.
-        guard
-            let pickShadedDirectPipeline = RendererSharedSetup.makePipelineState(
-                device: device, label: "pick_shaded_direct", library: library,
-                vertexFunction: "pick_vertex", fragmentFunction: "pick_fragment",
-                colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-                vertexDescriptor: directVertexDesc)
-        else {
-            return nil
-        }
-        self.pickShadedDirectPipeline = pickShadedDirectPipeline
-
-        // 1x line pick pipeline (edge picking) — pick_line_vertex applies wireframe_vertex's
-        // depth bias (issue #182); fragment emits kind=1.
-        self.pickLinePipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "pick_line", library: library,
-            vertexFunction: "pick_line_vertex", fragmentFunction: "pick_line_fragment",
-            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-            vertexDescriptor: vertexDesc)
-
-        // 1x arc pick pipeline (issue #48) — pick_line_vertex, biased like the drawn arc
-        // (issue #182); fragment emits kind=1 with the per-draw arc index.
-        self.pickArcPipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "pick_arc", library: library,
-            vertexFunction: "pick_line_vertex", fragmentFunction: "pick_arc_fragment",
-            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-            vertexDescriptor: vertexDesc)
-
-        // 1x quad edge pick pipeline — quad_edge_vertex expands segments to the visible edge
-        // width; pick_quad_edge_fragment emits kind=1 with the segment (or arc) index.
-        self.pickQuadEdgePipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "pick_quad_edge", library: library,
-            vertexFunction: "quad_edge_vertex", fragmentFunction: "pick_quad_edge_fragment",
-            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-            vertexDescriptor: RendererSharedSetup.quadEdgeVertexDescriptor())
-
-        // 1x point pick pipeline (vertex picking) — pick_point_vertex outputs
-        // point_size for clickable footprint; fragment emits kind=2.
-        self.pickPointPipeline = RendererSharedSetup.makePipelineState(
-            device: device, label: "pick_point", library: library,
-            vertexFunction: "pick_point_vertex", fragmentFunction: "pick_point_fragment",
-            colorPixelFormat: .rg32Uint, depthPixelFormat: .depth32Float,
-            vertexDescriptor: vertexDesc)
+        self.basePickPipelines = basePickPipelines
 
         self.visiblePointPipeline = RendererSharedSetup.makeVisiblePointPipelineState(
             device: device, library: library, sampleCount: sampleCount,
@@ -981,10 +933,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     device: device, library: library)
             }
             self.meshShaderPickPipeline = meshPipeline {
-                try RendererSharedSetup.makeMeshShaderPipelineState(
-                    device: device, library: library, meshFunction: "meshlet_pick_mesh",
-                    fragmentFunction: "meshlet_pick_fragment", colorPixelFormat: .rg32Uint,
-                    depthPixelFormat: .depth32Float, label: "mesh_pick")
+                try RendererSharedSetup.makeMeshShaderPickPipelineState(
+                    device: device, library: library)
             }
             // The highlight, stencil mask and selection mask follow the subdivided surface (#175).
             self.meshShaderHighlightPipeline = meshPipeline {
@@ -1074,16 +1024,6 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             return nil
         }
         self.overlayDepthState = overlayDepthState
-
-        // .lessEqual + write enabled — edges and points that lie on a face win
-        // ties (face writes first with .less, edge/point overwrites at equal depth).
-        guard
-            let pickEdgeOrPointDepthState = RendererSharedSetup.makeDepthStencilState(
-                device: device, compareFunction: .lessEqual, isDepthWriteEnabled: true)
-        else {
-            return nil
-        }
-        self.pickEdgeOrPointDepthState = pickEdgeOrPointDepthState
 
         // .lessEqual + write disabled — for the highlight pass. Same geometry as
         // the shaded pass at the same positions; we want them to win the depth
@@ -1281,17 +1221,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         guard width > 0, height > 0 else { return }
         guard width != pickDepthWidth || height != pickDepthHeight else { return }
 
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .depth32Float,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        desc.usage = [.renderTarget]
-        desc.storageMode = .private
-        desc.sampleCount = 1
-
-        pickDepthTexture = device.makeTexture(descriptor: desc)
+        pickDepthTexture = RendererSharedSetup.makePickDepthTexture(
+            device: device, width: width, height: height)
         pickDepthWidth = width
         pickDepthHeight = height
     }
@@ -2062,41 +1993,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         }
 
         if !arcBodies.isEmpty {
-            let vpSize = SIMD2<Float>(Float(w), Float(h))
-            var arcVerts: [Float] = []
-            var arcQuadVerts: [Float] = []
-            for entry in arcBodies {
-                // Match the edge-pass visibility rule: show feature edges when the
-                // display mode draws edges, or when the body is edge-only.
-                let bodyHasMesh = entry.buffers.indexCount > 0
-                guard displayMode.showsEdges || !bodyHasMesh else { continue }
-
-                let mvp = viewProjection * entry.body.transform
-                for (arcIndex, arc) in entry.body.arcs.enumerated() {
-                    let segs = ArcSampling.segmentCount(arc: arc, mvp: mvp, viewportSize: vpSize)
-                    let startVert = arcVerts.count / 6
-                    let points = RendererSharedBuffers.sampledArcPolyline(arc, segmentCount: segs)
-                    for (prev, cur) in zip(points, points.dropFirst()) {
-                        arcVerts.append(contentsOf: [
-                            prev.x, prev.y, prev.z, 0, 0, 0,
-                            cur.x, cur.y, cur.z, 0, 0, 0,
-                        ])
-                    }
-                    let count = arcVerts.count / 6 - startVert
-                    let quadStart = arcQuadVerts.count / 9
-                    if useQuadArcs {
-                        arcQuadVerts += RendererSharedBuffers.quadEdgeLineVertices(from: [points])
-                    }
-                    let quadCount = arcQuadVerts.count / 9 - quadStart
-                    if count > 0 {
-                        frameArcDraws.append(
-                            (
-                                entry.body, entry.objectIndex, arcIndex, startVert, count,
-                                quadStart, quadCount
-                            ))
-                    }
-                }
-            }
+            // Match the edge-pass visibility rule: show feature edges when the display mode
+            // draws edges, or when the body is edge-only.
+            let sampled = RendererSharedBuffers.sampleArcs(
+                bodies: arcBodies.map { ($0.body, $0.objectIndex, $0.buffers.indexCount > 0) },
+                displayMode: displayMode, viewProjection: viewProjection,
+                viewportSize: SIMD2<Float>(Float(w), Float(h)), quadExpansion: useQuadArcs)
+            frameArcDraws = sampled.draws
+            let arcVerts = sampled.lineVertices
+            let arcQuadVerts = sampled.quadVertices
 
             if !arcVerts.isEmpty,
                 let arcBuf = arcBufferPool.acquire(
@@ -2411,6 +2316,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // =========================================================
         // Pass 2: 1x Pick pass (RG32Uint, no MSAA)
         // =========================================================
+        // Encoded by `RendererSharedSetup.encodePickPass`, which OffscreenRenderer's pick shares.
         let pickingEnabled = controller.configuration.pickingConfiguration.isEnabled
         if pickingEnabled {
             let w = Int(drawableSize.width)
@@ -2418,324 +2324,27 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             pickTextureManager.ensureSize(width: w, height: h)
             ensurePickDepthTexture(width: w, height: h)
 
-            if let pickTex = pickTextureManager.texture, let pickDepth = pickDepthTexture {
-                let pickPass = MTLRenderPassDescriptor()
-                pickPass.colorAttachments[0].texture = pickTex
-                pickPass.colorAttachments[0].loadAction = .clear
-                pickPass.colorAttachments[0].storeAction = .store
-                // R and G both 0xFFFF_FFFF: no object, no primitive (`PickEncoding.noHit`).
-                pickPass.colorAttachments[0].clearColor = MTLClearColor(
-                    red: Double(PickEncoding.noObject),
-                    green: Double(PickEncoding.noObject), blue: 0, alpha: 0
-                )
-                pickPass.depthAttachment.texture = pickDepth
-                pickPass.depthAttachment.loadAction = .clear
-                pickPass.depthAttachment.storeAction = .dontCare
-                pickPass.depthAttachment.clearDepth = 1.0
-
-                if let pickEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: pickPass) {
-                    pickEncoder.setDepthStencilState(depthState)
-
-                    objectIndex = 0
-                    for body in bodies where body.isVisible {
-                        let bodyObjectIndex = objectIndex
-                        objectIndex += 1
-                        // Non-pickable bodies (issue #63) are skipped, but objectIndex
-                        // still advances so the remaining bodies keep their pick IDs.
-                        if !body.isPickable { continue }
-                        guard let buffers = bodyBufferCache[body.id] else {
-                            continue
-                        }
-                        // Overlay bodies are picked in the second pick loop (always-pass depth).
-                        if body.renderLayer == .overlay { continue }
-
-                        // Direct-mesh bodies are stamped via pickShadedDirectPipeline (the standard
-                        // branch below), so they are NOT excluded here.
-                        let hasMesh =
-                            buffers.vertexBuffer != nil && buffers.indexBuffer != nil
-                            && buffers.indexCount > 0
-
-                        // Faces are stamped only when the display mode draws them, so hidden
-                        // surfaces (`.wireframe`) can't win a pick.
-                        if displayMode.showsSurfaces, hasMesh, let vb = buffers.vertexBuffer,
-                            let ib = buffers.indexBuffer
-                        {
-                            var uniforms = makeUniforms()
-                            uniforms.modelMatrix = body.transform
-                            var bodyUniforms = BodyUniforms(
-                                body: body, objectIndex: bodyObjectIndex)
-
-                            if useMeshShaders, let ml = buffers.meshlets,
-                                let msPipeline = meshShaderPickPipeline
-                            {
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                RendererSharedSetup.encodeMeshletDraw(
-                                    encoder: pickEncoder, pipeline: msPipeline, meshlets: ml,
-                                    uniforms: &uniforms)
-                            } else if useTessellation, let tess = buffers.tessellation,
-                                let tessPipeline = tessellatedPickPipeline
-                            {
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                RendererSharedSetup.encodeTessellatedDraw(
-                                    encoder: pickEncoder, pipeline: tessPipeline,
-                                    tessellation: tess, uniforms: &uniforms)
-                            } else if let nb = buffers.normalBuffer {
-                                // Direct-mesh body (Option A): position@0 + normal@2.
-                                pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
-                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                                pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                                pickEncoder.setVertexBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                pickEncoder.drawIndexedPrimitives(
-                                    type: .triangle,
-                                    indexCount: buffers.indexCount,
-                                    indexType: .uint32,
-                                    indexBuffer: ib,
-                                    indexBufferOffset: 0
-                                )
-                            } else {
-                                pickEncoder.setRenderPipelineState(pickShadedPipeline)
-                                pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                                pickEncoder.setVertexBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                                pickEncoder.setFragmentBytes(
-                                    &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2
-                                )
-                                pickEncoder.drawIndexedPrimitives(
-                                    type: .triangle,
-                                    indexCount: buffers.indexCount,
-                                    indexType: .uint32,
-                                    indexBuffer: ib,
-                                    indexBufferOffset: 0
-                                )
-                            }
-                        }
-                    }
-
-                    // Edge, arc and vertex stamps. Geometry bodies stamp them depth-tested
-                    // (`.lessEqual`, so edges co-planar with a face and vertices on an edge win
-                    // the tie); overlay bodies stamp them in the overlay pick pass below. With
-                    // quad expansion on, edges and arcs are picked as quads as wide as the visible
-                    // edge (at least 1 pt), not as 1 px lines. The fragments encode kind=1 with the
-                    // line-segment (or arc) index, and kind=2 with the vertex index.
-                    let quadPickPipeline =
-                        frameEdgeConfig.useQuadExpansion ? pickQuadEdgePipeline : nil
-                    let pickEdgeWidth = max(frameEdgeConfig.width, pickContentScale)
-
-                    /// Stamps a body's edge polylines, as the visible edge pass draws them.
-                    func stampEdges(
-                        _ body: ViewportBody, _ buffers: BodyBuffers, objectIndex: UInt32
-                    ) {
-                        guard let edgeVB = buffers.edgeVertexBuffer, buffers.edgePrimitiveCount > 0
-                        else { return }
-                        // Only the segments `edgeDrawRange` shows can be picked (#140).
-                        let edgeSegments = EdgeSegmentStyle.drawnRange(
-                            body.edgeDrawRange, segmentCount: buffers.edgePrimitiveCount)
-                        guard !edgeSegments.isEmpty else { return }
-                        var uniforms = makeUniforms()
-                        uniforms.modelMatrix = body.transform
-                        var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
-                        if let quadPickPipeline, let quadEdgeVB = buffers.quadEdgeVertexBuffer,
-                            buffers.quadEdgeVertexCount > 0
-                        {
-                            var edgeUniforms = EdgeUniforms(
-                                uniforms: uniforms, configuration: frameEdgeConfig,
-                                viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                            // Segment = the slice's first segment + triangle / 6.
-                            var primSource = SIMD2<UInt32>(UInt32(edgeSegments.lowerBound), 0)
-                            pickEncoder.setRenderPipelineState(quadPickPipeline)
-                            pickEncoder.setVertexBuffer(quadEdgeVB, offset: 0, index: 0)
-                            pickEncoder.setVertexBytes(
-                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                            pickEncoder.setFragmentBytes(
-                                &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
-                            let slice = EdgeSegmentStyle.quadVertexSlice(edgeSegments)
-                            pickEncoder.drawPrimitives(
-                                type: .triangleStrip, vertexStart: slice.start,
-                                vertexCount: slice.count)
-                            return
-                        }
-                        guard let pickLinePipeline else { return }
-                        pickEncoder.setRenderPipelineState(pickLinePipeline)
-                        pickEncoder.setVertexBuffer(edgeVB, offset: 0, index: 0)
-                        pickEncoder.setVertexBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        pickEncoder.setFragmentBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        pickEncoder.setFragmentBytes(
-                            &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                        var firstSegment = UInt32(edgeSegments.lowerBound)
-                        pickEncoder.setFragmentBytes(
-                            &firstSegment, length: MemoryLayout<UInt32>.size, index: 3)
-                        let slice = EdgeSegmentStyle.nativeVertexSlice(edgeSegments)
-                        pickEncoder.drawPrimitives(
-                            type: .line, vertexStart: slice.start, vertexCount: slice.count)
-                    }
-
-                    /// Re-draws one of this frame's sampled arcs (from `frameArcQuadBuffer` or
-                    /// `frameArcLineBuffer`, ranges in `frameArcDraws`), stamping the ARC index.
-                    func stampArc(_ d: FrameArcDraw) {
-                        var uniforms = makeUniforms()
-                        uniforms.modelMatrix = d.body.transform
-                        var bodyUniforms = BodyUniforms(body: d.body, objectIndex: d.objectIndex)
-                        let arcIndex = UInt32(truncatingIfNeeded: d.arcIndex)
-                        if let quadPickPipeline, let quadBuf = frameArcQuadBuffer {
-                            // Quad arcs: same footprint as the visible arc (the samples drawn above).
-                            var edgeUniforms = EdgeUniforms(
-                                uniforms: uniforms, configuration: frameEdgeConfig,
-                                viewportSize: edgeViewportSize, width: pickEdgeWidth)
-                            var primSource = SIMD2<UInt32>(arcIndex, 1)  // fixed arc index
-                            pickEncoder.setRenderPipelineState(quadPickPipeline)
-                            pickEncoder.setVertexBuffer(quadBuf, offset: 0, index: 0)
-                            pickEncoder.setVertexBytes(
-                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                            pickEncoder.setFragmentBytes(
-                                &primSource, length: MemoryLayout<SIMD2<UInt32>>.size, index: 3)
-                            pickEncoder.drawPrimitives(
-                                type: .triangleStrip, vertexStart: d.quadStart,
-                                vertexCount: d.quadCount)
-                        } else if let pickArcPipeline, let arcBuf = frameArcLineBuffer {
-                            var arcPrimID = arcIndex
-                            pickEncoder.setRenderPipelineState(pickArcPipeline)
-                            pickEncoder.setVertexBuffer(arcBuf, offset: 0, index: 0)
-                            pickEncoder.setVertexBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                            pickEncoder.setFragmentBytes(
-                                &arcPrimID, length: MemoryLayout<UInt32>.size, index: 3)
-                            pickEncoder.drawPrimitives(
-                                type: .line, vertexStart: d.start, vertexCount: d.count)
-                        }
-                    }
-
-                    /// Stamps a body's `vertices` as point sprites with an 8 pt footprint.
-                    func stampVertices(
-                        _ body: ViewportBody, _ buffers: BodyBuffers, objectIndex: UInt32
-                    ) {
-                        guard let pickPointPipeline, let pointVB = buffers.pointVertexBuffer,
-                            buffers.pointVertexCount > 0
-                        else { return }
-                        var uniforms = makeUniforms()
-                        uniforms.modelMatrix = body.transform
-                        var bodyUniforms = BodyUniforms(body: body, objectIndex: objectIndex)
-                        // 8 pt clickable footprint, in drawable pixels.
-                        var pointSpriteSize = 8 * pickContentScale
-                        pickEncoder.setRenderPipelineState(pickPointPipeline)
-                        pickEncoder.setVertexBuffer(pointVB, offset: 0, index: 0)
-                        pickEncoder.setVertexBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        pickEncoder.setVertexBytes(
-                            &pointSpriteSize, length: MemoryLayout<Float>.size, index: 2)
-                        pickEncoder.setFragmentBytes(
-                            &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                        pickEncoder.setFragmentBytes(
-                            &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                        pickEncoder.drawPrimitives(
-                            type: .point, vertexStart: 0, vertexCount: buffers.pointVertexCount)
-                    }
-
-                    // Geometry-layer edges: bodies with `edgeIndices` set, when the display mode
-                    // draws their edges (`.shaded` hides them, so they can't win a pick).
-                    pickEncoder.setDepthStencilState(pickEdgeOrPointDepthState)
-                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
-                    where body.renderLayer == .geometry && body.isPickable
-                        && !body.edgeIndices.isEmpty
-                        && displayMode.drawsEdges(bodyHasMesh: buffers.indexCount > 0)
-                    {
-                        stampEdges(body, buffers, objectIndex: bodyObjectIndex)
-                    }
-                    // Geometry-layer arcs (issue #48), each drawn separately so the fragment
-                    // stamps its arc index.
-                    for d in frameArcDraws
-                    where d.body.renderLayer == .geometry && d.body.isPickable {
-                        stampArc(d)
-                    }
-                    // Geometry-layer vertices: bodies with `vertices` set.
-                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
-                    where body.renderLayer == .geometry && body.isPickable
-                        && !body.vertices.isEmpty
-                    {
-                        stampVertices(body, buffers, objectIndex: bodyObjectIndex)
-                    }
-
-                    // Overlay pick pass (#170): RenderLayer.overlay bodies stamp everything the
-                    // overlay pass draws (surfaces in every display mode, the edges and arcs the
-                    // mode shows, and vertices) with always-pass depth, so a widget wins the pick
-                    // over geometry in front of it, as it is drawn over it. Edges are stamped
-                    // whether or not `edgeIndices` is set: a gizmo ring drawn as a polyline is
-                    // grabbed by its edges. Within a body, edges and vertices are stamped after
-                    // its faces so they win; a later overlay body wins over an earlier one, as it
-                    // is drawn over it.
-                    pickEncoder.setDepthStencilState(overlayDepthState)
-                    for (body, buffers, bodyObjectIndex) in frameVisibleBodies
-                    where body.renderLayer == .overlay && body.isPickable {
-                        let hasMesh =
-                            buffers.vertexBuffer != nil && buffers.indexBuffer != nil
-                            && buffers.indexCount > 0
-                        if body.primitiveKind != .point, hasMesh, let vb = buffers.vertexBuffer,
-                            let ib = buffers.indexBuffer
-                        {
-                            var uniforms = makeUniforms()
-                            uniforms.modelMatrix = body.transform
-                            var bodyUniforms = BodyUniforms(
-                                body: body, objectIndex: bodyObjectIndex)
-                            if let nb = buffers.normalBuffer {
-                                // Direct-mesh overlay body (Option A): position@0 + normal@2.
-                                pickEncoder.setRenderPipelineState(pickShadedDirectPipeline)
-                                pickEncoder.setVertexBuffer(nb, offset: 0, index: 2)
-                            } else {
-                                pickEncoder.setRenderPipelineState(pickShadedPipeline)
-                            }
-                            pickEncoder.setVertexBuffer(vb, offset: 0, index: 0)
-                            pickEncoder.setVertexBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
-                            pickEncoder.setFragmentBytes(
-                                &bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-                            pickEncoder.drawIndexedPrimitives(
-                                type: .triangle, indexCount: buffers.indexCount,
-                                indexType: .uint32, indexBuffer: ib, indexBufferOffset: 0)
-                        }
-                        if body.primitiveKind != .point,
-                            displayMode.drawsEdges(bodyHasMesh: hasMesh)
-                        {
-                            stampEdges(body, buffers, objectIndex: bodyObjectIndex)
-                        }
-                        for d in frameArcDraws where d.body.id == body.id {
-                            stampArc(d)
-                        }
-                        stampVertices(body, buffers, objectIndex: bodyObjectIndex)
-                    }
-
-                    pickEncoder.endEncoding()
-                }
+            if let pickTex = pickTextureManager.texture, let pickDepth = pickDepthTexture,
+                let pickEncoder = commandBuffer.makeRenderCommandEncoder(
+                    descriptor: RendererSharedSetup.makePickPassDescriptor(
+                        color: pickTex, depth: pickDepth))
+            {
+                RendererSharedSetup.encodePickPass(
+                    encoder: pickEncoder,
+                    bodies: frameVisibleBodies.map {
+                        PickPassBody(
+                            body: $0.body, objectIndex: $0.objectIndex,
+                            buffers: PickPassBuffers($0.buffers))
+                    },
+                    frame: PickPassFrame(
+                        pipelines: pickPipelines, depthState: depthState,
+                        overlayDepthState: overlayDepthState, displayMode: displayMode,
+                        useMeshShaders: useMeshShaders, useTessellation: useTessellation,
+                        edgeConfiguration: frameEdgeConfig, viewportSize: edgeViewportSize,
+                        contentScale: pickContentScale, arcs: frameArcDraws,
+                        arcLineBuffer: frameArcLineBuffer, arcQuadBuffer: frameArcQuadBuffer,
+                        makeUniforms: makeUniforms))
+                pickEncoder.endEncoding()
             }
         }
 
@@ -3351,27 +2960,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             device: device, edgeVertices: quadEdgeVertices)
         let quadEdgeVertexCount = quadEdgeVertices.count / 9
 
-        // Build point vertex buffer for vertex picking. Each entry in body.vertices
-        // becomes one point sprite; uses the same position+normal stride as the
-        // mesh vertex buffer so the standard pick vertex descriptor applies.
-        let pointVB: MTLBuffer?
-        let pointVertexCount: Int
-        if !body.vertices.isEmpty {
-            var pointData: [Float] = []
-            pointData.reserveCapacity(body.vertices.count * 6)
-            for v in body.vertices {
-                pointData.append(contentsOf: [v.x, v.y, v.z, 0, 0, 0])
-            }
-            pointVB = device.makeBuffer(
-                bytes: pointData,
-                length: pointData.count * MemoryLayout<Float>.size,
-                options: .storageModeShared
-            )
-            pointVertexCount = body.vertices.count
-        } else {
-            pointVB = nil
-            pointVertexCount = 0
-        }
+        // Point-sprite vertices for vertex picking: each entry in body.vertices is one sprite.
+        let pointVB = RendererSharedBuffers.makePointPickBuffer(
+            device: device, vertices: body.vertices)
+        let pointVertexCount = pointVB != nil ? body.vertices.count : 0
 
         // Tight position-only buffer for the visible point-cloud pass. Separate from `pointVB`
         // because the visible pass uses [[vertex_id]] indexing with no vertex descriptor — a
