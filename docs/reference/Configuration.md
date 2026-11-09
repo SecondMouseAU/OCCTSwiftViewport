@@ -791,6 +791,14 @@ config.adaptiveTessellation = false
 config.uniformTessellationFactor = .loadAdaptive(minimum: 8)  // or .fixed(12) to pin it
 ```
 
+**GPU frame time is not a property of the scene alone, so a debug build can settle on a lower factor than a release build (#238).** The governor reads the previous frame's `gpuEndTime - gpuStartTime`. On Apple silicon the same frame takes longer when the GPU sat idle just before it, and is fast again for the frame submitted straight behind it. On an M4, with 645,000 triangles at 1920x1080 and 4x MSAA, one fixed scene took 10.0 ms as the first frame after a 130 ms pause and 5.0 ms as the next frame; with shadows, SSAO and silhouettes on, it took 15.2 ms and 9.0 ms. A debug build leaves the GPU idle for most of each frame (an offscreen frame of that scene took about 130 ms of wall time in debug, against about 10 ms in release, nearly all of it on the CPU), so every frame is a cold one, and the same scene measured 1.6 to 2.5 times slower than in release. The cause is the idle GPU, not the shaders: debug and release link a byte-identical `default.metallib`, and the run-time compile that SwiftPM's native build system falls back to runs at the same speed as the offline one.
+
+What follows from that:
+
+- At the default 120 fps budget (8.3 ms), a steady 5.0 ms frame (60% of the budget) holds the factor, while the 10.7 ms cold version of it (128%) lowers the factor to `minimum`. In a scene that sits near the 85% threshold, the debug build and the release build of one app can therefore tessellate differently. Pin the factor with `.fixed(_:)` when you compare quality across builds. The default, `adaptiveTessellation = true`, never reads GPU time.
+- Profile GPU time in a release build with frames submitted back to back, and do not read a debug build's GPU time as the device's real cost. Metal shader validation (`MTL_SHADER_VALIDATION`) instruments every shader and made the same scenes 10 to 40 times slower, so leave it off when you measure. Metal API validation (`MTL_DEBUG_LAYER`) did not measurably change the best-case GPU time in these runs; it costs CPU time, which in turn widens the idle gap.
+- A release build that renders on demand, such as after the view sat idle, sees the same slow first frames. The governor's smoothing and its 30-frame hold absorb a few of them, not a steady state.
+
 ---
 
 ## RenderLayer

@@ -211,6 +211,11 @@ public enum UniformTessellationFactor: Sendable, Equatable {
     /// The live renderer lowers the factor when the smoothed GPU frame time nears the frame
     /// budget (`1 / preferredFramesPerSecond`), under thermal pressure, or in Low Power Mode,
     /// and raises it again when there is headroom, with hysteresis so it does not oscillate.
+    ///
+    /// GPU frame time is longer for a frame that follows an idle GPU, which is every frame of a
+    /// debug build (its CPU-side encoding leaves the GPU idle). A debug build can therefore settle
+    /// on a lower factor than the same app in release (#238). Use `.fixed(_:)` to compare quality
+    /// across builds, and measure GPU time in a release build.
     case loadAdaptive(minimum: Int = 4)
     /// Always tessellate at this factor (clamped to `1...tessellationMaxFactor`).
     case fixed(Int)
