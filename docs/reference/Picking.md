@@ -11,7 +11,7 @@ OCCTSwiftViewport provides two complementary picking paths. The **GPU pick path*
 
 ## Topics
 
-- [PrimitiveKind](#primitivekind) · [PickLayer](#picklayer) · [PickResult](#pickresult) · [Display mode and pick content](#display-mode-and-pick-content) · [PickResultFilter](#pickresultfilter) · [RaycastHit](#raycasthit) · [SceneRaycast](#sceneraycast) · [Ray](#ray) · [ProjectionUtility](#projectionutility)
+- [PrimitiveKind](#primitivekind) · [PickLayer](#picklayer) · [PickResult](#pickresult) · [Display mode and pick content](#display-mode-and-pick-content) · [Picking without a view](#picking-without-a-view) · [PickResultFilter](#pickresultfilter) · [RaycastHit](#raycasthit) · [SceneRaycast](#sceneraycast) · [Ray](#ray) · [ProjectionUtility](#projectionutility)
 
 ---
 
@@ -227,6 +227,23 @@ The GPU pick pass writes only what the current `DisplayMode` shows, so geometry 
 A geometry-layer body's polyline `edges` are pickable only when it sets `edgeIndices` (its `arcs` always are; an overlay body's edges always are). In `.wireframe`, where faces are not pickable, a body with no `edgeIndices`, `arcs` or `vertices` therefore can't be picked at all. Set `edgeIndices` on bodies you want selectable in wireframe.
 
 Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so a click could select an invisible face or edge.
+
+---
+
+## Picking without a view
+
+`OffscreenRenderer` runs this same pick pass on request, with no `MTKView` and no live `ViewportRenderer`. It stamps the pick texture through the code the live renderer uses (`RendererSharedSetup.encodePickPass`) and decodes it through the same `PickEncoding`, `PickResult(pickValue:indexMap:layerMap:)`, neighbourhood and region functions, so for the same scene and camera an offscreen pick equals the live `performPick(at:completion:)` or `performRegionPick(rect:completion:)`: same `bodyID`, `bodyIndex`, `triangleIndex`, `kind`, `pickValue` and `pickLayer`.
+
+| Live | Offscreen |
+|---|---|
+| `performPick(at:completion:)` | `OffscreenRenderer.performPick(bodies:at:options:) -> PickResult?` |
+| `performRegionPick(rect:completion:)` | `OffscreenRenderer.performRegionPick(bodies:rect:options:) -> [PickResult]` |
+| the pick texture, held by the renderer | `OffscreenRenderer.renderPickMap(bodies:options:) -> OffscreenPickMap?`, then `pick(at:)` and `pickRegion(_:)` |
+| `PickingConfiguration.pickRadius` | `OffscreenRenderOptions.pickRadius` |
+| `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
+| `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
+
+The offscreen calls are synchronous (the live ones complete asynchronously, after a GPU readback). Coordinates are render pixels, origin top left. Clip planes, `displayMode`, `isVisible`, `isPickable`, render layers, each body's `transform` and the `renderingQuality` surface path are applied as live. The full API is in [Rendering: GPU picking](Rendering.md#gpu-picking).
 
 ---
 

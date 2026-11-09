@@ -9,7 +9,7 @@ These types form the rendering layer of OCCTSwiftViewport. `ViewportRenderer` is
 
 ## Topics
 
-- [DisplayMode](#displaymode) · [OrthoBounds](#orthobounds) · [OffscreenRenderOptions](#offscreenrenderoptions) · [OffscreenRenderError](#offscreenrendererror) · [OffscreenRenderer](#offscreenrenderer) · [ViewportRenderer](#viewportrenderer)
+- [DisplayMode](#displaymode) · [OrthoBounds](#orthobounds) · [OffscreenRenderOptions](#offscreenrenderoptions) · [OffscreenRenderError](#offscreenrendererror) · [OffscreenRenderer](#offscreenrenderer) · [GPU picking](#gpu-picking) · [OffscreenPickMap](#offscreenpickmap) · [ViewportRenderer](#viewportrenderer)
 
 ---
 
@@ -131,6 +131,8 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `tessellationMaxFactor` | `Int` | `32` | Mirrors `ViewportConfiguration.tessellationMaxFactor`; clamped to `2...64` and rounded up to even. |
 | `adaptiveTessellation` | `Bool` | `true` | Mirrors `ViewportConfiguration.adaptiveTessellation`. Adaptive factors depend only on the camera, the output size and `tessellationMaxFactor`. |
 | `uniformTessellationFactor` | `UniformTessellationFactor` | `.loadAdaptive()` | Factor when `adaptiveTessellation` is `false`. `.fixed(n)` uses `n`; `.loadAdaptive` has no load to follow offscreen and always uses `tessellationMaxFactor`, so the same options always give the same image. |
+| `pickRadius` | `Int` | `0` | Tolerance of the offscreen GPU pick, mirroring `PickingConfiguration.pickRadius`: `0` picks the exact pixel, above `0` the best hit in the `(2 * pickRadius + 1)` square around it. Clamped to `0...32`. Used by [`renderPickMap`](#gpu-picking) and its pick methods; it changes nothing in a render. |
+| `selectionFilter` | `PickResultFilter?` | `nil` | Filter the offscreen pick passes its hit through, mirroring `ViewportController.selectionFilter`; a `.widget`-layer hit bypasses it, as live. |
 
 > **Behaviour change (issue #136):** the default options now run the SSAO / silhouette composite (as the live viewport's defaults do), so a lit render is ambient-occluded and silhouetted. Lit surfaces are ACES tone-mapped in linear space whether or not the composite runs. Set `enableSilhouettes = false` and `lightingConfiguration.enableSSAO = false` for the previous look.
 >
@@ -180,14 +182,16 @@ public init(
     renderingQuality: RenderingQuality = .standard,
     tessellationMaxFactor: Int = 32,
     adaptiveTessellation: Bool = true,
-    uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive()
+    uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive(),
+    pickRadius: Int = 0,
+    selectionFilter: PickResultFilter? = nil
 )
 
 @MainActor
 public init(matching controller: ViewportController, width: Int, height: Int)
 ```
 
-`init(matching:width:height:)` copies everything the offscreen path honours from a live controller: camera, display mode, lighting, grid and axes, edge intensity, clip planes, selection and hover, and the relevant `ViewportConfiguration` fields (background colour, MSAA, grid spacing, edge lines, selection and hover outline styles, silhouettes, normal smoothing). Measurements are not copied.
+`init(matching:width:height:)` copies everything the offscreen path honours from a live controller: camera, display mode, lighting, grid and axes, edge intensity, clip planes, selection and hover, the controller's `selectionFilter`, and the relevant `ViewportConfiguration` fields (background colour, MSAA, grid spacing, edge lines, selection and hover outline styles, silhouettes, normal smoothing, `pickingConfiguration.pickRadius`). Measurements are not copied.
 
 **Example — thumbnail of what the viewport currently shows:**
 
@@ -253,7 +257,7 @@ Headless Metal renderer that produces a `CGImage` from an array of `ViewportBody
 
 The renderer caches GPU buffers per body ID and regenerates them only when a body's `generation` counter changes, which happens on `init` and on any geometry mutation.
 
-> **Platform note:** `OffscreenRenderer` does not perform a GPU pick pass, so per-body `isPickable` flags have no effect in the headless path. Selection and hover are drawn (tint and outline ring) from `OffscreenRenderOptions.selectedBodyIDs` / `hoveredBodyID`.
+> **Picking:** `render(bodies:options:)` draws no pick texture. The GPU pick pass runs on request, through `renderPickMap(bodies:options:)`, `performPick(bodies:at:options:)` and `performRegionPick(bodies:rect:options:)`, and per-body `isPickable` is honoured there (see [GPU picking](#gpu-picking)). Selection and hover are drawn (tint and outline ring) from `OffscreenRenderOptions.selectedBodyIDs` / `hoveredBodyID`.
 
 ### Parity with the live viewport
 
@@ -270,7 +274,9 @@ Not reproduced offscreen:
 | TAA and progressive accumulation | Not run; MSAA (`msaaSampleCount`) is the only anti-aliasing. |
 | Depth of field | Never applied by the composite pass. |
 | Frustum culling | Not run; it only affects performance. |
-| GPU picking | Not run. |
+
+The GPU pick pass is reproduced, but on request rather than with every render: see [GPU picking](#gpu-picking).
+
 ### Initializer
 
 ```swift
@@ -341,6 +347,78 @@ func savePNG(bodies: [ViewportBody], to url: URL) throws {
     print("Wrote \(size) bytes to \(url.lastPathComponent)")
 }
 ```
+
+### GPU picking
+
+An offscreen renderer can ask what is under a pixel without a view. The pick pass is the live viewport's own: the same pipelines, the same `PickEncoding` (RG32Uint, R = object index, G = 30-bit primitive index + 2 kind bits), the same `PickResult`. For the same scene and camera, an offscreen pick returns the same `PickResult` as `ViewportRenderer.performPick(at:completion:)` and `performRegionPick(rect:completion:)` (pinned per body kind by `OffscreenPickTests`, which compares every sampled pixel with a live headless frame).
+
+Everything the live pick handles is stamped: interleaved and direct-mesh faces; tessellated (`.enhanced`) and mesh-shader (`.maximum`) surfaces, which report the input triangle index; edges (`edgeIndices`, `edgeDrawRange`) and analytic arcs, native or quad-expanded to the drawn width; vertices and point-cloud bodies; and overlay-layer bodies, which win over the geometry they cover. `displayMode` decides what is written (`.wireframe` writes no faces), `clipPlanes` discard clipped fragments, each body's `transform` is applied, `isVisible` and `isPickable` are honoured, and bodies are numbered in draw order over the visible ones, so `PickResult.bodyIndex` agrees with a live viewport showing the same list. The frame is the one `render(bodies:options:)` draws for the same options: same camera, projection and scene-fitted near/far planes.
+
+The pass shares its encoder with the live renderer (`RendererSharedSetup.encodePickPass`), so the two cannot drift apart. The pick is 1x, so `msaaSampleCount` has no effect on it.
+
+#### `renderPickMap(bodies:options:)`
+
+```swift
+public func renderPickMap(
+    bodies: [ViewportBody],
+    options: OffscreenRenderOptions = .init()
+) -> OffscreenPickMap?
+```
+
+Runs the pick pass and reads the whole pick texture back, synchronously. Returns `nil` when `options.width` or `height` is not positive, or a texture, pipeline or command buffer cannot be made. Pick any number of pixels, neighbourhoods and regions from the returned [`OffscreenPickMap`](#offscreenpickmap); the render is paid once. Costs `8 * width * height` bytes of readback.
+
+#### `performPick(bodies:at:options:)`
+
+```swift
+public func performPick(
+    bodies: [ViewportBody],
+    at pixel: SIMD2<Int>,
+    options: OffscreenRenderOptions = .init()
+) -> PickResult?
+```
+
+The offscreen `performPick(at:completion:)`: renders the pick pass and returns the pick under `pixel` (render pixels, origin top left), or `nil` for background. With `options.pickRadius` above `0` it samples the `(2r + 1)` square around the pixel and returns the best hit (a vertex over an edge over a face, the nearest of equals), exactly as the live neighbourhood pick does. A hit that `options.selectionFilter` rejects is a miss, except a widget-layer hit. Synchronous, and it renders the pass on every call: to pick many pixels of one scene use `renderPickMap`.
+
+#### `performRegionPick(bodies:rect:options:)`
+
+```swift
+public func performRegionPick(
+    bodies: [ViewportBody],
+    rect: CGRect,
+    options: OffscreenRenderOptions = .init()
+) -> [PickResult]
+```
+
+The offscreen `performRegionPick(rect:completion:)`: every distinct primitive under `rect` (render pixels, clamped to the render), in scan order of first appearance, filtered by `options.selectionFilter`. Occlusion-aware and pixel-accurate; `[]` for a rectangle that misses the render or covers only background.
+
+**Example, matching what a live viewport shows:**
+
+```swift
+@MainActor
+func whatIsUnderCursor(
+    controller: ViewportController, bodies: [ViewportBody], pixel: SIMD2<Int>
+) -> PickResult? {
+    guard let renderer = OffscreenRenderer() else { return nil }
+    let opts = OffscreenRenderOptions(matching: controller, width: 1024, height: 768)
+    return renderer.performPick(bodies: bodies, at: pixel, options: opts)
+}
+```
+
+### OffscreenPickMap
+
+```swift
+public struct OffscreenPickMap: Sendable
+```
+
+The pick texture of one offscreen render, on the CPU. Its methods decode through the same functions the live renderer's readback uses.
+
+| Member | Notes |
+|---|---|
+| `width`, `height` | Size in pixels, from the render's options. |
+| `pickRadius` | Tolerance `pick(at:)` samples with (`options.pickRadius`). |
+| `selectionFilter` | Filter picks pass through (`options.selectionFilter`). |
+| `func pick(at: SIMD2<Int>) -> PickResult?` | The exact pixel (clamped to the render) when `pickRadius` is `0`, else the best hit in the neighbourhood. Filtered. |
+| `func pickRegion(_: CGRect) -> [PickResult]` | Distinct primitives under the rectangle, in scan order of first appearance. Filtered. |
 
 ---
 
@@ -505,7 +583,7 @@ func renderHeadless(
 
 `draw(in:)` and `renderHeadlessBGRA(...)` are both thin wrappers over the same `encodeFrame(into:)`, so the off-screen path runs **every** pass the live path runs — shadow map, skybox, grid, axes, opaque and transparent surfaces, analytic arcs, point clouds, per-triangle highlights, selection outline, overlay layer, the RG32Uint pick pass, the TAA resolve, the SSAO occlusion pass and its depth-aware blur (only when `enableSSAO` is on; the blur is skipped when `lightingConfiguration.ssaoBlur` is `false`), and the SSAO/silhouette composite. (Tone mapping is not a pass: the surface shader applies it, so both renderers get it.) `draw(in:)` supplies the drawable's texture and presents it; the off-screen path supplies renderer-owned textures (`HeadlessRenderTargets`) built to the same specification `MetalViewRepresentable` configures on the live view (BGRA8 colour, `depth32Float_stencil8` depth/stencil, matching MSAA sample count) and presents nothing.
 
-This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA, depth of field or pick pass, whereas this path *is* the live renderer.
+This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRenderer` is a separate public pipeline that shares the live renderer's shaders and pipeline factories and reproduces most of its passes (see [Parity with the live viewport](#parity-with-the-live-viewport)), but has no TAA or depth of field, and runs its pick pass on request (see [GPU picking](#gpu-picking)), whereas this path *is* the live renderer.
 
 Notes:
 

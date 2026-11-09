@@ -54,7 +54,7 @@ parent: API Reference
 | [Display & Lighting](Display-Lighting.md) | `DisplayMode`, `LightingConfiguration`, `LightSettings` |
 | [Materials](Materials.md) | `PBRMaterial`, `MaterialLibrary`, `NamedMaterial`, `HDRLoader` |
 | [Picking & Selection](Picking.md) | `PickResult`, `PrimitiveKind`, `PickLayer`, `PickResultFilter`, `SceneRaycast`, `RaycastHit`, `Ray`, `ProjectionUtility` |
-| [Rendering](Rendering.md) | `ViewportRenderer`, `OffscreenRenderer`, `OffscreenRenderOptions`, `OffscreenRenderError`, `OrthoBounds` |
+| [Rendering](Rendering.md) | `ViewportRenderer`, `OffscreenRenderer`, `OffscreenRenderOptions`, `OffscreenRenderError`, `OffscreenPickMap`, `OrthoBounds` |
 | [ViewCube](ViewCube.md) | `NavigationCube`, `NavigationCubeView`, `ViewCubeView`, `ViewCubeRegion`, `ViewCubeFace`, `ViewCubePosition` |
 | [Measurements](Measurements.md) | `ViewportMeasurement`, `MeasurementMode`, `DistanceMeasurement`, `AngleMeasurement`, `RadiusMeasurement` |
 | [HUD](HUD.md) | `OrientationGnomon`, `ScaleBarView`, `ScaleBarMetrics` |

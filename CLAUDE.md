@@ -75,7 +75,7 @@ ViewportController (@MainActor, ObservableObject — central hub)
 
 ### GPU Picking
 
-Pick IDs are written to an RG32Uint texture by a separate 1x pick pass: R is the body's `objectIndex` (32 bits), G is `primitiveID` (30 bits) plus 2 kind bits, packed by `packPickID` in `Shaders.metal` and decoded by `PickEncoding` (`Picking/PickEncoding.swift`). The two must stay in sync. `PickTextureManager` handles texture lifecycle. CPU-side raycasting (`SceneRaycast`) provides broadphase AABB culling then narrowphase Moller-Trumbore triangle intersection. `ProjectionUtility` provides screen-space ↔ world-space coordinate conversion.
+Pick IDs are written to an RG32Uint texture by a separate 1x pick pass: R is the body's `objectIndex` (32 bits), G is `primitiveID` (30 bits) plus 2 kind bits, packed by `packPickID` in `Shaders.metal` and decoded by `PickEncoding` (`Picking/PickEncoding.swift`). The two must stay in sync. The pass is encoded by `RendererSharedSetup.encodePickPass` (`Renderer/RendererSharedSetup+Pick.swift`), which both `ViewportRenderer` and `OffscreenRenderer.renderPickMap(bodies:options:)` call, so a headless pick returns the same `PickResult` as the live `performPick`; change pick behaviour there, once. `PickTextureManager` handles texture lifecycle. CPU-side raycasting (`SceneRaycast`) provides broadphase AABB culling then narrowphase Moller-Trumbore triangle intersection. `ProjectionUtility` provides screen-space ↔ world-space coordinate conversion.
 
 ### Shaders & Uniform Struct Sync
 

@@ -25,6 +25,8 @@ let options = OffscreenRenderOptions(matching: controller, width: 1024, height: 
 and `.maximum` does the same in mesh shaders on Apple9 GPUs, with a fixed (never load-governed) factor so
 the output is reproducible. The headless path does not do TAA or depth of field; see
 [Parity with the live viewport](../../reference/Rendering.md#parity-with-the-live-viewport).
+It can also answer "what is under this pixel" without a view; see
+[Picking headlessly](#picking-headlessly).
 
 Typical uses: documentation figures, thumbnail generation, CI regression images,
 export workflows, and integration tests that check rendering without a display.
@@ -92,6 +94,8 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `explicitOrthoBounds` | `OrthoBounds?` | `nil` | See [Pixel-registered ortho](#pixel-registered-ortho-renders) |
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge (+x right, +y down) |
 | `measurements` | `[ViewportMeasurement]` | `[]` | See [Measurement overlays](#measurement-overlays) |
+| `pickRadius` | `Int` | `0` | Pick tolerance in pixels; see [Picking headlessly](#picking-headlessly) |
+| `selectionFilter` | `PickResultFilter?` | `nil` | Filter the headless pick passes hits through |
 
 All fields have defaults so you can construct with only the overrides you need. The scene
 defaults are those of a default `ViewportController` (`ViewportController.defaultConfiguration`,
@@ -344,6 +348,47 @@ Override with the `label` property on any measurement type:
 var dist = DistanceMeasurement(…)
 dist.label = "100 mm"
 ```
+
+---
+
+## Picking headlessly
+
+A render has no view to tap, but it can still be asked what is under a pixel. The offscreen pick
+runs the live viewport's GPU pick pass, so for the same scene and camera it returns the same
+`PickResult` as `ViewportRenderer.performPick`: the body, the primitive index and the kind
+(face, edge or vertex). It covers every body kind the live pick does (interleaved and
+direct-mesh faces, `.enhanced` and `.maximum` surfaces, edges, arcs, vertices, point clouds,
+overlay bodies) and honours `clipPlanes`, `displayMode`, each body's `transform` and `isPickable`.
+
+Use the options you render with, so the pick sees the same camera:
+
+```swift
+@MainActor
+func hitTest(bodies: [ViewportBody], at pixel: SIMD2<Int>) -> PickResult? {
+    guard let renderer = OffscreenRenderer() else { return nil }
+    var options = OffscreenRenderOptions(width: 1024, height: 768)
+    options.pickRadius = 3        // forgive a click a few pixels off a thin edge
+    return renderer.performPick(bodies: bodies, at: pixel, options: options)
+}
+```
+
+`performPick` renders the pick pass on every call. To pick many pixels of one scene, render it
+once into an `OffscreenPickMap` and look pixels up in it:
+
+```swift
+let map = renderer.renderPickMap(bodies: bodies, options: options)
+
+let hit = map?.pick(at: SIMD2(512, 384))               // exact pixel, or the pickRadius square
+let inside = map?.pickRegion(CGRect(x: 100, y: 100, width: 300, height: 200))  // distinct primitives
+```
+
+`PickResult.bodyID` names the body and `triangleIndex` the face, edge or vertex, exactly as in
+the live viewport (index it through `faceIndices`, `edgeIndices` or `vertexIndices`). Set
+`options.selectionFilter` to reject hits as `ViewportController.selectionFilter` does; a
+`.widget`-layer hit bypasses it. Pixel coordinates are render pixels with the origin at the top
+left. `OffscreenRenderOptions(matching: controller, ...)` copies the controller's `pickRadius`
+and `selectionFilter`, so a snapshot and a pick can share one options value. Details:
+[GPU picking](../../reference/Rendering.md#gpu-picking).
 
 ---
 
