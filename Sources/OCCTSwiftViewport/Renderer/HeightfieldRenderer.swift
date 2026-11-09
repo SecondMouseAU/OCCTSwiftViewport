@@ -134,7 +134,7 @@ struct HeightfieldView {
     var projection: simd_float4x4
     var viewportHeight: Float
     /// A mesh cell is at most about this wide on screen.
-    var targetPixels: Float = 2
+    var targetPixels: Float = 4
     /// Draws every tile at this level (tests).
     var forcedLevel: Int?
     /// Skips tiles outside the view frustum.
@@ -179,6 +179,8 @@ final class HeightfieldGPU {
     private(set) var uploadedBytes = 0
     private(set) var uploadedTiles = 0
     private(set) var fullUploads = 0
+    /// Blit copy commands encoded since creation (two per block of consecutive dirty tiles).
+    private(set) var blitCommands = 0
     /// Seconds the CPU spent on the last `encodeUpdates` / `makePlan`.
     private(set) var lastUpdateSeconds: Double = 0
     private(set) var lastPlanSeconds: Double = 0
@@ -321,10 +323,19 @@ final class HeightfieldGPU {
         blocks.reserveCapacity(tiles.count)
         var total = 0
         func align(_ n: Int) -> Int { (n + 15) & ~15 }
-        for tile in tiles {
-            let x0 = tile.x * t
-            let y0 = tile.y * t
-            let w = min(t, field.width - x0)
+        // One block per run of consecutive dirty tiles in a tile row, so a densely edited field
+        // costs a handful of blit commands rather than one per tile.
+        var start = 0
+        while start < tiles.count {
+            var end = start + 1
+            while end < tiles.count, tiles[end].y == tiles[start].y,
+                tiles[end].x == tiles[end - 1].x + 1
+            {
+                end += 1
+            }
+            let x0 = tiles[start].x * t
+            let y0 = tiles[start].y * t
+            let w = min((tiles[end - 1].x + 1) * t, field.width) - x0
             let h = min(t, field.height - y0)
             let heightOffset = total
             total += align(w * h * es)
@@ -333,9 +344,10 @@ final class HeightfieldGPU {
             blocks.append(
                 Block(
                     heightOffset: heightOffset, attributeOffset: attributeOffset, width: w,
-                    height: h,
-                    origin: MTLOrigin(x: x0, y: y0, z: 0)))
+                    height: h, origin: MTLOrigin(x: x0, y: y0, z: 0)))
+            start = end
         }
+        blitCommands += blocks.count * 2
         guard let buffer = staging.acquire(byteCount: total) else { return }
         let base = buffer.contents()
         let fieldWidth = field.width
@@ -574,6 +586,16 @@ final class HeightfieldGPU {
     }
 
     // MARK: Test support
+
+    /// Runs the pending updates in a command buffer of their own and returns the GPU seconds it
+    /// took, waiting for it.
+    func timedUpdate(commandQueue: MTLCommandQueue) -> Double? {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        encodeUpdates(commandBuffer: commandBuffer)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+    }
 
     /// Reads pyramid level `level` back (row-major, `levelWidth x levelHeight`), waiting for the GPU.
     func readLevel(_ level: Int, commandQueue: MTLCommandQueue) -> (

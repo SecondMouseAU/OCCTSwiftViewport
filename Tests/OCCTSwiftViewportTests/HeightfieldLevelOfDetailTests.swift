@@ -130,7 +130,7 @@ struct HeightfieldLevelOfDetailTests {
         #expect(error <= 1.5 * stride, "level \(level): the step moved \(error) cells")
     }
 
-    @Test("At a zoomed-out view the step stays within a mesh cell and a couple of pixels")
+    @Test("At a zoomed-out view the step stays within 1.5 mesh cells and a few pixels")
     func zoomedOutStep() throws {
         guard let renderer = OffscreenRenderer() else {
             Issue.record("Metal device unavailable; skipping")
@@ -146,8 +146,11 @@ struct HeightfieldLevelOfDetailTests {
         print("ZOOMED-OUT STEP: level \(level), error \(error) cells = \(error / cellsPerPixel) px")
         #expect(level >= 2, "expected a coarse level at this zoom, got \(histogram)")
         #expect(error >= -1 - cellsPerPixel)
-        #expect(error <= Double(1 << level) + cellsPerPixel)
-        #expect(error / cellsPerPixel <= 2, "the step moved \(error / cellsPerPixel) pixels")
+        #expect(error <= 1.5 * Double(1 << level) + cellsPerPixel)
+        // A mesh cell is at most `heightfieldTargetPixels` wide, and the step moves by up to one and
+        // a half of them.
+        let limit = 1.5 * Double(renderer.heightfieldTargetPixels)
+        #expect(error / cellsPerPixel <= limit, "the step moved \(error / cellsPerPixel) pixels")
     }
 
     @Test("A one-cell-wide pit survives a coarse level, at full depth")

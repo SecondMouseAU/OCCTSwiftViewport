@@ -657,8 +657,13 @@ public final class OffscreenRenderer: Sendable {
     private var heightfieldPlanPool: FrameBufferPool?
     /// Draws every heightfield tile at this level (tests).
     var heightfieldForcedLevel: Int?
-    /// A heightfield mesh cell is at most about this wide on screen.
-    var heightfieldTargetPixels: Float = 2
+    /// A heightfield mesh cell is at most about this wide on screen. 2 px made 1.7M micro-triangles
+    /// at 1668 x 1194 and cost 23 ms on an M4 with MSAA 4; 4 px costs 2.5 ms.
+    var heightfieldTargetPixels: Float = 4
+    /// CPU seconds the last `render` spent encoding, and GPU seconds its main command buffer ran
+    /// (`gpuEndTime - gpuStartTime`); for the spike's measurements.
+    private(set) var lastEncodeSeconds: Double = 0
+    private(set) var lastGPUSeconds: Double = 0
 
     // MARK: - Init
 
@@ -753,6 +758,7 @@ public final class OffscreenRenderer: Sendable {
     public func render(bodies: [ViewportBody], options: OffscreenRenderOptions = .init())
         -> CGImage?
     {
+        let renderStart = DispatchTime.now().uptimeNanoseconds
         let w = options.width
         let h = options.height
         let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
@@ -1674,8 +1680,10 @@ public final class OffscreenRenderer: Sendable {
             )
         }
 
+        lastEncodeSeconds = Double(DispatchTime.now().uptimeNanoseconds - renderStart) * 1e-9
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        lastGPUSeconds = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
 
         // Readback: blit resolve texture to shared buffer
         let bytesPerRow = w * 4

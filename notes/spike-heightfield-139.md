@@ -99,5 +99,80 @@ the colour boundary are exact (within one texel) at any level.
   `vertexData` has no `bodyBufferCache` entry, so every draw loop that guards on it skips the
   heightfield body silently. A dedicated pass after the body loop is the cheap integration.
 
+## Phase 2: update path
+
+**Gate: PASSED** (correctness and cost); performance numbers below are from an M4, not an iPad.
+
+### How it works
+- `replace` copies the rows into the CPU mirror under the lock, widens the running min/max and appends
+  `(version, clippedRegion)` to the change log (4096-entry ring that trims in half-blocks; a ramp change
+  bumps `version` but logs nothing).
+- Each `HeightfieldGPU` remembers the version it last drew. `field.changes(since:)` returns `.none`,
+  `.regions([...])` or `.full` (never drawn, or the log no longer reaches back). Two renderers, or the
+  same renderer after skipping frames, therefore always converge; the handle holds no per-renderer state.
+- **Dirty coalescing is per tile, not by rectangle union**: a flag per 64 x 64 tile over all logged regions,
+  so 200 overlapping edits upload each touched tile once.
+- **Hazard-free upload**: dirty tile runs (consecutive dirty tiles in a tile row become one block) are
+  memcpy'd from the mirror into a `FrameBufferPool` shared buffer (float16 converts on the way) and
+  blitted into the `.private` height and attribute textures at the head of the frame's command buffer; the
+  staging buffer returns to the pool in the command buffer's completion handler. The CPU never writes a
+  texture or a buffer the GPU may be reading, whatever the frames in flight. The ramp is replaced by a new
+  4 KB buffer rather than rewritten.
+- Pyramid rebuild: one compute dispatch per level 1-6 over the dirty tiles plus a one-texel halo (a cell
+  reaches one texel further at every level). Verified exact against a full rebuild after edits across tile
+  edges, at the borders and at the far corner.
+
+### Correctness evidence (all headless, `OffscreenRenderer`)
+- Acceptance 2, correctness half: 400 x 400 field, replace a 130 x 120 region, fixed top-down orthographic
+  camera, 1024 px: **0 differing pixels outside the region (+ one cell of halo, projected with
+  `ProjectionUtility`), 95,921 inside**.
+- 200 edits of 130 x 120 in one frame, disjoint and sliding-overlapping: the result is pixel-identical to a
+  fresh field + fresh renderer holding the final contents.
+- Two renderers on one handle, one skipping five edits: identical images, no extra full upload. After
+  more than the log holds (8,200 edits) the lagging renderer does exactly one full upload and still
+  matches a fresh render.
+- Upload counter (`uploadedBytes`, in the style of `arcBufferPool.allocatedCount`): first draw 32 x 32 =
+  1,024 tiles; one 130 x 120 region = 9 tiles = 184,320 bytes; 200 sliding regions = 12 tiles = 245,760
+  bytes; 200 disjoint regions = 797 tiles = 16.3 MB (the field is 20 MB). Upload scales with dirty tile
+  area, bounded by the field, never by the edit count.
+- A ramp change uploads no height or attribute bytes.
+
+### Performance (M4, 10-core GPU, release build, 2000 x 2000, camera orbiting)
+`VIEWPORT_SPIKE_PERF=1 swift test -c release -Xswiftc -enable-testing --filter HeightfieldPerformanceTests`.
+Never run the bench in a debug build: Swift `-Onone` made `replace` x200 take 390 ms and the plan 5-7 ms,
+and the shaders also ran 2-4x slower; none of that is representative.
+
+| scenario (1668 x 1194, MSAA 4) | GPU ms (median) | CPU encode ms |
+|---|---|---|
+| static, mesh cells <= 4 px (default) | 2.6 - 4.3 | 0.13 (plan 0.12) |
+| static, mesh cells <= 2 px | 24 | 0.2 |
+| static, mesh cells <= 8 px | 1.2 | 0.1 |
+| the same surface as an ordinary 2M-triangle `directMesh` body | 45 | n/a |
+| update alone, 200 sliding 130 x 120 edits (12 tiles, 0.2 MB) | 0.12 | 0.05 |
+| update alone, 200 disjoint 130 x 120 edits (797 tiles, 15.6 MB) | 1.33 | 0.8 |
+| `replace` x200 (3.1M cells copied into the mirror), CPU | 2.6 - 4.2 | |
+
+Frame budget on this machine at the default: about 4.3 ms of GPU for the draw plus at most 1.4 ms for the
+worst-case update = under 6 ms, which is **2.9x headroom under 16.6 ms** (just short of the 3x target) and 3.8x
+for the typical sliding load. The GPU wait-per-frame bench also showed 8 - 11 ms frames with edits in some runs: the GPU
+downclocks between frames that are separated by CPU work, so the update-only number is the reliable one.
+
+Findings from the numbers:
+1. **The mesh-cell target is the performance knob, and 2 px is a cliff**: stride-2 tiles are 1.7M
+   micro-triangles (1-2 px each) and MSAA 4 + a lit fragment makes that 24 ms (9x the 4 px cost; MSAA 1 is
+   3.6 ms). 4 px is the default. Costs: at 4 px the step lands up to 1.5 mesh cells (6 px) off, measured
+   3.6 px; shading stays exact. The same surface as an ordinary mesh at the same triangle count is 45 ms.
+2. **`replace` itself is the CPU limiter**: 21 us per 130 x 120 call (3.1M cells in 2.6 ms) on the caller's
+   thread; fine for 200 per frame on one core but worth vectorising (it widens min/max per cell).
+3. The update's GPU work is negligible; its CPU cost is dominated by the mirror-to-staging memcpy (0.8 ms for
+   16 MB). Merging dirty tiles into row runs cut the blit commands from 2 per tile to 2 per run; the
+   disjoint case's update GPU time is 1.3 ms.
+
+### Dead ends and surprises
+- First perf numbers were useless: debug build, test-side data generation counted as `replace`, and the
+  2 px default. All three would have produced a wrong "no-go".
+- Blitting one command per tile (1,600 per frame in the disjoint case) was replaced by runs; not measured
+  before/after separately, since the total is small either way.
+
 ## Open questions / for the on-device session
 (Filled in as the phases land.)
