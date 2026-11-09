@@ -368,6 +368,17 @@ public struct ViewportBody: Identifiable, Sendable {
         didSet { geometryDidChange() }
     }
 
+    /// A dynamic heightfield surface this body draws instead of a mesh, or `nil` (the default).
+    ///
+    /// The field is a shared handle: ``Heightfield/replace(region:heights:attributes:ids:)`` edits
+    /// it in place and every renderer drawing this body uploads just the changed tiles, so the body
+    /// itself stays untouched and keeps its ``generation``. Assigning a different handle takes a
+    /// fresh generation. A heightfield body draws no mesh, edges or points; `color`, `material`
+    /// and `transform` apply as for a mesh. See ``Heightfield``.
+    public var heightfield: Heightfield? {
+        didSet { geometryDidChange() }
+    }
+
     /// Whether the renderer takes the direct-mesh path for this body instead of `vertexData`.
     ///
     /// True only when `meshPositions` is non-empty *and* `meshNormals` matches it in length, so
@@ -406,7 +417,8 @@ public struct ViewportBody: Identifiable, Sendable {
         pickLayer: PickLayer = .userGeometry,
         transform: simd_float4x4 = matrix_identity_float4x4,
         meshPositions: [Float] = [],
-        meshNormals: [Float] = []
+        meshNormals: [Float] = [],
+        heightfield: Heightfield? = nil
     ) {
         let generation = Self.nextGeneration()
         self.generation = generation
@@ -417,6 +429,7 @@ public struct ViewportBody: Identifiable, Sendable {
         self.indices = indices
         self.meshPositions = meshPositions
         self.meshNormals = meshNormals
+        self.heightfield = heightfield
         self.edges = edges
         self.arcs = arcs
         self.faceIndices = faceIndices
@@ -551,6 +564,10 @@ extension ViewportBody {
                 include(SIMD3<Float>(meshPositions[i], meshPositions[i + 1], meshPositions[i + 2]))
                 i += 3
             }
+        } else if let heightfield {
+            let box = heightfield.localBounds
+            include(box.min)
+            include(box.max)
         } else if vertexData.count >= 6 {
             let stride = 6
             for i in 0..<(vertexData.count / stride) {
