@@ -1,3 +1,9 @@
+> **Historical document, not current.** This page describes the original RealityKit-era design for
+> moving OCCTSwiftViewport onto a direct Metal renderer. It is kept for the reasoning behind that
+> design. Type names, signatures, file structure and phase plans in it are not current and several
+> no longer exist. For the current API read the [API reference](reference/README.md); for task-oriented
+> walkthroughs see the [cookbook](guides/cookbook/).
+
 # OCCTSwiftViewport Metal Architecture
 
 ## Overview

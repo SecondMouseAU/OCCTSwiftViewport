@@ -837,16 +837,16 @@ enum RendererSharedSetup {
 
     /// How the grid is depth-clipped: clamped in orthographic, clipped in perspective.
     ///
-    /// The orthographic eye is placed in front of the model, the axes and the overlays, but not
-    /// the grid: its window follows the pivot, and a pivot update must never move the eye. So in
-    /// a low-elevation view the part of the window toward the camera can lie in front of the
-    /// eye, where the near plane cut it off in a straight line across the view (#217). Letting
-    /// the near plane go behind the eye, which an orthographic projection allows, would break
-    /// the composite pass, which decodes depth with a perspective formula that a negative near
-    /// plane turns negative. Clamping instead draws the grid in front of the near plane at the
+    /// The orthographic eye and clip planes are fitted to the model, the axes and the overlays
+    /// (`CameraState.clipPlanes(sceneBounds:)`), but not the grid: its window follows the pivot,
+    /// and a pivot update must never move the eye or the planes. So in a low-elevation view the
+    /// part of the window toward the camera can lie in front of the near plane, where it was cut
+    /// off in a straight line across the view (#217). Clamping instead draws that part at the
     /// near depth. Everything else lies behind the near plane, so the grid there is in front of
-    /// it, as it is in the scene; nothing else changes. In perspective the grid is clipped: a
-    /// point behind a perspective eye is not in view.
+    /// it, as it is in the scene; nothing else changes. The composite pass (SSAO, silhouettes)
+    /// is not a constraint on any of this: it decodes orthographic depth linearly, so a clamped
+    /// depth is a valid input and a near plane behind the eye would be too. In perspective the
+    /// grid is clipped: a point behind a perspective eye is not in view.
     static func gridDepthClipMode(orthographic: Bool) -> MTLDepthClipMode {
         orthographic ? .clamp : .clip
     }

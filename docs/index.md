@@ -64,7 +64,7 @@ figure where it helps. The **[Cookbook index](guides/cookbook/)** lists all area
 
 ## Architecture & concepts
 
-- [Metal Architecture](metal-architecture.md) — the render pipeline, pick texture, shadow/IBL passes.
+- [Metal Architecture](metal-architecture.md) — the original RealityKit-era design of the Metal renderer. Historical: names and APIs in it are not current, see the [API reference](reference/) instead.
 - The library is `@MainActor`-isolated for mutable state holders (`ViewportController`,
   `CameraController`, `ViewportRenderer`); value types and configs are `Sendable`. Swift 6 ready.
 
