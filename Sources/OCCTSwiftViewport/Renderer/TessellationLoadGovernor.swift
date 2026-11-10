@@ -2,7 +2,8 @@
 // OCCTSwiftViewport
 //
 // Scales the uniform tessellation factor (adaptiveTessellation == false) to system load:
-// measured GPU frame time against the frame budget, thermal state and Low Power Mode.
+// measured GPU frame time against the frame budget, thermal state and Low Power Mode. A frame
+// time only counts as overload when the GPU was saturated (#241).
 
 import Foundation
 
@@ -10,10 +11,18 @@ import Foundation
 struct TessellationLoadSample: Sendable, Equatable {
     /// GPU time of the most recently completed frame, in seconds; `nil` when none was measured.
     ///
-    /// A frame that follows an idle GPU takes longer than the same frame behind a busy one, and a
-    /// debug build's slow CPU-side encoding makes every frame such a frame (1.6 to 2.5 times
-    /// slower on an M4, #238). The governor does not correct for it.
+    /// This is not a property of the scene alone. A frame that follows an idle GPU takes longer
+    /// than the same frame behind a busy one (10.0 against 5.0 ms for one scene on an M4), and a
+    /// debug build's slow CPU-side encoding makes every frame such a frame (#238). The governor
+    /// therefore reads it together with `gpuIdleBefore`, and only lets a frame the GPU was
+    /// saturated for lower the factor (#241).
     var gpuFrameTime: Double?
+    /// Seconds the GPU sat idle between the previous frame finishing and this frame starting;
+    /// `nil` when unknown, and `.infinity` for the first frame measured.
+    ///
+    /// With `gpuFrameTime` it gives how much of the span the GPU was busy (`gpuBusyFraction`).
+    /// When `nil` the frame time is taken at face value, as before this field existed.
+    var gpuIdleBefore: Double?
     /// Time available per frame, in seconds (`1 / preferredFramesPerSecond`).
     var frameBudget: Double
     /// `ProcessInfo.thermalState` at the time of the sample.
@@ -24,6 +33,19 @@ struct TessellationLoadSample: Sendable, Equatable {
     var minFactor: Float
     /// The configured (and pipeline-capped) maximum factor.
     var maxFactor: Float
+
+    /// The fraction of the span from the previous frame's end to this frame's end that the GPU
+    /// spent running this frame (0...1); `nil` when `gpuIdleBefore` or `gpuFrameTime` is unknown.
+    ///
+    /// Near 1 means frames run back to back, so the GPU is the bottleneck. Well below 1 means the
+    /// GPU waited on the CPU, the display or an idle app, and its clock may have dropped.
+    var gpuBusyFraction: Double? {
+        guard let time = gpuFrameTime, let idle = gpuIdleBefore, time.isFinite, time >= 0,
+            !idle.isNaN
+        else { return nil }
+        let span = time + max(0, idle)
+        return span > 0 ? time / span : nil
+    }
 }
 
 /// Load-driven controller for the uniform tessellation factor.
@@ -34,6 +56,11 @@ struct TessellationLoadSample: Sendable, Equatable {
 ///
 /// Behaviour:
 /// - The GPU frame time is smoothed with an exponential moving average.
+/// - A frame the GPU was not saturated for (it sat idle for more than 5% of the span before the
+///   frame, see `saturatedBusyFraction`) is only an upper bound on what the frame costs, because
+///   an idle GPU clocks down and runs the same work slower. Such a frame can pull the average
+///   down, so a light scene still earns a higher factor, but it never pushes the average up, so it
+///   cannot lower the factor.
 /// - Above `highLoad` × budget the factor drops multiplicatively; below `lowLoad` × budget it
 ///   rises slowly. In between it holds, which is the hysteresis band.
 /// - After any change the factor is held for `cooldownFrames` frames, so it cannot oscillate
@@ -54,6 +81,18 @@ struct TessellationLoadGovernor: Sendable, Equatable {
     static let increaseStep: Float = 2
     /// Frames to hold after a change before another change is allowed.
     static let cooldownFrames = 30
+    /// A frame counts as overload evidence only when the GPU was busy for at least this fraction
+    /// of the span since the previous frame ended (`TessellationLoadSample.gpuBusyFraction`).
+    ///
+    /// Measured on an M4 (#241): frames that fit their budget are stretched by the GPU's clock
+    /// governor to fill 0.75 to 0.91 of the interval whatever the work, so a busy fraction there
+    /// says nothing about load. Frames that really overrun the budget queue behind each other and
+    /// measure 1.00 at every percentile.
+    static let saturatedBusyFraction = 0.95
+    /// The load, as a fraction of the budget, assumed for a frame that is not overload evidence
+    /// when there is no average yet: the middle of the hold band, so it moves the factor neither
+    /// way.
+    static let neutralLoad = (highLoad + lowLoad) / 2
 
     /// The factor to tessellate with this frame; `nil` until the first step.
     private(set) var factor: Float?
@@ -110,8 +149,17 @@ struct TessellationLoadGovernor: Sendable, Equatable {
             isLowPowerModeEnabled: sample.isLowPowerModeEnabled)
 
         if let time = sample.gpuFrameTime, time.isFinite, time >= 0 {
+            var evidence = time
+            if let busy = sample.gpuBusyFraction, busy < Self.saturatedBusyFraction {
+                // The GPU was not the bottleneck for this frame, so `time` may be inflated by an
+                // idle clock. Use it only to confirm headroom, never to show overload.
+                let bound =
+                    smoothedFrameTime
+                    ?? (sample.frameBudget > 0 ? Self.neutralLoad * sample.frameBudget : time)
+                evidence = min(time, bound)
+            }
             next.smoothedFrameTime =
-                smoothedFrameTime.map { $0 + Self.smoothing * (time - $0) } ?? time
+                smoothedFrameTime.map { $0 + Self.smoothing * (evidence - $0) } ?? evidence
         }
 
         // Start at the ceiling: full quality until load says otherwise.
@@ -139,25 +187,43 @@ struct TessellationLoadGovernor: Sendable, Equatable {
     }
 }
 
-/// Thread-safe holder for the latest GPU frame time, written from a command buffer's
+/// One completed frame's GPU timing, as recorded by `GPUFrameTimeRecorder`.
+struct GPUFrameTiming: Sendable, Equatable {
+    /// GPU time of the frame (`gpuEndTime - gpuStartTime`), in seconds.
+    var duration: Double
+    /// Seconds the GPU sat idle between the previous recorded frame's end and this frame's start;
+    /// `.infinity` for the first frame recorded, since nothing ran before it.
+    var idleBefore: Double
+}
+
+/// Thread-safe holder for the latest GPU frame timing, written from a command buffer's
 /// completion handler (any thread) and read on the main actor when the next frame is encoded.
 final class GPUFrameTimeRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var latest: Double?
+    private var latest: GPUFrameTiming?
+    private var previousEnd: Double?
 
-    /// Records one completed frame's GPU time; ignores missing (zero) or invalid timestamps.
+    /// Records one completed frame's GPU timing; ignores missing (zero) or invalid timestamps.
+    ///
+    /// Both timestamps come from the GPU's own clock, so the idle gap needs no host clock. A
+    /// frame that starts before the previous one ended (overlapping work) has no gap.
     func record(gpuStartTime: Double, gpuEndTime: Double) {
         let duration = gpuEndTime - gpuStartTime
         guard gpuStartTime > 0, duration.isFinite, duration >= 0 else { return }
         lock.lock()
-        latest = duration
+        let idle = previousEnd.map { max(0, gpuStartTime - $0) } ?? .infinity
+        latest = GPUFrameTiming(duration: duration, idleBefore: idle)
+        previousEnd = gpuEndTime
         lock.unlock()
     }
 
-    /// The most recently recorded GPU frame time, in seconds.
-    var latestFrameTime: Double? {
+    /// The most recently recorded GPU frame timing.
+    var latestTiming: GPUFrameTiming? {
         lock.lock()
         defer { lock.unlock() }
         return latest
     }
+
+    /// The most recently recorded GPU frame time, in seconds.
+    var latestFrameTime: Double? { latestTiming?.duration }
 }

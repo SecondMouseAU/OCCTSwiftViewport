@@ -270,7 +270,7 @@ Not reproduced offscreen:
 | Live feature | Offscreen behaviour |
 |---|---|
 | An environment map loaded imperatively with `ViewportRenderer.loadEnvironmentMap(...)` | Lives on that renderer and is not seen offscreen. Name the map in `LightingConfiguration` instead. |
-| The tessellation load governor (`uniformTessellationFactor = .loadAdaptive`) | Not run: offscreen tessellates uniformly at `tessellationMaxFactor`, so output is deterministic. A live view under load may be tessellating more coarsely, and a debug build's slower GPU frames can push it lower than a release build would go (see `UniformTessellationFactor` in the Configuration reference). |
+| The tessellation load governor (`uniformTessellationFactor = .loadAdaptive`) | Not run: offscreen tessellates uniformly at `tessellationMaxFactor`, so output is deterministic. A live view whose GPU is saturated may be tessellating more coarsely. A debug build, which leaves the GPU idle, never saturates it, and the governor ignores the slow frames that follow an idle GPU (see `UniformTessellationFactor` in the Configuration reference). |
 | TAA and progressive accumulation | Not run; MSAA (`msaaSampleCount`) is the only anti-aliasing. |
 | Depth of field | Never applied by the composite pass. |
 | Frustum culling | Not run; it only affects performance. |

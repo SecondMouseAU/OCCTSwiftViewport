@@ -3067,8 +3067,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Picks this frame's uniform tessellation factor (`adaptiveTessellation == false`).
     ///
     /// For `.loadAdaptive` on a live frame (`frameBudget != nil`), steps the load governor with
-    /// the last measured GPU frame time, thermal state and Low Power Mode, and has this frame's
-    /// command buffer record its own GPU time. Off-screen frames use the configured factor.
+    /// the last measured GPU frame time and the idle gap before it, thermal state and Low Power
+    /// Mode, and has this frame's command buffer record its own GPU timing. Off-screen frames
+    /// use the configured factor.
     private func uniformTessellationFactor(
         config: ViewportConfiguration, maxFactor: Float, frameBudget: Double?,
         commandBuffer: MTLCommandBuffer
@@ -3078,9 +3079,11 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             let frameBudget
         {
             let info = ProcessInfo.processInfo
+            let timing = gpuFrameTimes.latestTiming
             tessLoadGovernor = tessLoadGovernor.step(
                 TessellationLoadSample(
-                    gpuFrameTime: gpuFrameTimes.latestFrameTime,
+                    gpuFrameTime: timing?.duration,
+                    gpuIdleBefore: timing?.idleBefore,
                     frameBudget: frameBudget,
                     thermalState: info.thermalState,
                     isLowPowerModeEnabled: info.isLowPowerModeEnabled,
