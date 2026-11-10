@@ -146,6 +146,22 @@ struct HeightfieldView {
     var forcedLevel: Int?
     /// Skips tiles outside the view frustum.
     var cull = true
+    /// World-space section planes (`dot(n, p) + w < 0` is clipped); a tile wholly behind one is
+    /// not drawn.
+    var clipPlanes: [SIMD4<Float>] = []
+}
+
+/// The light's view of the scene, for choosing which tiles cast shadows the camera can see.
+struct HeightfieldShadowView {
+    var lightViewProjection: simd_float4x4
+    /// The direction the light travels.
+    var lightDirection: SIMD3<Float>
+    /// The shadow map's side, in texels.
+    var mapSize: Int
+    /// How far a shadow can fall: the scene's diagonal.
+    var reach: Float
+    /// World bounds of the scene, which a shadow cannot leave; `nil` for unbounded.
+    var sceneBounds: BoundingBox?
 }
 
 /// The tiles of one heightfield to draw this frame, grouped by level.
@@ -163,8 +179,12 @@ struct HeightfieldTileLevels {
     let rows: Int
     /// Per tile, row-major.
     var levels: [UInt8]
-    /// Whether the camera's frustum reaches each tile.
+    /// Whether the camera's frustum reaches each tile and no section plane clips it away.
     var cameraVisible: [Bool]
+    /// Whether the camera's frustum reaches each tile.
+    var inFrustum: [Bool]
+    /// Whether the tile is not wholly behind a section plane.
+    var unclipped: [Bool]
     /// Each tile's world-space bounds.
     var worldBoxes: [BoundingBox]
     /// World size of one cell, the larger axis.
@@ -219,6 +239,32 @@ struct HeightfieldDrawSet {
         encodeDraws(encoder: encoder, setFragmentParams: true)
     }
 
+    /// Draws every planned tile into the shadow map with the shadow pipeline.
+    ///
+    /// The fragment stage reads the scene uniforms at buffer 1, which the caller has bound for the
+    /// pass.
+    func encodeShadow(
+        encoder: MTLRenderCommandEncoder, pipeline: MTLRenderPipelineState,
+        uniforms: inout ShadowUniformsSwift
+    ) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<ShadowUniformsSwift>.size, index: 1)
+        encoder.setVertexTexture(heights, index: 0)
+        encodeDraws(encoder: encoder, setFragmentParams: false)
+    }
+
+    /// Draws every planned tile into the SSAO and silhouette depth target.
+    func encodeDepth(
+        encoder: MTLRenderCommandEncoder, pipeline: MTLRenderPipelineState,
+        uniforms: inout Uniforms
+    ) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setVertexTexture(heights, index: 0)
+        encodeDraws(encoder: encoder, setFragmentParams: false)
+    }
+
     /// Issues one instanced indexed draw per level of detail present, with the vertex stage's
     /// height texture and the pipeline already bound.
     func encodeDraws(encoder: MTLRenderCommandEncoder, setFragmentParams: Bool) {
@@ -260,12 +306,16 @@ final class HeightfieldRenderCache {
         let state: HeightfieldGPU
         /// The tiles the camera sees.
         let draw: HeightfieldDrawSet
+        /// The tiles whose shadows the camera can see; `nil` when shadows are off.
+        let shadowDraw: HeightfieldDrawSet?
     }
 
     private let device: MTLDevice
     private let library: MTLLibrary
     private var shared: HeightfieldShared?
     private var pipelinesBySamples: [Int: HeightfieldPipelines] = [:]
+    private var shadowPipeline: MTLRenderPipelineState?
+    private var depthPipeline: MTLRenderPipelineState?
     private(set) var states: [String: HeightfieldGPU] = [:]
     private lazy var planPool = FrameBufferPool(device: device)
 
@@ -294,12 +344,33 @@ final class HeightfieldRenderCache {
         return built
     }
 
+    /// The shadow-map pipeline (depth only): `heightfield_shadow_vertex` + `shadow_clip_fragment`.
+    func shadowPipelineState() -> MTLRenderPipelineState? {
+        if let shadowPipeline { return shadowPipeline }
+        shadowPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_shadow", library: library,
+            vertexFunction: "heightfield_shadow_vertex",
+            fragmentFunction: "shadow_clip_fragment", depthPixelFormat: .depth32Float)
+        return shadowPipeline
+    }
+
+    /// The SSAO and silhouette depth prepass pipeline (depth only).
+    func depthPipelineState() -> MTLRenderPipelineState? {
+        if let depthPipeline { return depthPipeline }
+        depthPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_depth", library: library,
+            vertexFunction: "heightfield_depth_vertex",
+            fragmentFunction: "depth_only_clip_fragment", depthPixelFormat: .depth32Float)
+        return depthPipeline
+    }
+
     /// Creates or refreshes the GPU state of every visible heightfield body, drops the state of
     /// bodies no longer passed, encodes the pending uploads at the head of `commandBuffer`, and
     /// plans each body's tiles for this camera.
     func prepare(
         bodies: [ViewportBody], commandBuffer: MTLCommandBuffer, view: simd_float4x4,
-        projection: simd_float4x4, viewportHeight: Float, meshCellPixels: Float
+        projection: simd_float4x4, viewportHeight: Float, meshCellPixels: Float,
+        clipPlanes: [SIMD4<Float>] = [], shadow: HeightfieldShadowView? = nil
     ) -> [Entry] {
         let targetPixels = min(
             max(meshCellPixels, Heightfield.meshCellPixelsRange.lowerBound),
@@ -327,16 +398,29 @@ final class HeightfieldRenderCache {
             }
             guard let state = states[body.id] else { continue }
             state.encodeUpdates(commandBuffer: commandBuffer)
-            let plan = state.makePlan(
-                view: HeightfieldView(
-                    model: body.transform, view: view, projection: projection,
-                    viewportHeight: viewportHeight, targetPixels: targetPixels,
-                    forcedLevel: forcedLevel),
-                pool: planPool, commandBuffer: commandBuffer)
+            let planView = HeightfieldView(
+                model: body.transform, view: view, projection: projection,
+                viewportHeight: viewportHeight, targetPixels: targetPixels,
+                forcedLevel: forcedLevel, clipPlanes: clipPlanes)
+            let levels = state.computeLevels(view: planView)
+            let plan = state.pack(
+                levels: levels, mask: levels.cameraVisible, pool: planPool,
+                commandBuffer: commandBuffer)
+            state.lastPlan = plan
+            var shadowDraw: HeightfieldDrawSet?
+            if let shadow, body.renderLayer == .geometry {
+                let shadowPlan = state.makeShadowPlan(
+                    levels: levels, view: planView, shadow: shadow, pool: planPool,
+                    commandBuffer: commandBuffer)
+                state.lastShadowPlan = shadowPlan
+                shadowDraw = state.drawSet(plan: shadowPlan)
+            } else {
+                state.lastShadowPlan = nil
+            }
             entries.append(
                 Entry(
                     body: body, objectIndex: index, state: state,
-                    draw: state.drawSet(plan: plan)))
+                    draw: state.drawSet(plan: plan), shadowDraw: shadowDraw))
         }
         for id in states.keys where !active.contains(id) { states.removeValue(forKey: id) }
         return entries
@@ -387,8 +471,10 @@ final class HeightfieldGPU {
     /// Seconds the CPU spent on the last `encodeUpdates` / `makePlan`.
     private(set) var lastUpdateSeconds: Double = 0
     private(set) var lastPlanSeconds: Double = 0
-    /// The plan of the most recent `makePlan`.
-    private(set) var lastPlan: HeightfieldDrawPlan?
+    /// The camera plan of the most recent frame.
+    var lastPlan: HeightfieldDrawPlan?
+    /// The shadow plan of the most recent frame, if shadows were on.
+    var lastShadowPlan: HeightfieldDrawPlan?
 
     /// Whether this build can write `Float16` heights: arm64 only, as Swift has no `Float16` on x86_64.
     static var supportsHalf: Bool {
@@ -668,7 +754,8 @@ final class HeightfieldGPU {
         let modelView = view.view * view.model
 
         var levels = [UInt8](repeating: 0, count: cols * rows)
-        var visible = [Bool](repeating: true, count: cols * rows)
+        var inFrustum = [Bool](repeating: true, count: cols * rows)
+        var unclipped = [Bool](repeating: true, count: cols * rows)
         var worldBoxes = [BoundingBox](
             repeating: BoundingBox(min: .zero, max: .zero), count: cols * rows)
         for ty in 0..<rows {
@@ -683,7 +770,8 @@ final class HeightfieldGPU {
                 let world = local.transformed(by: view.model)
                 let index = ty * cols + tx
                 worldBoxes[index] = world
-                if view.cull, !frustum.intersects(world) { visible[index] = false }
+                if view.cull, !frustum.intersects(world) { inFrustum[index] = false }
+                if Self.isClippedAway(world, by: view.clipPlanes) { unclipped[index] = false }
                 if let forced = view.forcedLevel {
                     levels[index] = UInt8(max(0, min(HeightfieldLayout.maxLevel, forced)))
                     continue
@@ -698,9 +786,71 @@ final class HeightfieldGPU {
                         cellPixels: cellPixels, targetPixels: view.targetPixels))
             }
         }
+        let visible = zip(inFrustum, unclipped).map { $0 && $1 }
         return HeightfieldTileLevels(
-            cols: cols, rows: rows, levels: levels, cameraVisible: visible, worldBoxes: worldBoxes,
-            worldCell: worldCell)
+            cols: cols, rows: rows, levels: levels, cameraVisible: visible, inFrustum: inFrustum,
+            unclipped: unclipped, worldBoxes: worldBoxes, worldCell: worldCell)
+    }
+
+    /// Whether `box` lies wholly on the clipped side of one of `planes`.
+    static func isClippedAway(_ box: BoundingBox, by planes: [SIMD4<Float>]) -> Bool {
+        for plane in planes {
+            let normal = SIMD3(plane.x, plane.y, plane.z)
+            // The corner furthest along the normal: if even it is clipped, the box is.
+            let corner = SIMD3(
+                normal.x >= 0 ? box.max.x : box.min.x, normal.y >= 0 ? box.max.y : box.min.y,
+                normal.z >= 0 ? box.max.z : box.min.z)
+            if simd_dot(normal, corner) + plane.w < 0 { return true }
+        }
+        return false
+    }
+
+    /// The tiles that can cast a shadow the camera sees, each at a level of detail.
+    ///
+    /// A tile the camera sees keeps its camera level, so its shadow is cast by the surface that is
+    /// drawn. A tile off screen is kept when the light reaches it and the shadow it throws, swept
+    /// along the light for up to `reach`, can enter the camera's frustum; it takes the coarser of
+    /// its camera level and the level the shadow map's texel size allows.
+    func makeShadowPlan(
+        levels: HeightfieldTileLevels, view: HeightfieldView, shadow: HeightfieldShadowView,
+        pool: FrameBufferPool, commandBuffer: MTLCommandBuffer
+    ) -> HeightfieldDrawPlan {
+        let lightFrustum = Frustum(viewProjection: shadow.lightViewProjection)
+        let cameraFrustum = Frustum(viewProjection: view.projection * view.view)
+        let m = shadow.lightViewProjection
+        let texelsPerUnit =
+            max(
+                simd_length(SIMD3(m.columns.0.x, m.columns.1.x, m.columns.2.x)),
+                simd_length(SIMD3(m.columns.0.y, m.columns.1.y, m.columns.2.y)))
+            * Float(shadow.mapSize) * 0.5
+        let lightLevel = UInt8(
+            HeightfieldLayout.level(
+                cellPixels: levels.worldCell * texelsPerUnit, targetPixels: view.targetPixels))
+        let travel = simd_normalize(shadow.lightDirection) * shadow.reach
+
+        var shadowLevels = levels
+        var mask = [Bool](repeating: false, count: levels.levels.count)
+        for index in levels.levels.indices where levels.unclipped[index] {
+            let box = levels.worldBoxes[index]
+            guard lightFrustum.intersects(box) else { continue }
+            if levels.inFrustum[index] {
+                mask[index] = true
+                continue
+            }
+            var swept = BoundingBox(
+                min: simd_min(box.min, box.min + travel), max: simd_max(box.max, box.max + travel))
+            if let bounds = shadow.sceneBounds {
+                // A shadow falls on the scene, so the sweep ends where it leaves the scene.
+                swept = BoundingBox(
+                    min: simd_max(swept.min, bounds.min), max: simd_min(swept.max, bounds.max))
+            }
+            guard !view.cull || cameraFrustum.intersects(swept) else { continue }
+            mask[index] = true
+            if view.forcedLevel == nil {
+                shadowLevels.levels[index] = max(levels.levels[index], lightLevel)
+            }
+        }
+        return pack(levels: shadowLevels, mask: mask, pool: pool, commandBuffer: commandBuffer)
     }
 
     /// Packs the tiles `mask` selects, grouped by level, into one instance buffer, with the

@@ -1489,7 +1489,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let heightfieldEntries = heightfieldCache.prepare(
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
-            meshCellPixels: controller.configuration.heightfieldMeshCellPixels)
+            meshCellPixels: controller.configuration.heightfieldMeshCellPixels,
+            clipPlanes: RendererSharedSetup.activeClipPlanes(clipPlaneVecs, count: clipPlaneCount),
+            shadow: shadowEnabled
+                ? HeightfieldShadowView(
+                    lightViewProjection: lightVP, lightDirection: lighting.keyLight.direction,
+                    mapSize: lighting.shadowMapSize, reach: modelBounds?.diagonalLength ?? 0,
+                    sceneBounds: modelBounds)
+                : nil)
         currentHeightfields = Dictionary(
             heightfieldEntries.map { ($0.body.id, $0.state.field) }, uniquingKeysWith: { $1 })
 
@@ -1567,6 +1574,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var shadowClipUniforms = makeUniforms()
                     shadowEncoder.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+
+                    // Heightfield surfaces cast shadows too.
+                    if let heightfieldShadow = heightfieldCache.shadowPipelineState() {
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            guard let draw = entry.shadowDraw else { continue }
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP,
+                                modelMatrix: entry.body.transform)
+                            draw.encodeShadow(
+                                encoder: shadowEncoder, pipeline: heightfieldShadow,
+                                uniforms: &shadowUniforms)
+                        }
+                    }
 
                     for body in bodies where body.isVisible {
                         guard let buffers = bodyBufferCache[body.id] else { continue }
@@ -2497,6 +2517,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             if let depthEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthOnlyPass)
             {
                 depthEncoder.setDepthStencilState(depthState)
+
+                // Heightfield surfaces write depth too.
+                if let heightfieldDepth = heightfieldCache.depthPipelineState() {
+                    for entry in heightfieldEntries where Self.writesSSAODepth(entry.body) {
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = entry.body.transform
+                        entry.draw.encodeDepth(
+                            encoder: depthEncoder, pipeline: heightfieldDepth, uniforms: &uniforms)
+                    }
+                }
 
                 objectIndex = 0
                 for body in bodies where body.isVisible {

@@ -702,6 +702,11 @@ public final class OffscreenRenderer: Sendable {
         set { heightfieldCache.forcedLevel = newValue }
     }
 
+    /// CPU seconds the last `render` spent encoding, and GPU seconds its command buffer ran
+    /// (`gpuEndTime - gpuStartTime`); for benchmarks.
+    private(set) var lastEncodeSeconds: Double = 0
+    private(set) var lastGPUSeconds: Double = 0
+
     // MARK: - Init
 
     public init?() {
@@ -796,6 +801,7 @@ public final class OffscreenRenderer: Sendable {
     public func render(bodies: [ViewportBody], options: OffscreenRenderOptions = .init())
         -> CGImage?
     {
+        let renderStart = DispatchTime.now().uptimeNanoseconds
         let w = options.width
         let h = options.height
         let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
@@ -878,7 +884,15 @@ public final class OffscreenRenderer: Sendable {
         let heightfieldEntries = heightfieldCache.prepare(
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
-            meshCellPixels: options.heightfieldMeshCellPixels)
+            meshCellPixels: options.heightfieldMeshCellPixels,
+            clipPlanes: RendererSharedSetup.activeClipPlanes(
+                setup.clipPlanes, count: setup.clipPlaneCount),
+            shadow: shadowEnabled
+                ? HeightfieldShadowView(
+                    lightViewProjection: lightVP, lightDirection: lighting.keyLight.direction,
+                    mapSize: lighting.shadowMapSize, reach: modelBounds?.diagonalLength ?? 0,
+                    sceneBounds: modelBounds)
+                : nil)
 
         // Tessellation factors for this camera and output size (#165), which the mesh stage
         // subdivides by too (#175).
@@ -911,6 +925,19 @@ public final class OffscreenRenderer: Sendable {
                     var shadowClipUniforms = makeUniforms()
                     enc.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+
+                    // Heightfield surfaces cast shadows too.
+                    if let heightfieldShadow = heightfieldCache.shadowPipelineState() {
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            guard let draw = entry.shadowDraw else { continue }
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP,
+                                modelMatrix: entry.body.transform)
+                            draw.encodeShadow(
+                                encoder: enc, pipeline: heightfieldShadow,
+                                uniforms: &shadowUniforms)
+                        }
+                    }
 
                     // Overlay bodies are UI affordances and cast no shadows, as in the live pass.
                     for body in bodies where body.isVisible && body.renderLayer == .geometry {
@@ -1629,12 +1656,15 @@ public final class OffscreenRenderer: Sendable {
                 pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
                 orthographic: projMatrix.columns.3.w > 0.5,
                 refined: refined,
+                heightfieldEntries: heightfieldEntries,
                 makeUniforms: makeUniforms
             )
         }
 
+        lastEncodeSeconds = Double(DispatchTime.now().uptimeNanoseconds - renderStart) * 1e-9
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        lastGPUSeconds = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
 
         // Readback: blit resolve texture to shared buffer
         let bytesPerRow = w * 4
@@ -1911,6 +1941,7 @@ public final class OffscreenRenderer: Sendable {
         pixelsPerUnit: Float,
         orthographic: Bool,
         refined: RefinedPipelines?,
+        heightfieldEntries: [HeightfieldRenderCache.Entry],
         makeUniforms: () -> Uniforms
     ) {
         guard let compositePipeline = ssaoCompositePipeline,
@@ -1927,6 +1958,15 @@ public final class OffscreenRenderer: Sendable {
         depthPass.depthAttachment.clearDepth = 1.0
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthPass) {
             encoder.setDepthStencilState(depthState)
+            // Heightfield surfaces write depth too.
+            if let heightfieldDepth = heightfieldCache.depthPipelineState() {
+                for entry in heightfieldEntries where ViewportRenderer.writesSSAODepth(entry.body) {
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = entry.body.transform
+                    entry.draw.encodeDepth(
+                        encoder: encoder, pipeline: heightfieldDepth, uniforms: &uniforms)
+                }
+            }
             for body in bodies where body.isVisible && ViewportRenderer.writesSSAODepth(body) {
                 guard let buffers = bodyBufferCache[body.id],
                     let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
