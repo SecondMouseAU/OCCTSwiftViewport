@@ -44,10 +44,6 @@ struct PickPipelines {
     /// Vertex pick as point sprites.
     let point: MTLRenderPipelineState?
 
-    /// Face pick for a heightfield: `heightfield_pick_vertex` + `heightfield_pick_fragment`, which
-    /// stamps the cell index.
-    let heightfield: MTLRenderPipelineState?
-
     /// `.lessEqual` with depth writes: edges and points co-planar with a face win the pick.
     let edgeOrPointDepthState: MTLDepthStencilState
 
@@ -97,11 +93,6 @@ struct PickPipelines {
         // pick_point_vertex sets point_size for a clickable footprint; the fragment stamps kind 2.
         self.point = make(
             "pick_point", "pick_point_vertex", "pick_point_fragment", vertexDescriptor)
-        self.heightfield = RendererSharedSetup.makePipelineState(
-            device: device, label: "pick_heightfield", library: library,
-            vertexFunction: "heightfield_pick_vertex",
-            fragmentFunction: "heightfield_pick_fragment",
-            colorPixelFormat: Self.colorPixelFormat, depthPixelFormat: Self.depthPixelFormat)
     }
 }
 
@@ -241,9 +232,8 @@ extension RendererSharedSetup {
             let buffers = entry.buffers
             if let heightfield = entry.heightfield {
                 // A heightfield stamps its cell index; `.wireframe` draws no surface to pick.
-                guard displayMode.showsSurfaces, let pipeline = pipelines.heightfield else {
-                    continue
-                }
+                guard displayMode.showsSurfaces, let pipeline = heightfield.pickPipeline.value
+                else { continue }
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
                 var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
@@ -449,7 +439,7 @@ extension RendererSharedSetup {
             let buffers = entry.buffers
             if let heightfield = entry.heightfield {
                 // An overlay heightfield stamps its surface in every display mode, over the rest.
-                if let pipeline = pipelines.heightfield {
+                if let pipeline = heightfield.pickPipeline.value {
                     var uniforms = makeUniforms()
                     uniforms.modelMatrix = body.transform
                     var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)

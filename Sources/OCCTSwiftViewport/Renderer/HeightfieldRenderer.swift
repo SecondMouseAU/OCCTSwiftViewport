@@ -74,10 +74,31 @@ struct HeightfieldPyramidParams {
 
 // MARK: - Shared resources
 
+/// A render pipeline built on first use, so a renderer that never picks a heightfield never
+/// compiles the pick pipeline.
+final class LazyPipeline {
+    private var state: MTLRenderPipelineState?
+    private var built = false
+    private let make: () -> MTLRenderPipelineState?
+
+    init(make: @escaping () -> MTLRenderPipelineState?) { self.make = make }
+
+    var value: MTLRenderPipelineState? {
+        if !built {
+            state = make()
+            built = true
+        }
+        return state
+    }
+}
+
 /// What every heightfield of one renderer shares: the pyramid kernel and the per-level index
 /// buffers of a tile.
 final class HeightfieldShared {
     let pyramidPipeline: MTLComputePipelineState
+    /// The face-pick pipeline: `heightfield_pick_vertex` + `heightfield_pick_fragment`, which
+    /// stamps the cell index.
+    let pickPipeline: LazyPipeline
     /// `uint16` triangle indices of an `n x n`-quad tile grid, per level (`n = 64 >> level`).
     let indexBuffers: [MTLBuffer]
     let indexCounts: [Int]
@@ -87,6 +108,14 @@ final class HeightfieldShared {
             let pipeline = try? device.makeComputePipelineState(function: function)
         else { return nil }
         pyramidPipeline = pipeline
+        pickPipeline = LazyPipeline {
+            RendererSharedSetup.makePipelineState(
+                device: device, label: "pick_heightfield", library: library,
+                vertexFunction: "heightfield_pick_vertex",
+                fragmentFunction: "heightfield_pick_fragment",
+                colorPixelFormat: PickPipelines.colorPixelFormat,
+                depthPixelFormat: PickPipelines.depthPixelFormat)
+        }
         var buffers: [MTLBuffer] = []
         var counts: [Int] = []
         for level in 0..<HeightfieldLayout.levelCount {
@@ -203,6 +232,7 @@ struct HeightfieldDrawSet {
     let params: HeightfieldDrawParams
     let indexBuffers: [MTLBuffer]
     let indexCounts: [Int]
+    let pickPipeline: LazyPipeline
 
     /// Draws every planned tile with the shaded pipeline.
     ///
@@ -1014,7 +1044,8 @@ final class HeightfieldGPU {
                 size: SIMD2(UInt32(field.width), UInt32(field.height)), level: 0, quads: 0,
                 cellSize: field.cellSize, origin: field.origin,
                 rampMode: rampSpace == .linear ? 6 : 2),
-            indexBuffers: shared.indexBuffers, indexCounts: shared.indexCounts)
+            indexBuffers: shared.indexBuffers, indexCounts: shared.indexCounts,
+            pickPipeline: shared.pickPipeline)
     }
 
     // MARK: Test support

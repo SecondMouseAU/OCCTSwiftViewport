@@ -927,7 +927,9 @@ public final class OffscreenRenderer: Sendable {
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
 
                     // Heightfield surfaces cast shadows too.
-                    if let heightfieldShadow = heightfieldCache.shadowPipelineState() {
+                    if !heightfieldEntries.isEmpty,
+                        let heightfieldShadow = heightfieldCache.shadowPipelineState()
+                    {
                         for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
                             guard let draw = entry.shadowDraw else { continue }
                             var shadowUniforms = ShadowUniformsSwift(
@@ -1048,7 +1050,8 @@ public final class OffscreenRenderer: Sendable {
                 commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
                 pipelines: maskPipelines, uniforms: makeUniforms(),
                 heightfieldDraws: heightfieldMaskDraws,
-                heightfieldPipeline: heightfieldCache.selectionMaskPipelineState())
+                heightfieldPipeline: heightfieldMaskDraws.isEmpty
+                    ? nil : heightfieldCache.selectionMaskPipelineState())
             outlineMask = mask
         }
 
@@ -1400,8 +1403,11 @@ public final class OffscreenRenderer: Sendable {
         // Heightfield surfaces: one instanced draw per level of detail present. A translucent
         // field (`opacity < 1`, or `.xray`) joins the sorted transparent pass below.
         var translucentHeightfields: [HeightfieldRenderCache.Entry] = []
-        let heightfieldPipelines = heightfieldCache.pipelines(
-            sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        let heightfieldPipelines =
+            heightfieldEntries.isEmpty
+            ? nil
+            : heightfieldCache.pipelines(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
         if displayMode.showsSurfaces, let heightfieldPipelines {
             for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
                 let body = entry.body
@@ -1632,8 +1638,9 @@ public final class OffscreenRenderer: Sendable {
         }
 
         // Selected and hovered heightfields mark the stencil too.
-        if let stencilPipeline = heightfieldCache.stencilMarkPipelineState(
-            sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        if !heightfieldMaskDraws.isEmpty,
+            let stencilPipeline = heightfieldCache.stencilMarkPipelineState(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
         {
             for entry in heightfieldEntries
             where entry.body.renderLayer == .geometry && selectionState(of: entry.body) > 0 {
@@ -2033,7 +2040,9 @@ public final class OffscreenRenderer: Sendable {
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthPass) {
             encoder.setDepthStencilState(depthState)
             // Heightfield surfaces write depth too.
-            if let heightfieldDepth = heightfieldCache.depthPipelineState() {
+            if !heightfieldEntries.isEmpty,
+                let heightfieldDepth = heightfieldCache.depthPipelineState()
+            {
                 for entry in heightfieldEntries where ViewportRenderer.writesSSAODepth(entry.body) {
                     var uniforms = makeUniforms()
                     uniforms.modelMatrix = entry.body.transform
