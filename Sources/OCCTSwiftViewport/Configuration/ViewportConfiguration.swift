@@ -426,6 +426,18 @@ public struct ViewportConfiguration: Sendable {
     /// Defaults to ``SelectionTintStyle/hover``.
     public var hoverTint: SelectionTintStyle = .hover
 
+    // MARK: - Heightfield
+
+    /// The widest a heightfield mesh cell may appear on screen, in pixels.
+    ///
+    /// Each 64 x 64-cell tile of a ``Heightfield`` is drawn at the coarsest level of detail whose
+    /// cell is no wider than this. Smaller is sharper and costs more: 4 (the default) is the
+    /// balanced setting, and 2 is a cost cliff (about nine times the 4 px GPU time on an M4 at
+    /// 1668 x 1194 with 4x MSAA, from 1-2 px triangles). Clamped to
+    /// ``Heightfield/meshCellPixelsRange`` when drawn. `OffscreenRenderOptions` carries the same
+    /// field.
+    public var heightfieldMeshCellPixels: Float = Heightfield.defaultMeshCellPixels
+
     // MARK: - Edge Lines
 
     /// Configuration for edge/wireframe line rendering (width, dash pattern, quad expansion).

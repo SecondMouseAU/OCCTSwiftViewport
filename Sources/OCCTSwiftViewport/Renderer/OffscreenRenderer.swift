@@ -219,6 +219,10 @@ public struct OffscreenRenderOptions: Sendable {
     /// Surface tint for the hovered body, matching `ViewportConfiguration.hoverTint`.
     public var hoverTint: SelectionTintStyle
 
+    /// The widest a heightfield mesh cell may appear, in pixels, matching
+    /// `ViewportConfiguration.heightfieldMeshCellPixels`.
+    public var heightfieldMeshCellPixels: Float
+
     /// Whether interleaved bodies get crease-aware normal smoothing, matching
     /// `ViewportConfiguration.autoSmoothNormals`.
     public var autoSmoothNormals: Bool
@@ -354,6 +358,8 @@ public struct OffscreenRenderOptions: Sendable {
         selectionTint: SelectionTintStyle =
             ViewportController.defaultConfiguration.selectionTint,
         hoverTint: SelectionTintStyle = ViewportController.defaultConfiguration.hoverTint,
+        heightfieldMeshCellPixels: Float =
+            ViewportController.defaultConfiguration.heightfieldMeshCellPixels,
         autoSmoothNormals: Bool = ViewportController.defaultConfiguration.autoSmoothNormals,
         normalSmoothingCreaseAngle: Float =
             ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
@@ -400,6 +406,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.hoverOutline = hoverOutline
         self.selectionTint = selectionTint
         self.hoverTint = hoverTint
+        self.heightfieldMeshCellPixels = heightfieldMeshCellPixels
         self.autoSmoothNormals = autoSmoothNormals
         self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle
         self.enableSilhouettes = enableSilhouettes
@@ -454,6 +461,7 @@ public struct OffscreenRenderOptions: Sendable {
             hoverOutline: config.hoverOutline,
             selectionTint: config.selectionTint,
             hoverTint: config.hoverTint,
+            heightfieldMeshCellPixels: config.heightfieldMeshCellPixels,
             autoSmoothNormals: config.autoSmoothNormals,
             normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
             enableSilhouettes: config.enableSilhouettes,
@@ -686,6 +694,14 @@ public final class OffscreenRenderer: Sendable {
     /// Geometry-only (built from `vertices`), so `generation` is the right key, not `boundsKey`.
     private var pickPointBuffers: [String: (generation: UInt64, buffer: MTLBuffer)] = [:]
 
+    // Heightfield bodies: GPU state per body id, built on first use.
+    private lazy var heightfieldCache = HeightfieldRenderCache(device: device, library: library)
+    /// Draws every heightfield tile at this level (tests).
+    var heightfieldForcedLevel: Int? {
+        get { heightfieldCache.forcedLevel }
+        set { heightfieldCache.forcedLevel = newValue }
+    }
+
     // MARK: - Init
 
     public init?() {
@@ -856,6 +872,13 @@ public final class OffscreenRenderer: Sendable {
             ? postProcessTargets(width: w, height: h) : nil
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+
+        // Heightfields: upload the tiles edited since the last draw, then choose each body's
+        // levels of detail for this camera.
+        let heightfieldEntries = heightfieldCache.prepare(
+            bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
+            projection: projMatrix, viewportHeight: Float(h),
+            meshCellPixels: options.heightfieldMeshCellPixels)
 
         // Tessellation factors for this camera and output size (#165), which the mesh stage
         // subdivides by too (#175).
@@ -1334,6 +1357,28 @@ public final class OffscreenRenderer: Sendable {
                 body, buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
+        // Heightfield surfaces: one instanced draw per level of detail present.
+        if displayMode.showsSurfaces,
+            let heightfieldPipelines = heightfieldCache.pipelines(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        {
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                let body = entry.body
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                var bodyUniforms = BodyUniforms(
+                    body: body, objectIndex: 0, isSelected: selectionState(of: body))
+                mainEncoder.setDepthStencilState(depthState)
+                mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+                if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                    mainEncoder.setFragmentTexture(shadowTex, index: 1)
+                }
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+        }
+
         // Transparent surface pass (issue #53): deferred translucent bodies,
         // back-to-front, depth test on / write off, composited over the opaque set.
         if displayMode.showsSurfaces, !transparentBodies.isEmpty {
@@ -1388,7 +1433,8 @@ public final class OffscreenRenderer: Sendable {
                 quadCount: Int
             )] = []
         let arcViewport = SIMD2<Float>(Float(w), Float(h))
-        for body in bodies where body.isVisible && !body.arcs.isEmpty {
+        for body in bodies where body.isVisible && !body.arcs.isEmpty && body.inPlaceContent == nil
+        {
             let hasMesh = (bodyBufferCache[body.id]?.indexCount ?? 0) > 0
             guard displayMode.showsEdges || !hasMesh else { continue }
             let mvp = viewProjection * body.transform
@@ -2261,6 +2307,17 @@ public final class OffscreenRenderer: Sendable {
         return false
     }
 
+    /// The GPU state of the heightfield body `id`; exposed for tests.
+    func heightfieldState(forBodyID id: String) -> HeightfieldGPU? {
+        heightfieldCache.states[id]
+    }
+
+    /// How many heightfields the GPU path has failed to build; exposed for tests.
+    var heightfieldFailureCount: Int { heightfieldCache.failureCount }
+
+    /// The command queue, for tests that read GPU resources back.
+    var testCommandQueue: MTLCommandQueue { commandQueue }
+
     /// Drops cached buffers for bodies no longer passed to `render`, matching the live renderer.
     private func pruneBufferCache(keeping bodies: [ViewportBody]) {
         let activeIDs = Set(bodies.map(\.id))
@@ -2277,6 +2334,13 @@ public final class OffscreenRenderer: Sendable {
         for body: ViewportBody, options: OffscreenRenderOptions, refinement: SurfaceRefinement
     ) {
         let currentGen = body.generation
+        // A body drawn from in-place content (a heightfield) has no mesh buffers; its arrays are
+        // ignored.
+        if body.inPlaceContent != nil {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
+            return
+        }
         // Crease-smoothed normals (issue #48) depend on the options as well as the body, so the
         // cached mesh is reused only when it was built with the same smoothing.
         let smoothingApplies =

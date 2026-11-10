@@ -533,6 +533,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     // Environment map IBL
     private var environmentMapManager: EnvironmentMapManager?
+    /// Heightfield bodies: GPU state, pipelines and per-frame tile plans.
+    let heightfieldCache: HeightfieldRenderCache
 
     private weak var controller: ViewportController?
     private var bodiesBinding: Binding<[ViewportBody]>
@@ -1077,6 +1079,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Environment map manager (IBL)
         self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
+        self.heightfieldCache = HeightfieldRenderCache(device: device, library: library)
 
         super.init()
 
@@ -1478,6 +1481,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
+        // Heightfields: upload the tiles edited since the last frame, then choose each body's
+        // levels of detail for this camera.
+        let heightfieldEntries = heightfieldCache.prepare(
+            bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
+            projection: projMatrix, viewportHeight: Float(h),
+            meshCellPixels: controller.configuration.heightfieldMeshCellPixels)
+
         // =========================================================
         // Pre-pass: Update tessellation factors (per-frame, camera-dependent)
         // =========================================================
@@ -1876,6 +1886,39 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     mainEncoder.drawPrimitives(
                         type: .line, vertexStart: slice.start, vertexCount: slice.count)
                 }
+            }
+        }
+
+        // 3.25 Heightfield surfaces: one instanced draw per level of detail present.
+        if displayMode.showsSurfaces,
+            let heightfieldPipelines = heightfieldCache.pipelines(
+                sampleCount: msaaSampleCount, depthFormat: .depth32Float_stencil8)
+        {
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                let body = entry.body
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                let selState: UInt32 =
+                    selectedIDs.contains(body.id) ? 1 : (hoveredID == body.id ? 2 : 0)
+                var bodyUniforms = BodyUniforms(
+                    body: body, objectIndex: entry.objectIndex, isSelected: selState)
+                mainEncoder.setDepthStencilState(depthState)
+                mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+                if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                    mainEncoder.setFragmentTexture(shadowTex, index: 1)
+                }
+                if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
+                    if let spec = envMgr.prefilteredSpecularMap {
+                        mainEncoder.setFragmentTexture(spec, index: 2)
+                    }
+                    if let diff = envMgr.irradianceMap {
+                        mainEncoder.setFragmentTexture(diff, index: 3)
+                    }
+                    if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
+                }
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
             }
         }
 
@@ -2899,6 +2942,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
+        // A body drawn from in-place content (a heightfield) has no mesh buffers; its arrays are
+        // ignored.
+        if body.inPlaceContent != nil {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
+            return
+        }
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen {
             // Geometry still valid. `triangleStyles` can be reassigned on the same body without a
             // new generation, so re-upload just the style buffer when it changed.
