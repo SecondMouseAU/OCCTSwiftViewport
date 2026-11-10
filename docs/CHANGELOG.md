@@ -4,6 +4,74 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-10
+
+Adds a dynamic heightfield surface (`Heightfield`), a headless GPU pick pass for `OffscreenRenderer`, and
+fixes a blank view when `enableTAA` is on without the SSAO/silhouette composite. One behaviour change to
+read about: `uniformTessellationFactor = .loadAdaptive` no longer reacts to a GPU that was idle-clocked
+before a frame. Nothing is source-incompatible.
+
+### Changed (read before upgrading)
+- **`uniformTessellationFactor = .loadAdaptive` (with `adaptiveTessellation = false`) lowers the factor
+  only when the GPU is saturated** (#241). A frame the GPU was busy for less than 95% of the time since
+  the previous frame ended (the first frame after a pause, a debug build, on-demand drawing, a
+  display-paced or clock-stretched frame) can raise the factor but no longer lowers it. Frames run back
+  to back at or over the budget lower it exactly as before, so a genuinely overloaded GPU still drops
+  the factor. Debug builds therefore keep the maximum factor instead of settling lower than release. The
+  default `adaptiveTessellation = true` never read GPU time and is unchanged.
+
+### Added
+- **`Heightfield`: a dynamic heightfield surface** (#139). A grid of cell heights with a per-cell
+  attribute (coloured through a 256-entry ramp) and an optional per-cell id, attached with
+  `ViewportBody.heightfield` and edited in place with `replace(region:heights:attributes:ids:)`. Only the
+  64 x 64-cell tiles an edit touched are uploaded, so replacing a 130 x 120 region 200 times per frame
+  is cheap. It is drawn as instanced tiles at per-tile levels of detail with crack-free seams, in the
+  shaded, translucent, shadow, depth, selection-outline, overlay and pick passes of both
+  `ViewportRenderer` and `OffscreenRenderer`. Both initialisers throw `HeightfieldError` for a field that
+  cannot be drawn (`Heightfield.maximumDimension` is 16,321 cells per side); `.float16` heights halve the
+  height upload. `.wireframe` draws nothing for a heightfield.
+  **Only verified on an M4 Mac**: measurements on an iPhone or iPad are still to be done (#139), and the
+  coarse levels use a conservative minimum so a step edge can sit up to 1.5 mesh cells from its true
+  position (see `docs/reference/Heightfield.md`).
+- **Picking a heightfield.** `PickResult.heightfield` (cell, height, attribute, id),
+  `ViewportController.refinePick(_:ndc:bodies:)` (makes a click's cell exact at every level of detail;
+  `MetalViewportView` applies it to every tap) and `Heightfield.raycast(origin:direction:maxDistance:)`,
+  an exact grid march that `SceneRaycast` uses, so the dynamic pivot and focus-on-point work on a
+  heightfield. `Heightfield.recomputeHeightRange()` resets the running height range after edits that
+  lower the surface.
+- **`ViewportConfiguration.heightfieldMeshCellPixels`** and
+  **`OffscreenRenderOptions.heightfieldMeshCellPixels`**: the target size in pixels of a heightfield mesh
+  cell (default 4, range `1...32`; 2 px costs about nine times as much GPU time as 4 px).
+- **A headless GPU pick pass for `OffscreenRenderer`** (#236). `renderPickMap(bodies:options:)`,
+  `performPick(bodies:at:options:)` and `performRegionPick(bodies:rect:options:)` return the same
+  `PickResult` as the live `performPick` / `performRegionPick` for the same scene and camera (faces on
+  every path, edges, arcs, vertices, point clouds, overlay bodies; clip planes, display mode and body
+  transforms applied). `OffscreenPickMap` is the pick texture of one render, with `pick(at:)` and
+  `pickRegion(_:)`; `OffscreenRenderOptions` gains `pickRadius` and `selectionFilter`.
+
+### Fixed
+- **A blank view with `enableTAA` on and no SSAO/silhouette composite** (#244). With SSAO and silhouettes
+  both off, or in `.unlit` / `.wireframe`, nothing copied the TAA output to the drawable: a live view
+  showed nothing and a headless readback returned uninitialised memory. The output is now copied to the
+  final target (one extra fullscreen pass, only in that case). The default `enableSilhouettes: true`
+  had hidden it.
+- **`TessellationLoadGovernor` dropping the uniform tessellation factor to its minimum because the GPU
+  was idle-clocked before a frame** (#241, see Changed).
+- **A stale cached bounding box** when a body changes in place without its `generation` changing (#237).
+  Caches of per-body bounds now key on an internal `ViewportBody.boundsKey`, and `generation` documents
+  the invariant.
+
+### Docs and tooling
+- GPU frame time, and so `.loadAdaptive`, is not comparable between debug and release builds: a frame
+  that follows an idle GPU is 1.6-2.5x slower (an M4 measurement) and a debug build's slow CPU-side
+  encoding makes every frame such a frame. Use `.fixed(_:)` to compare quality across builds and measure
+  GPU time in release (#238).
+- New reference page `docs/reference/Heightfield.md` and cookbook page
+  `docs/guides/cookbook/heightfield-surfaces.md`; updates to the Rendering, Picking, Configuration and
+  ViewportBody pages.
+- `ViewportRenderer` and `OffscreenRenderer` now encode the GPU pick pass through one shared function;
+  no behaviour change for the live viewport.
+
 ## [1.3.1] - 2026-11-09
 
 Fixes a v1.3.0 regression (the renderers were `nil` in plain SwiftPM builds) and ships the follow-ups that
