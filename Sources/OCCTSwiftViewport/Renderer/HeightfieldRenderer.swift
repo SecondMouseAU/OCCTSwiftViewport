@@ -300,6 +300,8 @@ final class HeightfieldGPU {
     private(set) var fullUploads = 0
     /// Blit copy commands encoded since creation (two per block of consecutive dirty tiles).
     private(set) var blitCommands = 0
+    /// Instanced draw calls encoded since creation, over every pass.
+    private(set) var drawCalls = 0
     /// Seconds the CPU spent on the last `encodeUpdates` / `makePlan`.
     private(set) var lastUpdateSeconds: Double = 0
     private(set) var lastPlanSeconds: Double = 0
@@ -714,6 +716,7 @@ final class HeightfieldGPU {
                 type: .triangle, indexCount: shared.indexCounts[level], indexType: .uint16,
                 indexBuffer: shared.indexBuffers[level], indexBufferOffset: 0,
                 instanceCount: plan.ranges[level].count)
+            drawCalls += 1
         }
     }
 

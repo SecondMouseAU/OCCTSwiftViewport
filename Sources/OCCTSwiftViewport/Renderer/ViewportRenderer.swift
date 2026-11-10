@@ -533,6 +533,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private var environmentMapManager: EnvironmentMapManager?
     /// Heightfield bodies (issue #139 spike): GPU state, pipelines and per-frame tile plans.
     let heightfieldCache: HeightfieldRenderCache
+    /// Per-frame timings and counters for benchmark apps; records nothing unless asked.
+    let benchMetrics = RendererBenchMetrics()
     /// Maps bodyID → heightfield handle for the bodies drawn this frame, so a pick can be
     /// resolved to its cell data when it is decoded.
     private var currentHeightfields: [String: Heightfield] = [:]
@@ -1197,6 +1199,15 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return (buffers.edgeVertexBuffer, buffers.quadEdgeVertexBuffer, buffers.edgeColorBuffer)
     }
 
+    /// The cached vertex, normal and index buffers for a body, or `nil` when it has none cached;
+    /// for tests. Object identity shows whether a mutation re-created them.
+    func cachedMeshBuffers(for bodyID: String) -> (
+        vertex: MTLBuffer?, normal: MTLBuffer?, index: MTLBuffer?
+    )? {
+        guard let buffers = bodyBufferCache[bodyID] else { return nil }
+        return (buffers.vertexBuffer, buffers.normalBuffer, buffers.indexBuffer)
+    }
+
     /// Invalidates cached buffers so they are rebuilt on next draw.
     public func invalidateBuffers() {
         bodyBufferCache.removeAll()
@@ -1327,6 +1338,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// The live path and the off-screen path (`renderHeadless(...)`) both go through here, so the
     /// two can never drift apart in the way a parallel headless implementation would.
     func encodeFrame(into targets: FrameRenderTargets) {
+        let benchFrame = benchMetrics.begin(heightfields: heightfieldCache)
         guard let controller = controller else { return }
         let renderPassDescriptor = targets.mainPassDescriptor
 
@@ -3087,7 +3099,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         if let presentable = targets.presentable {
             commandBuffer.present(presentable)
         }
+        benchMetrics.attach(benchFrame, to: commandBuffer)
         commandBuffer.commit()
+        benchMetrics.finish(benchFrame, heightfields: heightfieldCache)
     }
 
     // MARK: - Per-triangle styles
@@ -3413,6 +3427,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
             return  // buffer still valid
         }
+        benchMetrics.countBodyBufferBuild()
 
         // Build vertex + index buffers (nil for edge-only bodies). Interleaved bodies optionally
         // get crease-aware normal smoothing first (issue #48) so meshes with flat / per-face
