@@ -174,6 +174,8 @@ struct PickPassBody {
     /// Ordinal among the visible bodies in draw order; what `PickResult.bodyIndex` reports.
     let objectIndex: UInt32
     let buffers: PickPassBuffers
+    /// The planned tiles of a heightfield body, which has no mesh buffers.
+    var heightfield: HeightfieldDrawSet?
 }
 
 /// Everything the pick pass reads besides the bodies.
@@ -228,6 +230,18 @@ extension RendererSharedSetup {
         for entry in bodies where entry.body.isPickable && entry.body.renderLayer != .overlay {
             let body = entry.body
             let buffers = entry.buffers
+            if let heightfield = entry.heightfield {
+                // A heightfield stamps its cell index; `.wireframe` draws no surface to pick.
+                guard displayMode.showsSurfaces, let pipeline = heightfield.pickPipeline.value
+                else { continue }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+                heightfield.encodePick(
+                    encoder: pickEncoder, pipeline: pipeline, uniforms: &uniforms,
+                    bodyUniforms: &bodyUniforms)
+                continue
+            }
             guard displayMode.showsSurfaces, buffers.hasMesh, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             else { continue }
@@ -423,6 +437,18 @@ extension RendererSharedSetup {
         for entry in bodies where entry.body.renderLayer == .overlay && entry.body.isPickable {
             let body = entry.body
             let buffers = entry.buffers
+            if let heightfield = entry.heightfield {
+                // An overlay heightfield stamps its surface in every display mode, over the rest.
+                if let pipeline = heightfield.pickPipeline.value {
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = body.transform
+                    var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+                    heightfield.encodePick(
+                        encoder: pickEncoder, pipeline: pipeline, uniforms: &uniforms,
+                        bodyUniforms: &bodyUniforms)
+                }
+                continue
+            }
             if body.primitiveKind != .point, buffers.hasMesh, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             {

@@ -22,6 +22,7 @@ Your App
 - **ViewCube** — Interactive orientation widget with 26 clickable regions
 - **GPU picking** — TBDR imageblock-based pick ID buffer for body, face, edge and vertex selection, with an optional pick tolerance radius
 - **Direct-mesh path** — render a kernel's triangulation from de-interleaved arrays, skipping the interleave repack
+- **Heightfield surfaces** — a grid of millions of cell heights edited in place by rectangle, coloured per cell through a ramp, with exact cell picks (see [the cookbook](docs/guides/cookbook/heightfield-surfaces.md))
 - **Display modes** — Wireframe, shaded, shaded-with-edges, with configurable edge width and dash patterns
 - **Lighting presets** — `.threePoint`, `.studio`, `.architectural`, `.flat`
 - **Gesture presets** — `.default`, `.blender`, `.fusion360`

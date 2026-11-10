@@ -239,14 +239,10 @@ public struct MetalViewportView: View {
         let aspect = controller.lastAspectRatio
         renderer?.performPick(at: pixel) { result in
             Task { @MainActor in
-                // While a measurement tool is active, taps feed the measurement
-                // accumulator instead of the selection stream.
-                if ctrl.measurementMode != .none {
-                    ctrl.handleMeasurementPick(
-                        result: result, ndc: ndc, bodies: snapshot, aspectRatio: aspect)
-                } else {
-                    ctrl.handlePick(result: result, ndc: ndc)
-                }
+                // Measurement taps feed the accumulator; others reach the selection stream,
+                // a heightfield pick made exact with the tap's own ray.
+                ctrl.handleTapPick(
+                    result: result, ndc: ndc, bodies: snapshot, aspectRatio: aspect)
             }
         }
     }

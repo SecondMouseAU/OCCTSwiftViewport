@@ -528,11 +528,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private let taaPipeline: MTLRenderPipelineState?
     private var taaHistoryTexture: MTLTexture?
     private var taaOutputTexture: MTLTexture?
-    private var taaFrameIndex: UInt32 = 0
+    private(set) var taaFrameIndex: UInt32 = 0
     private var lastCameraState: CameraState?
 
     // Environment map IBL
     private var environmentMapManager: EnvironmentMapManager?
+    /// Heightfield bodies: GPU state, pipelines and per-frame tile plans.
+    let heightfieldCache: HeightfieldRenderCache
+    /// Body ID to heightfield handle for the bodies drawn this frame, so a pick resolves to its
+    /// cell data when it is decoded.
+    private var currentHeightfields: [String: Heightfield] = [:]
 
     private weak var controller: ViewportController?
     private var bodiesBinding: Binding<[ViewportBody]>
@@ -540,6 +545,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Cached MTLBuffers keyed by body ID.
     private var bodyBufferCache: [String: BodyBuffers] = [:]
     /// Generation counter per body ID (detects geometry changes).
+    ///
+    /// A geometry-only cache key, deliberately `generation` and not `boundsKey`: the buffers are
+    /// built from the body's value-type arrays, which cannot change in place. Bounds caches use
+    /// `ViewportBody.boundsKey` (#237).
     private var bodyGeneration: [String: UInt64] = [:]
     /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
     private var bodyStyleGeneration: [String: UInt64] = [:]
@@ -1073,6 +1082,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         // Environment map manager (IBL)
         self.environmentMapManager = EnvironmentMapManager(device: device, library: library)
+        self.heightfieldCache = HeightfieldRenderCache(device: device, library: library)
 
         super.init()
 
@@ -1474,6 +1484,22 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
+        // Heightfields: upload the tiles edited since the last frame, then choose each body's
+        // levels of detail for this camera.
+        let heightfieldEntries = heightfieldCache.prepare(
+            bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
+            projection: projMatrix, viewportHeight: Float(h),
+            meshCellPixels: controller.configuration.heightfieldMeshCellPixels,
+            clipPlanes: RendererSharedSetup.activeClipPlanes(clipPlaneVecs, count: clipPlaneCount),
+            shadow: shadowEnabled
+                ? HeightfieldShadowView(
+                    lightViewProjection: lightVP, lightDirection: lighting.keyLight.direction,
+                    mapSize: lighting.shadowMapSize, reach: modelBounds?.diagonalLength ?? 0,
+                    sceneBounds: modelBounds)
+                : nil)
+        currentHeightfields = Dictionary(
+            heightfieldEntries.map { ($0.body.id, $0.state.field) }, uniquingKeysWith: { $1 })
+
         // =========================================================
         // Pre-pass: Update tessellation factors (per-frame, camera-dependent)
         // =========================================================
@@ -1548,6 +1574,21 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     var shadowClipUniforms = makeUniforms()
                     shadowEncoder.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+
+                    // Heightfield surfaces cast shadows too.
+                    if !heightfieldEntries.isEmpty,
+                        let heightfieldShadow = heightfieldCache.shadowPipelineState()
+                    {
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            guard let draw = entry.shadowDraw else { continue }
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP,
+                                modelMatrix: entry.body.transform)
+                            draw.encodeShadow(
+                                encoder: shadowEncoder, pipeline: heightfieldShadow,
+                                uniforms: &shadowUniforms)
+                        }
+                    }
 
                     for body in bodies where body.isVisible {
                         guard let buffers = bodyBufferCache[body.id] else { continue }
@@ -1634,21 +1675,38 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         local: buffers.localBoundingBox, transform: body.transform,
                         tessellated: patches != nil || meshlets != nil)))
         }
+        // Selected and hovered heightfields are masked through their own pipeline.
+        var heightfieldMaskDraws: [HeightfieldMaskDraw] = []
+        for entry in heightfieldEntries
+        where entry.body.renderLayer == .geometry
+            && (selectedIDs.contains(entry.body.id) || hoveredID == entry.body.id)
+        {
+            heightfieldMaskDraws.append(
+                HeightfieldMaskDraw(
+                    code: selectedIDs.contains(entry.body.id)
+                        ? SelectionMaskCode.selected : SelectionMaskCode.hovered,
+                    modelMatrix: entry.body.transform, draw: entry.draw,
+                    worldBounds: entry.body.boundingBox?.transformed(by: entry.body.transform)))
+        }
         let outlineParams = RendererSharedSetup.selectionOutlineParams(
             selected: controller.configuration.selectionOutline,
             hovered: controller.configuration.hoverOutline)
         let outlineScissor = RendererSharedSetup.selectionOutlineScissor(
-            bounds: selectionMaskDraws.map(\.worldBounds), viewProjection: viewProjection,
+            bounds: selectionMaskDraws.map(\.worldBounds) + heightfieldMaskDraws.map(\.worldBounds),
+            viewProjection: viewProjection,
             size: SIMD2(w, h), margin: max(outlineParams.selected.w, outlineParams.hovered.w))
         var outlineMask: MTLTexture?
-        if !selectionMaskDraws.isEmpty, outlineScissor != nil,
+        if !selectionMaskDraws.isEmpty || !heightfieldMaskDraws.isEmpty, outlineScissor != nil,
             let mask = RendererSharedSetup.selectionMaskTexture(
                 device: device, width: w, height: h, reusing: selectionMaskTexture)
         {
             selectionMaskTexture = mask
             RendererSharedSetup.encodeSelectionMaskPass(
                 commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
-                pipelines: selectionMaskPipelines, uniforms: makeUniforms())
+                pipelines: selectionMaskPipelines, uniforms: makeUniforms(),
+                heightfieldDraws: heightfieldMaskDraws,
+                heightfieldPipeline: heightfieldMaskDraws.isEmpty
+                    ? nil : heightfieldCache.selectionMaskPipelineState())
             outlineMask = mask
         }
 
@@ -1875,17 +1933,66 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
+        // 3.25 Heightfield surfaces: one instanced draw per level of detail present. A
+        // translucent field (`opacity < 1`, or `.xray`) joins the sorted transparent pass below.
+        var translucentHeightfields: [HeightfieldRenderCache.Entry] = []
+        let heightfieldPipelines =
+            heightfieldEntries.isEmpty
+            ? nil
+            : heightfieldCache.pipelines(
+                sampleCount: msaaSampleCount, depthFormat: .depth32Float_stencil8)
+        if displayMode.showsSurfaces, let heightfieldPipelines {
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                let body = entry.body
+                if displayMode.surfaceOpacity(
+                    forMaterialOpacity: body.effectiveMaterial.opacity, xrayOpacity: xrayOpacity)
+                    < 1.0
+                {
+                    translucentHeightfields.append(entry)
+                    continue
+                }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                let selState: UInt32 =
+                    selectedIDs.contains(body.id) ? 1 : (hoveredID == body.id ? 2 : 0)
+                var bodyUniforms = BodyUniforms(
+                    body: body, objectIndex: entry.objectIndex, isSelected: selState)
+                mainEncoder.setDepthStencilState(depthState)
+                mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+                if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                    mainEncoder.setFragmentTexture(shadowTex, index: 1)
+                }
+                if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
+                    if let spec = envMgr.prefilteredSpecularMap {
+                        mainEncoder.setFragmentTexture(spec, index: 2)
+                    }
+                    if let diff = envMgr.irradianceMap {
+                        mainEncoder.setFragmentTexture(diff, index: 3)
+                    }
+                    if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
+                }
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+        }
+
         // 3.3 Transparent surface pass (issue #53): draw the deferred translucent
         // bodies back-to-front with depth-test on / write off, so they composite
         // over the opaque set (and over each other in sorted order).
-        if displayMode.showsSurfaces, !transparentDraws.isEmpty {
+        if displayMode.showsSurfaces,
+            !transparentDraws.isEmpty || !translucentHeightfields.isEmpty
+        {
             // Depth along the line of sight in orthographic (#215), each key computed once, as
-            // offscreen (#217).
+            // offscreen (#217). Translucent heightfields sort with the meshes.
+            let surfaces: [TransparentSurface<BodyBuffers>] =
+                transparentDraws.map {
+                    .mesh(body: $0.body, buffers: $0.buffers, objectIndex: $0.objectIndex)
+                } + translucentHeightfields.map { .heightfield($0) }
             let sorted = RendererSharedSetup.sortedBackToFront(
-                transparentDraws, cameraState: cameraState
+                surfaces, cameraState: cameraState
             ) {
-                RendererSharedSetup.worldCenter(
-                    of: $0.buffers.localBoundingBox, transform: $0.body.transform)
+                $0.worldCenter(meshBounds: { _, buffers in buffers.localBoundingBox })
             }
 
             mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
@@ -1902,7 +2009,29 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
                 if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
             }
-            for d in sorted {
+            for surface in sorted {
+                if case .heightfield(let entry) = surface {
+                    guard let heightfieldPipelines else { continue }
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = entry.body.transform
+                    let selState: UInt32 =
+                        selectedIDs.contains(entry.body.id)
+                        ? 1 : (hoveredID == entry.body.id ? 2 : 0)
+                    var bodyUniforms = BodyUniforms(
+                        body: entry.body, objectIndex: entry.objectIndex, isSelected: selState)
+                    bodyUniforms.color.w = displayMode.surfaceOpacity(
+                        forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
+                    mainEncoder.setCullMode(.none)
+                    mainEncoder.setDepthStencilState(transparentSurfaceDepthState)
+                    entry.draw.encodeShaded(
+                        encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                        uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                    continue
+                }
+                guard case .mesh(let meshBody, let meshBuffers, let meshIndex) = surface else {
+                    continue
+                }
+                let d = (body: meshBody, buffers: meshBuffers, objectIndex: meshIndex)
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = d.body.transform
                 let selState: UInt32 =
@@ -2142,6 +2271,25 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 indexBuffer: ib, indexBufferOffset: 0)
         }
 
+        // Selected and hovered heightfields mark the stencil too.
+        if !heightfieldMaskDraws.isEmpty,
+            let stencilPipeline = heightfieldCache.stencilMarkPipelineState(
+                sampleCount: msaaSampleCount, depthFormat: .depth32Float_stencil8)
+        {
+            for entry in heightfieldEntries
+            where entry.body.renderLayer == .geometry
+                && (selectedIDs.contains(entry.body.id) || hoveredID == entry.body.id)
+            {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                mainEncoder.setDepthStencilState(selectionMaskState)
+                mainEncoder.setStencilReferenceValue(1)
+                outlinedBodyIDs.insert(entry.body.id)
+                entry.draw.encodeDepth(
+                    encoder: mainEncoder, pipeline: stencilPipeline, uniforms: &uniforms)
+            }
+        }
+
         // 4. Selection outline pass (stencil test: draw only where stencil != 1): the selection
         // mask dilated in screen space by each style's width, so every outlined body is ringed
         // whatever its normals (#209). Only geometry-layer bodies are in the mask and the
@@ -2311,6 +2459,33 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             }
         }
 
+        // 5.5 Overlay heightfields: like other widgets, drawn over everything with always-pass
+        // depth, in every display mode, without shadows or an outline.
+        let overlayHeightfields = heightfieldEntries.filter { $0.body.renderLayer == .overlay }
+        if !overlayHeightfields.isEmpty, let heightfieldPipelines {
+            mainEncoder.setDepthStencilState(overlayDepthState)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            if let envMgr = environmentMapManager, envMgr.hasEnvironmentMap {
+                if let spec = envMgr.prefilteredSpecularMap {
+                    mainEncoder.setFragmentTexture(spec, index: 2)
+                }
+                if let diff = envMgr.irradianceMap {
+                    mainEncoder.setFragmentTexture(diff, index: 3)
+                }
+                if let brdf = envMgr.brdfLUT { mainEncoder.setFragmentTexture(brdf, index: 4) }
+            }
+            for entry in overlayHeightfields {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                uniforms.shadowParams.z = 0
+                var bodyUniforms = BodyUniforms(
+                    body: entry.body, objectIndex: entry.objectIndex, isSelected: 0)
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+        }
+
         mainEncoder.endEncoding()
 
         // =========================================================
@@ -2335,7 +2510,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         PickPassBody(
                             body: $0.body, objectIndex: $0.objectIndex,
                             buffers: PickPassBuffers($0.buffers))
-                    },
+                    }
+                        + heightfieldEntries.map {
+                            PickPassBody(
+                                body: $0.body, objectIndex: $0.objectIndex,
+                                buffers: PickPassBuffers(), heightfield: $0.draw)
+                        },
                     frame: PickPassFrame(
                         pipelines: pickPipelines, depthState: depthState,
                         overlayDepthState: overlayDepthState, displayMode: displayMode,
@@ -2360,7 +2540,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // Reset accumulation when the scene changes (camera move or animation).
             let cameraChanged = (lastCameraState == nil || lastCameraState! != cameraState)
             let isAnimating = controller.isAnimating
-            if cameraChanged || isAnimating {
+            // An edited heightfield changes the picture under a still camera, so its history is
+            // stale like an animated body's.
+            let heightfieldChanged = heightfieldEntries.contains { $0.changed }
+            if cameraChanged || isAnimating || heightfieldChanged {
                 taaFrameIndex = 0
             }
 
@@ -2440,6 +2623,18 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             if let depthEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthOnlyPass)
             {
                 depthEncoder.setDepthStencilState(depthState)
+
+                // Heightfield surfaces write depth too.
+                if !heightfieldEntries.isEmpty,
+                    let heightfieldDepth = heightfieldCache.depthPipelineState()
+                {
+                    for entry in heightfieldEntries where Self.writesSSAODepth(entry.body) {
+                        var uniforms = makeUniforms()
+                        uniforms.modelMatrix = entry.body.transform
+                        entry.draw.encodeDepth(
+                            encoder: depthEncoder, pipeline: heightfieldDepth, uniforms: &uniforms)
+                    }
+                }
 
                 objectIndex = 0
                 for body in bodies where body.isVisible {
@@ -2647,9 +2842,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// A body's local bounds: the buffer cache's when current for its generation, else read from
     /// the body, so the frame that first shows a body is fitted too (#157).
+    ///
+    /// The buffer cache's box was scanned from the value-type arrays, which cannot change without
+    /// a new `generation`, so it is only trusted for a body without in-place content (whose bounds
+    /// follow `boundsKey` instead, #237); those are read from the body, which is O(1) for them.
     private func cachedLocalBounds(of body: ViewportBody) -> BoundingBox? {
         let cached =
-            bodyGeneration[body.id] == body.generation
+            body.inPlaceContent == nil && bodyGeneration[body.id] == body.generation
             ? bodyBufferCache[body.id]?.localBoundingBox : nil
         return cached ?? body.boundingBox
     }
@@ -2927,6 +3126,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     private func ensureBuffers(for body: ViewportBody) {
         let currentGen = body.generation
+        // A body drawn from in-place content (a heightfield) has no mesh buffers; its arrays are
+        // ignored.
+        if body.inPlaceContent != nil {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
+            return
+        }
         if let cachedGen = bodyGeneration[body.id], cachedGen == currentGen {
             // Geometry still valid. `triangleStyles` can be reassigned on the same body without a
             // new generation, so re-upload just the style buffer when it changed.
@@ -3230,6 +3436,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
 
         // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
         // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
@@ -3243,7 +3450,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // One RG32Uint texel: R then G in memory, so a UInt64 load is `G << 32 | R`.
             let pickValue = readbackBuffer.contents().load(as: UInt64.self)
             pool.release(readbackBuffer)
-            let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+            let result = PickResult(
+                pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                heightfields: heightfields)
             Task { @MainActor in
                 completion(result)
             }
@@ -3299,6 +3508,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
         let centerX = pixel.x - startX
         let centerY = pixel.y - startY
 
@@ -3309,7 +3519,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 height: actualHeight)
             let bestResult = Self.bestNeighborhoodPickResult(
                 pickValues, width: actualWidth, center: SIMD2(centerX, centerY),
-                indexMap: indexMap, layerMap: layerMap)
+                indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3396,6 +3606,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
 
         // `@Sendable` for the same reason as in `performPick(at:)` above: this handler runs on
         // Metal's completion queue, so it must not inherit `@MainActor` isolation. See issue #110.
@@ -3406,7 +3617,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 from: readbackBuffer.contents(), bytesPerRow: bytesPerRow, width: w, height: h)
             pool.release(readbackBuffer)
             let results = Self.decodeRegionPickResults(
-                pickValues, indexMap: indexMap, layerMap: layerMap)
+                pickValues, indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
             Task { @MainActor in
                 completion(results)
             }
@@ -3477,7 +3688,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         width: Int,
         center: SIMD2<Int>,
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        heightfields: [String: Heightfield] = [:]
     ) -> PickResult? {
         guard width > 0 else { return nil }
         var bestResult: PickResult? = nil
@@ -3487,7 +3699,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         for (index, pickValue) in pickValues.enumerated() {
             guard
                 let result = PickResult(
-                    pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+                    pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                    heightfields: heightfields)
             else {
                 continue
             }
@@ -3521,13 +3734,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     nonisolated static func decodeRegionPickResults(
         _ pickValues: [UInt64],
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        heightfields: [String: Heightfield] = [:]
     ) -> [PickResult] {
         var seen = Set<UInt64>()
         var results: [PickResult] = []
         for pickValue in pickValues {
             guard PickEncoding.isHit(pickValue), seen.insert(pickValue).inserted else { continue }
-            if let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+            if let result = PickResult(
+                pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                heightfields: heightfields)
             {
                 results.append(result)
             }

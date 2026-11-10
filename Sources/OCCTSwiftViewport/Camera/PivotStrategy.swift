@@ -48,12 +48,15 @@ public final class PivotStrategy {
 
     /// Cached body-local bounding boxes keyed by body ID.
     ///
-    /// Local, not world: the cache is keyed on `generation`, which does not change when only a
+    /// Local, not world: the cache is keyed on `boundsKey`, which does not change when only a
     /// body's `transform` does, so the transform is applied at use instead.
     private var bbCache: [String: BoundingBox] = [:]
 
-    /// Generation counter per body for cache invalidation.
-    private var generationCache: [String: UInt64] = [:]
+    /// The `ViewportBody.boundsKey` each cached box was computed at, for cache invalidation.
+    ///
+    /// Not `generation`: a body whose content is edited in place keeps its generation while its
+    /// bounds change (issue #237).
+    private var boundsKeyCache: [String: BoundsKey] = [:]
 
     public init() {}
 
@@ -133,7 +136,7 @@ public final class PivotStrategy {
     /// Casts `ray` against `bodies` using this strategy's bounding-box cache.
     ///
     /// Same defaults as ``SceneRaycast/cast(ray:bodies:clipPlanes:includeWidgets:includeNonPickable:)``,
-    /// but a body's box is only recomputed when its `generation` changes, so focus-on-point does
+    /// but a body's box is only recomputed when its `boundsKey` changes, so focus-on-point does
     /// not rescan every body's geometry on each double-tap.
     func raycast(ray: Ray, bodies: [ViewportBody], clipPlanes: [ClipPlane]) -> RaycastHit? {
         updateCache(bodies: bodies)
@@ -144,7 +147,7 @@ public final class PivotStrategy {
     /// Invalidates the bounding box cache.
     public func invalidateCache() {
         bbCache.removeAll()
-        generationCache.removeAll()
+        boundsKeyCache.removeAll()
     }
 
     /// Exposes the current bounding box cache (for SceneRaycast).
@@ -152,7 +155,7 @@ public final class PivotStrategy {
         bbCache
     }
 
-    /// World-space bounds of the visible geometry-layer `bodies`, from the per-generation cache,
+    /// World-space bounds of the visible geometry-layer `bodies`, from the per-bounds-key cache,
     /// so calling it on every camera change does not rescan their geometry.
     func sceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
         updateCache(bodies: bodies)
@@ -170,11 +173,11 @@ public final class PivotStrategy {
             // Hidden and overlay bodies are used by neither the scene bounds nor the raycast, so
             // they are not scanned (issue #180). A stale entry left from when one was used is
             // harmless: it is never read, and a body that becomes visible again is refreshed by
-            // its generation check here.
+            // its bounds-key check here.
             guard body.isVisible && body.renderLayer == .geometry else { continue }
 
-            // Skip if generation hasn't changed
-            if generationCache[body.id] == body.generation { continue }
+            // Skip if the bounds key hasn't changed
+            if boundsKeyCache[body.id] == body.boundsKey { continue }
 
             // Recompute BB
             if let bb = body.boundingBox {
@@ -182,13 +185,13 @@ public final class PivotStrategy {
             } else {
                 bbCache.removeValue(forKey: body.id)
             }
-            generationCache[body.id] = body.generation
+            boundsKeyCache[body.id] = body.boundsKey
         }
 
         // Prune stale entries
         for key in bbCache.keys where !activeIDs.contains(key) {
             bbCache.removeValue(forKey: key)
-            generationCache.removeValue(forKey: key)
+            boundsKeyCache.removeValue(forKey: key)
         }
     }
 

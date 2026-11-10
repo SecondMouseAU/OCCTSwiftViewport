@@ -93,6 +93,21 @@ public enum SceneRaycast {
             // Early-out: no triangle in this body can be closer
             if aabbEntry > bestDistance { break }
 
+            // A heightfield walks its grid instead of testing triangles.
+            if let field = body.heightfield {
+                if let hit = field.raycast(
+                    origin: localRay.origin, direction: localRay.direction),
+                    hit.distance * tScale < bestDistance
+                {
+                    let t = hit.distance * tScale
+                    let point = ray.origin + ray.direction * t
+                    if !isClipped(point, by: planes) {
+                        bestDistance = t
+                        bestHit = RaycastHit(bodyID: body.id, point: point, distance: t)
+                    }
+                }
+                continue
+            }
             guard let positions = TrianglePositions(body) else { continue }
             let indices = body.indices
             // Whole triangles only: a trailing partial triple would read past the end.

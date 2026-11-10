@@ -219,6 +219,10 @@ public struct OffscreenRenderOptions: Sendable {
     /// Surface tint for the hovered body, matching `ViewportConfiguration.hoverTint`.
     public var hoverTint: SelectionTintStyle
 
+    /// The widest a heightfield mesh cell may appear, in pixels, matching
+    /// `ViewportConfiguration.heightfieldMeshCellPixels`.
+    public var heightfieldMeshCellPixels: Float
+
     /// Whether interleaved bodies get crease-aware normal smoothing, matching
     /// `ViewportConfiguration.autoSmoothNormals`.
     public var autoSmoothNormals: Bool
@@ -354,6 +358,8 @@ public struct OffscreenRenderOptions: Sendable {
         selectionTint: SelectionTintStyle =
             ViewportController.defaultConfiguration.selectionTint,
         hoverTint: SelectionTintStyle = ViewportController.defaultConfiguration.hoverTint,
+        heightfieldMeshCellPixels: Float =
+            ViewportController.defaultConfiguration.heightfieldMeshCellPixels,
         autoSmoothNormals: Bool = ViewportController.defaultConfiguration.autoSmoothNormals,
         normalSmoothingCreaseAngle: Float =
             ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
@@ -400,6 +406,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.hoverOutline = hoverOutline
         self.selectionTint = selectionTint
         self.hoverTint = hoverTint
+        self.heightfieldMeshCellPixels = heightfieldMeshCellPixels
         self.autoSmoothNormals = autoSmoothNormals
         self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle
         self.enableSilhouettes = enableSilhouettes
@@ -454,6 +461,7 @@ public struct OffscreenRenderOptions: Sendable {
             hoverOutline: config.hoverOutline,
             selectionTint: config.selectionTint,
             hoverTint: config.hoverTint,
+            heightfieldMeshCellPixels: config.heightfieldMeshCellPixels,
             autoSmoothNormals: config.autoSmoothNormals,
             normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
             enableSilhouettes: config.enableSilhouettes,
@@ -672,6 +680,8 @@ public final class OffscreenRenderer: Sendable {
 
     // Body buffer cache
     private var bodyBufferCache: [String: BodyBuffersOffscreen] = [:]
+    /// A geometry-only cache key, deliberately `generation` and not `boundsKey`: the buffers are
+    /// built from the body's value-type arrays, which cannot change in place (#237).
     private var bodyGeneration: [String: UInt64] = [:]
 
     // GPU pick pass, built on the first pick so renders that never pick pay nothing.
@@ -680,7 +690,22 @@ public final class OffscreenRenderer: Sendable {
     private var basePickPipelines: PickPipelines?
     private var refinedPickPipelines: [PickPipelineKey: RefinedPickPipelines] = [:]
     /// Point-sprite pick vertices by body ID, rebuilt when the body's generation changes.
+    ///
+    /// Geometry-only (built from `vertices`), so `generation` is the right key, not `boundsKey`.
     private var pickPointBuffers: [String: (generation: UInt64, buffer: MTLBuffer)] = [:]
+
+    // Heightfield bodies: GPU state per body id, built on first use.
+    private lazy var heightfieldCache = HeightfieldRenderCache(device: device, library: library)
+    /// Draws every heightfield tile at this level (tests).
+    var heightfieldForcedLevel: Int? {
+        get { heightfieldCache.forcedLevel }
+        set { heightfieldCache.forcedLevel = newValue }
+    }
+
+    /// CPU seconds the last `render` spent encoding, and GPU seconds its command buffer ran
+    /// (`gpuEndTime - gpuStartTime`); for benchmarks.
+    private(set) var lastEncodeSeconds: Double = 0
+    private(set) var lastGPUSeconds: Double = 0
 
     // MARK: - Init
 
@@ -776,6 +801,7 @@ public final class OffscreenRenderer: Sendable {
     public func render(bodies: [ViewportBody], options: OffscreenRenderOptions = .init())
         -> CGImage?
     {
+        let renderStart = DispatchTime.now().uptimeNanoseconds
         let w = options.width
         let h = options.height
         let sampleCount = Self.supportedSampleCount(options.msaaSampleCount, device: device)
@@ -853,6 +879,21 @@ public final class OffscreenRenderer: Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
+        // Heightfields: upload the tiles edited since the last draw, then choose each body's
+        // levels of detail for this camera.
+        let heightfieldEntries = heightfieldCache.prepare(
+            bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
+            projection: projMatrix, viewportHeight: Float(h),
+            meshCellPixels: options.heightfieldMeshCellPixels,
+            clipPlanes: RendererSharedSetup.activeClipPlanes(
+                setup.clipPlanes, count: setup.clipPlaneCount),
+            shadow: shadowEnabled
+                ? HeightfieldShadowView(
+                    lightViewProjection: lightVP, lightDirection: lighting.keyLight.direction,
+                    mapSize: lighting.shadowMapSize, reach: modelBounds?.diagonalLength ?? 0,
+                    sceneBounds: modelBounds)
+                : nil)
+
         // Tessellation factors for this camera and output size (#165), which the mesh stage
         // subdivides by too (#175).
         encodeTessellationFactors(
@@ -884,6 +925,21 @@ public final class OffscreenRenderer: Sendable {
                     var shadowClipUniforms = makeUniforms()
                     enc.setFragmentBytes(
                         &shadowClipUniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+
+                    // Heightfield surfaces cast shadows too.
+                    if !heightfieldEntries.isEmpty,
+                        let heightfieldShadow = heightfieldCache.shadowPipelineState()
+                    {
+                        for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                            guard let draw = entry.shadowDraw else { continue }
+                            var shadowUniforms = ShadowUniformsSwift(
+                                lightViewProjectionMatrix: lightVP,
+                                modelMatrix: entry.body.transform)
+                            draw.encodeShadow(
+                                encoder: enc, pipeline: heightfieldShadow,
+                                uniforms: &shadowUniforms)
+                        }
+                    }
 
                     // Overlay bodies are UI affordances and cast no shadows, as in the live pass.
                     for body in bodies where body.isVisible && body.renderLayer == .geometry {
@@ -967,11 +1023,22 @@ public final class OffscreenRenderer: Sendable {
         }
         let outlineParams = RendererSharedSetup.selectionOutlineParams(
             selected: options.selectionOutline, hovered: options.hoverOutline)
+        // Selected and hovered heightfields are masked through their own pipeline.
+        var heightfieldMaskDraws: [HeightfieldMaskDraw] = []
+        for entry in heightfieldEntries
+        where entry.body.renderLayer == .geometry && selectionState(of: entry.body) > 0 {
+            heightfieldMaskDraws.append(
+                HeightfieldMaskDraw(
+                    code: selectionState(of: entry.body), modelMatrix: entry.body.transform,
+                    draw: entry.draw,
+                    worldBounds: entry.body.boundingBox?.transformed(by: entry.body.transform)))
+        }
         let outlineScissor = RendererSharedSetup.selectionOutlineScissor(
-            bounds: selectionMaskDraws.map(\.worldBounds), viewProjection: viewProjection,
+            bounds: selectionMaskDraws.map(\.worldBounds) + heightfieldMaskDraws.map(\.worldBounds),
+            viewProjection: viewProjection,
             size: SIMD2(w, h), margin: max(outlineParams.selected.w, outlineParams.hovered.w))
         var outlineMask: MTLTexture?
-        if !selectionMaskDraws.isEmpty, outlineScissor != nil,
+        if !selectionMaskDraws.isEmpty || !heightfieldMaskDraws.isEmpty, outlineScissor != nil,
             var maskPipelines = selectionMaskPipelines,
             let mask = RendererSharedSetup.selectionMaskTexture(
                 device: device, width: w, height: h, reusing: selectionMaskTexture)
@@ -981,7 +1048,10 @@ public final class OffscreenRenderer: Sendable {
             maskPipelines.mesh = refined?.meshSelectionMask
             RendererSharedSetup.encodeSelectionMaskPass(
                 commandBuffer: commandBuffer, mask: mask, draws: selectionMaskDraws,
-                pipelines: maskPipelines, uniforms: makeUniforms())
+                pipelines: maskPipelines, uniforms: makeUniforms(),
+                heightfieldDraws: heightfieldMaskDraws,
+                heightfieldPipeline: heightfieldMaskDraws.isEmpty
+                    ? nil : heightfieldCache.selectionMaskPipelineState())
             outlineMask = mask
         }
 
@@ -1330,22 +1400,77 @@ public final class OffscreenRenderer: Sendable {
                 body, buffers, hasMesh: hasMesh, uniforms: &uniforms, bodyUniforms: bodyUniforms)
         }
 
+        // Heightfield surfaces: one instanced draw per level of detail present. A translucent
+        // field (`opacity < 1`, or `.xray`) joins the sorted transparent pass below.
+        var translucentHeightfields: [HeightfieldRenderCache.Entry] = []
+        let heightfieldPipelines =
+            heightfieldEntries.isEmpty
+            ? nil
+            : heightfieldCache.pipelines(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        if displayMode.showsSurfaces, let heightfieldPipelines {
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                let body = entry.body
+                if displayMode.surfaceOpacity(
+                    forMaterialOpacity: body.effectiveMaterial.opacity, xrayOpacity: xrayOpacity)
+                    < 1.0
+                {
+                    translucentHeightfields.append(entry)
+                    continue
+                }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                var bodyUniforms = BodyUniforms(
+                    body: body, objectIndex: 0, isSelected: selectionState(of: body))
+                mainEncoder.setDepthStencilState(depthState)
+                mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+                if shadowEnabled, let shadowTex = shadowMapManager.texture {
+                    mainEncoder.setFragmentTexture(shadowTex, index: 1)
+                }
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+        }
+
         // Transparent surface pass (issue #53): deferred translucent bodies,
         // back-to-front, depth test on / write off, composited over the opaque set.
-        if displayMode.showsSurfaces, !transparentBodies.isEmpty {
+        if displayMode.showsSurfaces, !transparentBodies.isEmpty || !translucentHeightfields.isEmpty
+        {
             // Depth along the line of sight in orthographic, as live (#215); an
             // `explicitOrthoBounds` projection is orthographic whatever the camera says. Each
-            // key is computed once: `boundingBox` scans the body's vertices.
+            // key is computed once: `boundingBox` scans the body's vertices. Translucent
+            // heightfields sort with the meshes.
             var sortCamera = cameraState
             sortCamera.isOrthographic = Self.isOrthographic(options)
+            let surfaces: [TransparentSurface<BodyBuffersOffscreen>] =
+                transparentBodies.map { .mesh(body: $0.body, buffers: $0.buffers, objectIndex: 0) }
+                + translucentHeightfields.map { .heightfield($0) }
             let sorted = RendererSharedSetup.sortedBackToFront(
-                transparentBodies, cameraState: sortCamera
+                surfaces, cameraState: sortCamera
             ) {
-                RendererSharedSetup.worldCenter(
-                    of: $0.body.boundingBox, transform: $0.body.transform)
+                $0.worldCenter(meshBounds: { body, _ in body.boundingBox })
             }
 
-            for t in sorted {
+            for surface in sorted {
+                if case .heightfield(let entry) = surface {
+                    guard let heightfieldPipelines else { continue }
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = entry.body.transform
+                    var bodyUniforms = BodyUniforms(
+                        body: entry.body, objectIndex: 0, isSelected: selectionState(of: entry.body)
+                    )
+                    bodyUniforms.color.w = displayMode.surfaceOpacity(
+                        forMaterialOpacity: bodyUniforms.color.w, xrayOpacity: xrayOpacity)
+                    mainEncoder.setCullMode(.none)
+                    mainEncoder.setDepthStencilState(transparentDepthState)
+                    entry.draw.encodeShaded(
+                        encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                        uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+                    continue
+                }
+                guard case .mesh(let meshBody, let meshBuffers, _) = surface else { continue }
+                let t = (body: meshBody, buffers: meshBuffers)
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = t.body.transform
                 let selState = selectionState(of: t.body)
@@ -1384,7 +1509,8 @@ public final class OffscreenRenderer: Sendable {
                 quadCount: Int
             )] = []
         let arcViewport = SIMD2<Float>(Float(w), Float(h))
-        for body in bodies where body.isVisible && !body.arcs.isEmpty {
+        for body in bodies where body.isVisible && !body.arcs.isEmpty && body.inPlaceContent == nil
+        {
             let hasMesh = (bodyBufferCache[body.id]?.indexCount ?? 0) > 0
             guard displayMode.showsEdges || !hasMesh else { continue }
             let mvp = viewProjection * body.transform
@@ -1511,6 +1637,21 @@ public final class OffscreenRenderer: Sendable {
                 indexBuffer: ib, indexBufferOffset: 0)
         }
 
+        // Selected and hovered heightfields mark the stencil too.
+        if !heightfieldMaskDraws.isEmpty,
+            let stencilPipeline = heightfieldCache.stencilMarkPipelineState(
+                sampleCount: sampleCount, depthFormat: .depth32Float_stencil8)
+        {
+            for entry in heightfieldEntries
+            where entry.body.renderLayer == .geometry && selectionState(of: entry.body) > 0 {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                outlinedBodyIDs.insert(entry.body.id)
+                entry.draw.encodeDepth(
+                    encoder: mainEncoder, pipeline: stencilPipeline, uniforms: &uniforms)
+            }
+        }
+
         // Selection outline pass: the selection mask dilated in screen space by each style's
         // width, drawn only where the stencil is unmarked, which leaves a ring around each
         // selected or hovered body (#209).
@@ -1559,6 +1700,23 @@ public final class OffscreenRenderer: Sendable {
             }
         }
 
+        // Overlay heightfields: like other widgets, drawn over everything with always-pass depth,
+        // in every display mode, without shadows or an outline.
+        let overlayHeightfields = heightfieldEntries.filter { $0.body.renderLayer == .overlay }
+        if !overlayHeightfields.isEmpty, let heightfieldPipelines {
+            mainEncoder.setDepthStencilState(overlayDepthState)
+            mainEncoder.setFragmentTexture(matcapTexture, index: 0)
+            for entry in overlayHeightfields {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                uniforms.shadowParams.z = 0
+                var bodyUniforms = BodyUniforms(body: entry.body, objectIndex: 0, isSelected: 0)
+                entry.draw.encodeShaded(
+                    encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
+                    uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+        }
+
         mainEncoder.endEncoding()
 
         if compositeTargets == nil {
@@ -1579,12 +1737,15 @@ public final class OffscreenRenderer: Sendable {
                 pixelsPerUnit: projMatrix.columns.1.y * Float(h) * 0.5,
                 orthographic: projMatrix.columns.3.w > 0.5,
                 refined: refined,
+                heightfieldEntries: heightfieldEntries,
                 makeUniforms: makeUniforms
             )
         }
 
+        lastEncodeSeconds = Double(DispatchTime.now().uptimeNanoseconds - renderStart) * 1e-9
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        lastGPUSeconds = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
 
         // Readback: blit resolve texture to shared buffer
         let bytesPerRow = w * 4
@@ -1708,6 +1869,14 @@ public final class OffscreenRenderer: Sendable {
             commandBuffer: commandBuffer, bodies: bodies, options: options,
             refinement: refinement, viewProjection: setup.viewProjection)
 
+        // Heightfields: bring their GPU state up to date and plan their tiles for this camera.
+        let heightfieldEntries = Dictionary(
+            heightfieldCache.prepare(
+                bodies: bodies, commandBuffer: commandBuffer, view: setup.viewMatrix,
+                projection: setup.projMatrix, viewportHeight: Float(h),
+                meshCellPixels: options.heightfieldMeshCellPixels
+            ).map { ($0.body.id, $0) }, uniquingKeysWith: { $1 })
+
         // Every visible body in draw order, with the index its texels carry.
         var indexMap: [Int: String] = [:]
         var layerMap: [String: PickLayer] = [:]
@@ -1719,7 +1888,9 @@ public final class OffscreenRenderer: Sendable {
             layerMap[body.id] = body.pickLayer
             let buffers = pickPassBuffers(for: body)
             pickBodies.append(
-                PickPassBody(body: body, objectIndex: objectIndex, buffers: buffers))
+                PickPassBody(
+                    body: body, objectIndex: objectIndex, buffers: buffers,
+                    heightfield: heightfieldEntries[body.id]?.draw))
             arcBodies.append((body, objectIndex, buffers.indexCount > 0))
         }
 
@@ -1775,7 +1946,8 @@ public final class OffscreenRenderer: Sendable {
             selectionFilter: options.selectionFilter,
             texels: PickEncoding.texels(
                 from: readback.contents(), bytesPerRow: bytesPerRow, width: w, height: h),
-            indexMap: indexMap, layerMap: layerMap)
+            indexMap: indexMap, layerMap: layerMap,
+            heightfields: heightfieldEntries.mapValues(\.state.field))
     }
 
     /// What is under `pixel` of the frame `render(bodies:options:)` draws for `options`.
@@ -1850,6 +2022,7 @@ public final class OffscreenRenderer: Sendable {
         pixelsPerUnit: Float,
         orthographic: Bool,
         refined: RefinedPipelines?,
+        heightfieldEntries: [HeightfieldRenderCache.Entry],
         makeUniforms: () -> Uniforms
     ) {
         guard let compositePipeline = ssaoCompositePipeline,
@@ -1866,6 +2039,17 @@ public final class OffscreenRenderer: Sendable {
         depthPass.depthAttachment.clearDepth = 1.0
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: depthPass) {
             encoder.setDepthStencilState(depthState)
+            // Heightfield surfaces write depth too.
+            if !heightfieldEntries.isEmpty,
+                let heightfieldDepth = heightfieldCache.depthPipelineState()
+            {
+                for entry in heightfieldEntries where ViewportRenderer.writesSSAODepth(entry.body) {
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = entry.body.transform
+                    entry.draw.encodeDepth(
+                        encoder: encoder, pipeline: heightfieldDepth, uniforms: &uniforms)
+                }
+            }
             for body in bodies where body.isVisible && ViewportRenderer.writesSSAODepth(body) {
                 guard let buffers = bodyBufferCache[body.id],
                     let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer,
@@ -2257,6 +2441,17 @@ public final class OffscreenRenderer: Sendable {
         return false
     }
 
+    /// The GPU state of the heightfield body `id`; exposed for tests.
+    func heightfieldState(forBodyID id: String) -> HeightfieldGPU? {
+        heightfieldCache.states[id]
+    }
+
+    /// How many heightfields the GPU path has failed to build; exposed for tests.
+    var heightfieldFailureCount: Int { heightfieldCache.failureCount }
+
+    /// The command queue, for tests that read GPU resources back.
+    var testCommandQueue: MTLCommandQueue { commandQueue }
+
     /// Drops cached buffers for bodies no longer passed to `render`, matching the live renderer.
     private func pruneBufferCache(keeping bodies: [ViewportBody]) {
         let activeIDs = Set(bodies.map(\.id))
@@ -2273,6 +2468,13 @@ public final class OffscreenRenderer: Sendable {
         for body: ViewportBody, options: OffscreenRenderOptions, refinement: SurfaceRefinement
     ) {
         let currentGen = body.generation
+        // A body drawn from in-place content (a heightfield) has no mesh buffers; its arrays are
+        // ignored.
+        if body.inPlaceContent != nil {
+            bodyBufferCache.removeValue(forKey: body.id)
+            bodyGeneration[body.id] = currentGen
+            return
+        }
         // Crease-smoothed normals (issue #48) depend on the options as well as the body, so the
         // cached mesh is reused only when it was built with the same smoothing.
         let smoothingApplies =

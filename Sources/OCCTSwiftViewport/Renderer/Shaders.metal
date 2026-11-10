@@ -388,15 +388,17 @@ inline float sampleShadow(float4 lightSpacePos, depth2d<float> shadowMap,
     return shadow / 16.0;
 }
 
-fragment ShadedFragmentOut shaded_fragment(
-    ShadedVertexOut in [[stage_in]],
-    constant Uniforms &uniforms [[buffer(1)]],
-    constant BodyUniforms &bodyUniforms [[buffer(2)]],
-    texture2d<float> matcapTexture [[texture(0)]],
-    depth2d<float> shadowMap [[texture(1)]],
-    texturecube<float> iblSpecular [[texture(2)]],
-    texturecube<float> iblDiffuse [[texture(3)]],
-    texture2d<float> brdfLUT [[texture(4)]]
+// The shaded surface body, shared by `shaded_fragment` and the heightfield fragment (which builds
+// its own normal and albedo per pixel and then shades them exactly as a mesh is shaded).
+inline ShadedFragmentOut shadedFragmentBody(
+    ShadedVertexOut in,
+    constant Uniforms &uniforms,
+    constant BodyUniforms &bodyUniforms,
+    texture2d<float> matcapTexture,
+    depth2d<float> shadowMap,
+    texturecube<float> iblSpecular,
+    texturecube<float> iblDiffuse,
+    texture2d<float> brdfLUT
 ) {
     // Clip plane discard
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
@@ -680,6 +682,20 @@ fragment ShadedFragmentOut shaded_fragment(
     ShadedFragmentOut out;
     out.color = float4(litColor, alpha);
     return out;
+}
+
+fragment ShadedFragmentOut shaded_fragment(
+    ShadedVertexOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    texture2d<float> matcapTexture [[texture(0)]],
+    depth2d<float> shadowMap [[texture(1)]],
+    texturecube<float> iblSpecular [[texture(2)]],
+    texturecube<float> iblDiffuse [[texture(3)]],
+    texture2d<float> brdfLUT [[texture(4)]]
+) {
+    return shadedFragmentBody(
+        in, uniforms, bodyUniforms, matcapTexture, shadowMap, iblSpecular, iblDiffuse, brdfLUT);
 }
 
 // MARK: - Pick-Only Pipeline (1x, no MSAA)
@@ -3237,4 +3253,319 @@ fragment float4 skybox_fragment(
     // HDR radiance is linear: tone map with the scene's exposure / white point (params.w),
     // then encode, the same as lit surfaces.
     return float4(linearToSrgb(acesToneMap(color * u.params.y, u.params.w, 1.0)), 1.0);
+}
+
+// MARK: - Heightfield (issue #139 spike)
+
+// A heightfield is a grid of cell heights drawn as 64 x 64-cell tiles, displaced in the vertex
+// stage. The CPU picks a level of detail per tile (stride 1 << level cells) and issues one
+// instanced indexed draw per level; every pass's vertex function calls `hfDisplace`, so the
+// positions are identical in the shaded, shadow, depth and pick passes.
+//
+// The height texture is mipmapped. Mip level L holds the pyramid for stride 1 << L: texel k stands
+// for fine cell k << L (clamped to the last cell) and holds the MINIMUM height of the cells it
+// covers, so pits, slots and steps survive coarse levels (`heightfield_build_pyramid`). The
+// texture is padded so every level has an exact size.
+//
+// Cracks: along an edge shared with a coarser tile, the finer tile snaps its edge vertices onto
+// the coarser tile's edge (linear interpolation between the coarser tile's vertices). Both tiles
+// read the shared edge at the coarser tile's level, and a tile corner at the coarsest level of
+// the four tiles meeting there, so they agree to the bit. `HeightfieldTile.levels` packs those.
+
+#define HF_TILE_CELLS 64u
+
+struct HeightfieldTile {
+    uint2 origin;   // the tile's first vertex, in fine cells (a multiple of HF_TILE_CELLS)
+    uint  levels;   // levels shared with neighbours, 3 bits each. Bits 0-11: edges -X +X -Y +Y.
+                    // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y
+    uint  _pad;
+};
+
+// Swift mirror: HeightfieldDrawParams in HeightfieldRenderer.swift. Stride 48.
+struct HeightfieldParams {
+    uint2  size;       // field size in cells
+    uint   level;      // level of detail of this draw
+    uint   quads;      // quads per tile side at this level (HF_TILE_CELLS >> level)
+    float2 cellSize;
+    float2 origin;     // body-local XY of the corner of cell (0, 0)
+    uint   rampMode;   // vertex colour mode word for ramp-coloured cells (2, plus 4 if linear)
+    uint   _pad0;
+    uint   _pad1;
+    uint   _pad2;
+};
+
+struct HeightfieldVertex {
+    float3 position;   // body-local
+    float2 gridPos;    // the cell the vertex stands for, in fine cells
+};
+
+inline uint2 hfMaxTexel(uint2 size, uint level) {
+    uint s = 1u << level;
+    return (size - 1u + (s - 1u)) >> level;
+}
+
+// The pyramid height at the fine position `fine`, read at `level`.
+inline float hfReadAt(texture2d<float> heights, constant HeightfieldParams &p, uint level, uint2 fine) {
+    uint2 k = min(fine >> level, hfMaxTexel(p.size, level));
+    return heights.read(k, level).r;
+}
+
+inline uint hfLevelBits(uint packed, uint slot) {
+    return (packed >> (3u * slot)) & 7u;
+}
+
+// The height of a vertex on the tile's boundary as the neighbours see it: a corner at its corner
+// level, any other edge vertex at the shared edge's level.
+inline float hfBoundaryHeight(
+    texture2d<float> heights, constant HeightfieldParams &p, HeightfieldTile tile, uint2 ij,
+    uint edgeLevel
+) {
+    uint n = p.quads;
+    bool xEdge = ij.x == 0u || ij.x == n;
+    bool yEdge = ij.y == 0u || ij.y == n;
+    uint level = edgeLevel;
+    if (xEdge && yEdge) {
+        uint corner = (ij.x == n ? 1u : 0u) | (ij.y == n ? 2u : 0u);
+        level = hfLevelBits(tile.levels, 4u + corner);
+    }
+    return hfReadAt(heights, p, level, tile.origin + (ij << p.level));
+}
+
+// The height of vertex `ij` (tile-local grid coordinates) of `tile`, with the crack-free snapping.
+inline float hfVertexHeight(
+    texture2d<float> heights, constant HeightfieldParams &p, HeightfieldTile tile, uint2 ij
+) {
+    uint L = p.level;
+    uint n = p.quads;
+    bool xEdge = ij.x == 0u || ij.x == n;
+    bool yEdge = ij.y == 0u || ij.y == n;
+    if (!xEdge && !yEdge) return hfReadAt(heights, p, L, tile.origin + (ij << L));
+    if (xEdge && yEdge) return hfBoundaryHeight(heights, p, tile, ij, L);
+
+    // An edge vertex that is not a corner. Slots: -X +X -Y +Y.
+    bool alongX = yEdge;
+    uint slot = alongX ? (ij.y == 0u ? 2u : 3u) : (ij.x == 0u ? 0u : 1u);
+    uint edgeLevel = hfLevelBits(tile.levels, slot);
+    if (edgeLevel <= L) return hfReadAt(heights, p, L, tile.origin + (ij << L));
+
+    // The neighbour is coarser: interpolate between its vertices on this edge.
+    uint ratio = 1u << (edgeLevel - L);
+    uint m = alongX ? ij.x : ij.y;
+    uint m0 = (m / ratio) * ratio;
+    float h0 = hfBoundaryHeight(
+        heights, p, tile, alongX ? uint2(m0, ij.y) : uint2(ij.x, m0), edgeLevel);
+    if (m == m0) return h0;
+    uint m1 = m0 + ratio;
+    float h1 = hfBoundaryHeight(
+        heights, p, tile, alongX ? uint2(m1, ij.y) : uint2(ij.x, m1), edgeLevel);
+    return mix(h0, h1, float(m - m0) / float(ratio));
+}
+
+inline HeightfieldVertex hfDisplace(
+    uint vid, uint iid, const device HeightfieldTile *tiles, constant HeightfieldParams &p,
+    texture2d<float> heights
+) {
+    uint n = p.quads;
+    uint2 ij = uint2(vid % (n + 1u), vid / (n + 1u));
+    HeightfieldTile tile = tiles[iid];
+    uint L = p.level;
+    uint2 fine = tile.origin + (ij << L);
+    uint2 k = min(fine >> L, hfMaxTexel(p.size, L));
+    uint2 xy = min(k << L, p.size - 1u);
+    HeightfieldVertex v;
+    v.gridPos = float2(xy);
+    v.position = float3(
+        p.origin + (float2(xy) + 0.5) * p.cellSize, hfVertexHeight(heights, p, tile, ij));
+    return v;
+}
+
+// MARK: Heightfield pyramid
+
+struct HeightfieldPyramidParams {
+    uint2 size;        // field size in cells
+    uint  level;       // the level to write (>= 1); it reads level - 1
+    uint  tileTexels;  // texels per tile side at `level`
+    uint  tileCount;
+    uint  _pad0;
+    uint  _pad1;
+    uint  _pad2;
+};
+
+// Level L texel k = min over level L-1 texels 2k-1, 2k, 2k+1 (both axes), clamped to the level.
+// The windows nest, so the interpolated coarse surface never rises above the true one. One
+// thread per texel of each dirty tile plus a one-texel halo (a changed cell reaches one texel
+// further at every level).
+kernel void heightfield_build_pyramid(
+    texture2d<float, access::read> src [[texture(0)]],
+    texture2d<float, access::write> dst [[texture(1)]],
+    constant HeightfieldPyramidParams &p [[buffer(0)]],
+    const device uint2 *dirtyTiles [[buffer(1)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    uint side = p.tileTexels + 2u;
+    uint perTile = side * side;
+    uint tile = tid / perTile;
+    if (tile >= p.tileCount) return;
+    uint local = tid % perTile;
+    int2 k = int2(dirtyTiles[tile]) * int(p.tileTexels)
+        + int2(int(local % side), int(local / side)) - 1;
+    uint2 kmax = hfMaxTexel(p.size, p.level);
+    if (k.x < 0 || k.y < 0 || k.x > int(kmax.x) || k.y > int(kmax.y)) return;
+    uint2 srcMax = hfMaxTexel(p.size, p.level - 1u);
+    int2 lo = max(2 * k - 1, int2(0));
+    int2 hi = min(2 * k + 1, int2(srcMax));
+    float m = INFINITY;
+    for (int y = lo.y; y <= hi.y; y++) {
+        for (int x = lo.x; x <= hi.x; x++) {
+            m = min(m, src.read(uint2(x, y)).r);
+        }
+    }
+    dst.write(float4(m, 0.0, 0.0, 0.0), uint2(k));
+}
+
+// MARK: Heightfield passes
+
+struct HeightfieldShadedOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition [[centroid_perspective]];
+    float4 clipPositionCopy;
+    float2 gridPos;
+};
+
+vertex HeightfieldShadedOut heightfield_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    HeightfieldShadedOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.clipPositionCopy = out.clipPosition;
+    out.worldPosition = worldPos.xyz;
+    out.gridPos = v.gridPos;
+    return out;
+}
+
+// Central-difference normal (body-local, Z up) of fine cell `c`, from the full-resolution heights.
+inline float3 hfCellNormal(texture2d<float> heights, constant HeightfieldParams &p, int2 c) {
+    int2 hiMax = int2(p.size) - 1;
+    int2 c0 = max(c - 1, int2(0));
+    int2 c1 = min(c + 1, hiMax);
+    float dx = heights.read(uint2(c1.x, c.y)).r - heights.read(uint2(c0.x, c.y)).r;
+    float dy = heights.read(uint2(c.x, c1.y)).r - heights.read(uint2(c.x, c0.y)).r;
+    float sx = max(float(c1.x - c0.x), 1.0) * p.cellSize.x;
+    float sy = max(float(c1.y - c0.y), 1.0) * p.cellSize.y;
+    return normalize(float3(-dx / sx, -dy / sy, 1.0));
+}
+
+fragment ShadedFragmentOut heightfield_fragment(
+    HeightfieldShadedOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    constant float4 *ramp [[buffer(4)]],
+    texture2d<float> matcapTexture [[texture(0)]],
+    depth2d<float> shadowMap [[texture(1)]],
+    texturecube<float> iblSpecular [[texture(2)]],
+    texturecube<float> iblDiffuse [[texture(3)]],
+    texture2d<float> brdfLUT [[texture(4)]],
+    texture2d<float> heights [[texture(5)]],
+    texture2d<uint> attributes [[texture(6)]]
+) {
+    int2 cell = clamp(int2(floor(in.gridPos + 0.5)), int2(0), int2(params.size) - 1);
+    float3 localNormal = hfCellNormal(heights, params, cell);
+    uint attribute = attributes.read(uint2(cell)).r;
+
+    ShadedVertexOut sv;
+    sv.clipPosition = in.clipPosition;
+    sv.worldNormal = normalize(uniforms.normalMatrix * localNormal);
+    sv.worldPosition = in.worldPosition;
+    sv.viewNormal = normalize((uniforms.viewMatrix * float4(sv.worldNormal, 0.0)).xyz);
+    sv.clipPositionCopy = in.clipPositionCopy;
+    // Attribute 0 is the untouched surface and shades as the body's material; any other value
+    // replaces the albedo with its ramp colour.
+    sv.vertexColor = attribute == 0u ? float3(1.0) : ramp[attribute].rgb;
+    sv.vertexColorMode = attribute == 0u ? 0u : params.rampMode;
+    return shadedFragmentBody(
+        sv, uniforms, bodyUniforms, matcapTexture, shadowMap, iblSpecular, iblDiffuse, brdfLUT);
+}
+
+// MARK: Heightfield pick
+
+struct HeightfieldPickOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition;
+    float2 gridPos;
+};
+
+vertex HeightfieldPickOut heightfield_pick_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    HeightfieldPickOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    out.gridPos = v.gridPos;
+    return out;
+}
+
+// Face pick (kind 0) whose primitive is the CELL index, `y * width + x`, of the pixel's position
+// on the drawn surface. The cell comes from the interpolated grid position, not from a triangle
+// index, so it is exact laterally at every level of detail; the height, attribute and id are read
+// from the CPU mirror by cell.
+fragment PickFragmentOut heightfield_pick_fragment(
+    HeightfieldPickOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]]
+) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
+    int2 cell = clamp(int2(floor(in.gridPos + 0.5)), int2(0), int2(params.size) - 1);
+    PickFragmentOut out;
+    out.pickID = packPickID(bodyUniforms.objectIndex, uint(cell.y) * params.size.x + uint(cell.x), 0u);
+    return out;
+}
+
+// MARK: Heightfield shadow and depth
+
+vertex ShadowVertexOut heightfield_shadow_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant ShadowUniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    ShadowVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.lightViewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
+}
+
+vertex PickVertexOut heightfield_depth_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    PickVertexOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    return out;
 }

@@ -31,6 +31,15 @@ enum RendererSharedSetup {
         case sourceOver
     }
 
+    /// The first `count` of the four packed section planes, as an array.
+    ///
+    /// The tuple is what `packClipPlanes` returns.
+    static func activeClipPlanes(
+        _ planes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>), count: UInt32
+    ) -> [SIMD4<Float>] {
+        Array([planes.0, planes.1, planes.2, planes.3].prefix(Int(count)))
+    }
+
     // MARK: - Vertex Descriptors
 
     /// Interleaved position + normal in buffer 0, stride 6 floats.

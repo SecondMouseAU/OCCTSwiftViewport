@@ -11,7 +11,7 @@ every public type and member documented: signature, behaviour, parameters, retur
 example. This complements the [Cookbook](../guides/cookbook/) (task-oriented walkthroughs); this is
 the *exhaustive* surface.
 
-The library also aliases ~56 public types under underscore-prefixed typealiases (`_CameraState`,
+The library also aliases ~61 public types under underscore-prefixed typealiases (`_CameraState`,
 `_ViewportBody`, …) in the umbrella `OCCTSwiftViewport.swift`. Every aliased type is already
 `public` in that same module, so after `import OCCTSwiftViewport` the bare type name is what you
 normally write; the `_TypeName` form is an index of the public surface and an escape hatch for
@@ -54,6 +54,7 @@ parent: API Reference
 | [Display & Lighting](Display-Lighting.md) | `DisplayMode`, `LightingConfiguration`, `LightSettings` |
 | [Materials](Materials.md) | `PBRMaterial`, `MaterialLibrary`, `NamedMaterial`, `HDRLoader` |
 | [Picking & Selection](Picking.md) | `PickResult`, `PrimitiveKind`, `PickLayer`, `PickResultFilter`, `SceneRaycast`, `RaycastHit`, `Ray`, `ProjectionUtility` |
+| [Heightfield](Heightfield.md) | `Heightfield`, `HeightfieldRegion`, `HeightfieldHit`, `HeightfieldPrecision`, `HeightfieldError`, `ViewportBody.heightfield`, `PickResult.heightfield`, `ViewportController.refinePick` |
 | [Rendering](Rendering.md) | `ViewportRenderer`, `OffscreenRenderer`, `OffscreenRenderOptions`, `OffscreenRenderError`, `OffscreenPickMap`, `OrthoBounds` |
 | [ViewCube](ViewCube.md) | `NavigationCube`, `NavigationCubeView`, `ViewCubeView`, `ViewCubeRegion`, `ViewCubeFace`, `ViewCubePosition` |
 | [Measurements](Measurements.md) | `ViewportMeasurement`, `MeasurementMode`, `DistanceMeasurement`, `AngleMeasurement`, `RadiusMeasurement` |

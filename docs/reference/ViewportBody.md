@@ -11,7 +11,7 @@ All types are `Sendable` and value types (structs or enums), safe to pass across
 
 ## Topics
 
-- [ViewportBody](#viewportbody) · [Vertex data layout](#vertex-data-layout) · [Primitive factories](#primitive-factories) · [PrimitiveUpAxis](#primitiveupaxis)
+- [ViewportBody](#viewportbody) · [boundsKey and in-place content](#boundskey-and-in-place-content) · [Vertex data layout](#vertex-data-layout) · [Primitive factories](#primitive-factories) · [PrimitiveUpAxis](#primitiveupaxis)
 - [ViewportArc](#viewportarc) · [ArcSampling](#arcsampling)
 - [PBRMaterial](#pbrmaterial)
 - [TriangleStyle](#trianglestyle) · [AuthoredColorSpace](#authoredcolorspace)
@@ -209,6 +209,12 @@ bodies[0] = body             // next frame re-uploads this body's buffers
 
 Appearance and placement fields (`color`, `material`, `transform`, `isVisible`, `triangleStyles`, `edgeColors`, `edgeDrawRange`, `edgeColorSpace`, ...) leave it unchanged, since they are read every frame or re-upload only their own small buffer. Copies share a generation until one of them is mutated. Read-only (`public private(set)`); the counter is thread-safe, so bodies can be built and mutated off the main actor.
 
+**Invariant for caches.** Any change that affects a body's *bounds* must change `generation`, or the body must expose a different `boundsKey` (see [below](#boundskey-and-in-place-content)). Caches of per-body bounds (`PivotStrategy`, the controller's overlay bounds, the renderers' local-bounds lookup) key on `boundsKey`, never on `generation` directly.
+
+#### `heightfield: Heightfield?`
+
+A [`Heightfield`](Heightfield.md) this body draws instead of a mesh; `nil` by default (also an `init` parameter). The field is a shared handle edited in place, so editing it does **not** change `generation`; assigning a different handle does. A heightfield body draws and is bounded by the field alone: `vertexData`, `edges`, `arcs`, `vertices` and the other mesh arrays are ignored.
+
 #### `vertexData: [Float]`
 
 Interleaved position + normal, stride 6. See [vertex data layout](#vertex-data-layout).
@@ -344,6 +350,12 @@ When `false`, the body is drawn normally but excluded from the GPU pick buffer. 
 Per-body model matrix. Applied in the vertex shader on top of the scene model matrix. Lets the renderer reposition a body (e.g., during a manipulator drag) without re-uploading vertex data. Default `matrix_identity_float4x4`.
 
 Positions go through the matrix; normals go through the inverse transpose of its upper 3×3 (the shaders' `Uniforms.normalMatrix`, kept in step with `transform`), so a body with a non-uniform scale or a shear is lit exactly like the same geometry with the transform baked into its vertices, on the shaded, direct-mesh, tessellated and mesh-shader paths alike (issue #213). Transforming a normal by the matrix itself tilts it off the surface under such a transform. A mirroring transform keeps its normals pointing out of the surface.
+
+---
+
+### boundsKey and in-place content
+
+`ViewportBody` is a value type, so a change to any of its arrays makes a new `generation`. A body that draws shared content edited in place (today a [`Heightfield`](Heightfield.md)) can change without the value changing, so caches of its bounds compare an internal `boundsKey` instead: the `generation` plus the version of that content. The key is internal; the rule it enforces is the invariant on [`generation`](#generation-uint64). GPU-buffer caches built from the value-type arrays (`bodyGeneration` in both renderers, the offscreen point-pick buffers) may still key on `generation` alone, since those arrays cannot change in place.
 
 ---
 
