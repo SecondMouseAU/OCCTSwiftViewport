@@ -330,6 +330,8 @@ public var enableTAA: Bool  // default: false
 
 Whether temporal anti-aliasing is composited over the rendered frame.
 
+TAA works with every display mode and with SSAO and silhouettes on or off. When the SSAO/silhouette composite does not run (SSAO and silhouettes both off, or an `.unlit` or `.wireframe` display mode), the TAA output is copied to the drawable by a final pass of its own. Before that pass existed (issue #244) such a frame never reached the drawable: the view stayed blank and a headless readback held uninitialised memory.
+
 ---
 
 #### `taaBlendFactor`

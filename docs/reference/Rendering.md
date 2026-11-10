@@ -587,7 +587,7 @@ This differs from `OffscreenRenderer` in kind, not just degree: `OffscreenRender
 
 Notes:
 
-- **TAA** accumulates across frames. Pass `frameCount > 1` to warm up the history texture before readback; a single frame has no history to blend.
+- **TAA** accumulates across frames. Pass `frameCount > 1` to warm up the history texture before readback; a single frame has no history to blend. With TAA on and no SSAO/silhouette composite, a final pass copies the TAA output to the target (issue #244), so a mesh body keeps its colour from the first frame.
 - **State.** The call updates `lastDrawableSize` and the renderer's own caches, exactly as a live frame would. Use a dedicated renderer instance rather than one currently driving an on-screen view.
 - **The pick texture is populated,** so `performPick(at:)` / `performRegionPick(rect:)` work headlessly.
 

@@ -2583,6 +2583,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         } else {
             // No composite this frame (SSAO off, unlit or wireframe): hold no occlusion memory.
             ssaoOcclusionTargets.release()
+            // With TAA on the main pass resolved into the TAA input, not the drawable, and only
+            // the composite reads the TAA output; without it nothing writes the final target (#244).
+            if taaEnabled, let taaPipeline = taaPipeline, let taaOutput = taaOutputTexture {
+                encodeTAAPassThrough(
+                    commandBuffer: commandBuffer, pipeline: taaPipeline, source: taaOutput,
+                    target: targets.finalColorTexture, width: w, height: h)
+            }
         }
 
         // Prune cache entries for bodies no longer in the scene. Walk `bodyGeneration`, a
@@ -2599,6 +2606,35 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             commandBuffer.present(presentable)
         }
         commandBuffer.commit()
+    }
+
+    // MARK: - TAA present
+
+    /// Copies the TAA output into `target` when no later pass does (#244).
+    ///
+    /// Draws the TAA resolve pipeline with no history weight, no neighbourhood clamp and no
+    /// jitter, which returns the point-sampled `source` unchanged. The drawable cannot be a blit
+    /// destination (`MTKView.framebufferOnly`), so this is a render pass.
+    private func encodeTAAPassThrough(
+        commandBuffer: MTLCommandBuffer, pipeline: MTLRenderPipelineState, source: MTLTexture,
+        target: MTLTexture, width: Int, height: Int
+    ) {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            return
+        }
+        var params = TAAParamsSwift(
+            blendFactor: 0, disableClamp: 1, jitterOffset: .zero,
+            texelSize: SIMD2<Float>(1.0 / Float(width), 1.0 / Float(height)))
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentTexture(source, index: 1)
+        encoder.setFragmentBytes(&params, length: MemoryLayout<TAAParamsSwift>.size, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
     }
 
     // MARK: - Per-triangle styles
