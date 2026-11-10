@@ -533,6 +533,56 @@ public final class ViewportController: ObservableObject {
         handlePick(result: result)
     }
 
+    /// Makes the cell of a heightfield pick exact, using the camera ray through `ndc`.
+    ///
+    /// The GPU pick hits the heightfield as drawn, whose coarse levels of detail are lowered to
+    /// their cell minimum, so away from the camera, or beside a tall step, an oblique pick can
+    /// land cells from the true one. This walks `ndc`'s ray over the field's full-resolution
+    /// heights (microseconds) and returns `result` with ``PickResult/heightfield`` and
+    /// ``PickResult/triangleIndex`` set to the cell the ray really enters. A result that is not a
+    /// heightfield pick, or whose ray misses the field, is returned unchanged.
+    ///
+    /// `MetalViewportView` applies this to every tap before ``handlePick(result:ndc:)``. Call it
+    /// yourself on a pick from ``ViewportRenderer/performPick(at:completion:)`` that you route
+    /// elsewhere. A region pick has no single ray and stays at the drawn surface's cell.
+    ///
+    /// - Parameters:
+    ///   - result: The decoded GPU pick.
+    ///   - ndc: The normalised device coordinates the pick was taken at, x right and y up.
+    ///   - bodies: The scene bodies the pick was taken against.
+    /// - Returns: The refined result.
+    public func refinePick(
+        _ result: PickResult?, ndc: SIMD2<Float>, bodies: [ViewportBody]
+    ) -> PickResult? {
+        guard let result, result.heightfield != nil,
+            let body = Self.body(for: result, in: bodies), let field = body.heightfield
+        else { return result }
+        let ray = Ray.fromCamera(
+            ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio,
+            sceneBounds: cameraState.isOrthographic
+                ? orthographicEyeBounds(of: bodies, cameraState: cameraState) : nil)
+        guard let (local, _) = SceneRaycast.localRay(ray, transform: body.transform),
+            let hit = field.raycast(origin: local.origin, direction: local.direction),
+            let refined = field.hit(cellIndex: hit.cell.y * field.width + hit.cell.x)
+        else { return result }
+        return result.refiningHeightfield(to: refined)
+    }
+
+    /// Routes the GPU pick of a tap: to the measurement accumulator while a measurement tool is
+    /// active, else, refined (see ``refinePick(_:ndc:bodies:)``), to ``handlePick(result:ndc:)``.
+    ///
+    /// `MetalViewportView` calls this when a pick readback completes.
+    func handleTapPick(
+        result: PickResult?, ndc: SIMD2<Float>, bodies: [ViewportBody], aspectRatio: Float
+    ) {
+        if measurementMode != .none {
+            handleMeasurementPick(
+                result: result, ndc: ndc, bodies: bodies, aspectRatio: aspectRatio)
+        } else {
+            handlePick(result: refinePick(result, ndc: ndc, bodies: bodies), ndc: ndc)
+        }
+    }
+
     // MARK: - Region Picking
 
     /// Weak back-reference to the renderer currently driving this controller's

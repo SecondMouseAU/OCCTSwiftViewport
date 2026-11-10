@@ -1758,6 +1758,14 @@ public final class OffscreenRenderer: Sendable {
             commandBuffer: commandBuffer, bodies: bodies, options: options,
             refinement: refinement, viewProjection: setup.viewProjection)
 
+        // Heightfields: bring their GPU state up to date and plan their tiles for this camera.
+        let heightfieldEntries = Dictionary(
+            heightfieldCache.prepare(
+                bodies: bodies, commandBuffer: commandBuffer, view: setup.viewMatrix,
+                projection: setup.projMatrix, viewportHeight: Float(h),
+                meshCellPixels: options.heightfieldMeshCellPixels
+            ).map { ($0.body.id, $0) }, uniquingKeysWith: { $1 })
+
         // Every visible body in draw order, with the index its texels carry.
         var indexMap: [Int: String] = [:]
         var layerMap: [String: PickLayer] = [:]
@@ -1769,7 +1777,9 @@ public final class OffscreenRenderer: Sendable {
             layerMap[body.id] = body.pickLayer
             let buffers = pickPassBuffers(for: body)
             pickBodies.append(
-                PickPassBody(body: body, objectIndex: objectIndex, buffers: buffers))
+                PickPassBody(
+                    body: body, objectIndex: objectIndex, buffers: buffers,
+                    heightfield: heightfieldEntries[body.id]?.draw))
             arcBodies.append((body, objectIndex, buffers.indexCount > 0))
         }
 
@@ -1825,7 +1835,8 @@ public final class OffscreenRenderer: Sendable {
             selectionFilter: options.selectionFilter,
             texels: PickEncoding.texels(
                 from: readback.contents(), bytesPerRow: bytesPerRow, width: w, height: h),
-            indexMap: indexMap, layerMap: layerMap)
+            indexMap: indexMap, layerMap: layerMap,
+            heightfields: heightfieldEntries.mapValues(\.state.field))
     }
 
     /// What is under `pixel` of the frame `render(bodies:options:)` draws for `options`.

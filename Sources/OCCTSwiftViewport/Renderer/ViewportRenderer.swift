@@ -535,6 +535,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     private var environmentMapManager: EnvironmentMapManager?
     /// Heightfield bodies: GPU state, pipelines and per-frame tile plans.
     let heightfieldCache: HeightfieldRenderCache
+    /// Body ID to heightfield handle for the bodies drawn this frame, so a pick resolves to its
+    /// cell data when it is decoded.
+    private var currentHeightfields: [String: Heightfield] = [:]
 
     private weak var controller: ViewportController?
     private var bodiesBinding: Binding<[ViewportBody]>
@@ -1487,6 +1490,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
             meshCellPixels: controller.configuration.heightfieldMeshCellPixels)
+        currentHeightfields = Dictionary(
+            heightfieldEntries.map { ($0.body.id, $0.state.field) }, uniquingKeysWith: { $1 })
 
         // =========================================================
         // Pre-pass: Update tessellation factors (per-frame, camera-dependent)
@@ -2382,7 +2387,12 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         PickPassBody(
                             body: $0.body, objectIndex: $0.objectIndex,
                             buffers: PickPassBuffers($0.buffers))
-                    },
+                    }
+                        + heightfieldEntries.map {
+                            PickPassBody(
+                                body: $0.body, objectIndex: $0.objectIndex,
+                                buffers: PickPassBuffers(), heightfield: $0.draw)
+                        },
                     frame: PickPassFrame(
                         pipelines: pickPipelines, depthState: depthState,
                         overlayDepthState: overlayDepthState, displayMode: displayMode,
@@ -3252,6 +3262,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
 
         // `@Sendable` is load-bearing here, not decoration. Metal calls a completion handler on
         // its own `com.Metal.CompletionQueueDispatch` queue, never on the main thread. On an SDK
@@ -3265,7 +3276,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             // One RG32Uint texel: R then G in memory, so a UInt64 load is `G << 32 | R`.
             let pickValue = readbackBuffer.contents().load(as: UInt64.self)
             pool.release(readbackBuffer)
-            let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+            let result = PickResult(
+                pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                heightfields: heightfields)
             Task { @MainActor in
                 completion(result)
             }
@@ -3321,6 +3334,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
         let centerX = pixel.x - startX
         let centerY = pixel.y - startY
 
@@ -3331,7 +3345,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 height: actualHeight)
             let bestResult = Self.bestNeighborhoodPickResult(
                 pickValues, width: actualWidth, center: SIMD2(centerX, centerY),
-                indexMap: indexMap, layerMap: layerMap)
+                indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3418,6 +3432,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         let indexMap = currentIndexMap
         let layerMap = currentLayerMap
+        let heightfields = currentHeightfields
 
         // `@Sendable` for the same reason as in `performPick(at:)` above: this handler runs on
         // Metal's completion queue, so it must not inherit `@MainActor` isolation. See issue #110.
@@ -3428,7 +3443,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 from: readbackBuffer.contents(), bytesPerRow: bytesPerRow, width: w, height: h)
             pool.release(readbackBuffer)
             let results = Self.decodeRegionPickResults(
-                pickValues, indexMap: indexMap, layerMap: layerMap)
+                pickValues, indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
             Task { @MainActor in
                 completion(results)
             }
@@ -3499,7 +3514,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         width: Int,
         center: SIMD2<Int>,
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        heightfields: [String: Heightfield] = [:]
     ) -> PickResult? {
         guard width > 0 else { return nil }
         var bestResult: PickResult? = nil
@@ -3509,7 +3525,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         for (index, pickValue) in pickValues.enumerated() {
             guard
                 let result = PickResult(
-                    pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+                    pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                    heightfields: heightfields)
             else {
                 continue
             }
@@ -3543,13 +3560,16 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     nonisolated static func decodeRegionPickResults(
         _ pickValues: [UInt64],
         indexMap: [Int: String],
-        layerMap: [String: PickLayer]
+        layerMap: [String: PickLayer],
+        heightfields: [String: Heightfield] = [:]
     ) -> [PickResult] {
         var seen = Set<UInt64>()
         var results: [PickResult] = []
         for pickValue in pickValues {
             guard PickEncoding.isHit(pickValue), seen.insert(pickValue).inserted else { continue }
-            if let result = PickResult(pickValue: pickValue, indexMap: indexMap, layerMap: layerMap)
+            if let result = PickResult(
+                pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
+                heightfields: heightfields)
             {
                 results.append(result)
             }

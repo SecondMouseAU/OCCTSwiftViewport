@@ -44,6 +44,10 @@ struct PickPipelines {
     /// Vertex pick as point sprites.
     let point: MTLRenderPipelineState?
 
+    /// Face pick for a heightfield: `heightfield_pick_vertex` + `heightfield_pick_fragment`, which
+    /// stamps the cell index.
+    let heightfield: MTLRenderPipelineState?
+
     /// `.lessEqual` with depth writes: edges and points co-planar with a face win the pick.
     let edgeOrPointDepthState: MTLDepthStencilState
 
@@ -93,6 +97,11 @@ struct PickPipelines {
         // pick_point_vertex sets point_size for a clickable footprint; the fragment stamps kind 2.
         self.point = make(
             "pick_point", "pick_point_vertex", "pick_point_fragment", vertexDescriptor)
+        self.heightfield = RendererSharedSetup.makePipelineState(
+            device: device, label: "pick_heightfield", library: library,
+            vertexFunction: "heightfield_pick_vertex",
+            fragmentFunction: "heightfield_pick_fragment",
+            colorPixelFormat: Self.colorPixelFormat, depthPixelFormat: Self.depthPixelFormat)
     }
 }
 
@@ -174,6 +183,8 @@ struct PickPassBody {
     /// Ordinal among the visible bodies in draw order; what `PickResult.bodyIndex` reports.
     let objectIndex: UInt32
     let buffers: PickPassBuffers
+    /// The planned tiles of a heightfield body, which has no mesh buffers.
+    var heightfield: HeightfieldDrawSet?
 }
 
 /// Everything the pick pass reads besides the bodies.
@@ -228,6 +239,19 @@ extension RendererSharedSetup {
         for entry in bodies where entry.body.isPickable && entry.body.renderLayer != .overlay {
             let body = entry.body
             let buffers = entry.buffers
+            if let heightfield = entry.heightfield {
+                // A heightfield stamps its cell index; `.wireframe` draws no surface to pick.
+                guard displayMode.showsSurfaces, let pipeline = pipelines.heightfield else {
+                    continue
+                }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = body.transform
+                var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+                heightfield.encodePick(
+                    encoder: pickEncoder, pipeline: pipeline, uniforms: &uniforms,
+                    bodyUniforms: &bodyUniforms)
+                continue
+            }
             guard displayMode.showsSurfaces, buffers.hasMesh, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             else { continue }

@@ -41,6 +41,10 @@ public struct OffscreenPickMap: Sendable {
     /// Pick layer by body ID.
     let layerMap: [String: PickLayer]
 
+    /// The heightfield handle of each heightfield body the render drew, by body ID, so a pick on
+    /// one carries its cell data.
+    let heightfields: [String: Heightfield]
+
     /// What is under `pixel`: the body, primitive and kind a live `performPick` reports there, or
     /// `nil` for background.
     ///
@@ -69,7 +73,8 @@ public struct OffscreenPickMap: Sendable {
                 rect, textureWidth: width, textureHeight: height)
         else { return [] }
         let results = ViewportRenderer.decodeRegionPickResults(
-            texels(in: region), indexMap: indexMap, layerMap: layerMap)
+            texels(in: region), indexMap: indexMap, layerMap: layerMap,
+            heightfields: heightfields)
         return ViewportController.applySelectionFilter(results, filter: selectionFilter)
     }
 
@@ -79,7 +84,9 @@ public struct OffscreenPickMap: Sendable {
         guard width > 0, height > 0 else { return nil }
         let x = max(0, min(pixel.x, width - 1))
         let y = max(0, min(pixel.y, height - 1))
-        return PickResult(pickValue: texels[y * width + x], indexMap: indexMap, layerMap: layerMap)
+        return PickResult(
+            pickValue: texels[y * width + x], indexMap: indexMap, layerMap: layerMap,
+            heightfields: heightfields)
     }
 
     private func neighborhoodPick(at pixel: SIMD2<Int>, radius: Int) -> PickResult? {
@@ -90,7 +97,7 @@ public struct OffscreenPickMap: Sendable {
         return ViewportRenderer.bestNeighborhoodPickResult(
             texels(in: region), width: region.width,
             center: SIMD2(pixel.x - region.x, pixel.y - region.y),
-            indexMap: indexMap, layerMap: layerMap)
+            indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
     }
 
     /// The texels of `region` as one flat row-major array.

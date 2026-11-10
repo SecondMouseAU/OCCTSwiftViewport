@@ -204,6 +204,21 @@ struct HeightfieldDrawSet {
         encodeDraws(encoder: encoder, setFragmentParams: true)
     }
 
+    /// Stamps every planned tile into the pick target with the pick pipeline.
+    ///
+    /// The caller sets the depth-stencil state.
+    func encodePick(
+        encoder: MTLRenderCommandEncoder, pipeline: MTLRenderPipelineState,
+        uniforms: inout Uniforms, bodyUniforms: inout BodyUniforms
+    ) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
+        encoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+        encoder.setVertexTexture(heights, index: 0)
+        encodeDraws(encoder: encoder, setFragmentParams: true)
+    }
+
     /// Issues one instanced indexed draw per level of detail present, with the vertex stage's
     /// height texture and the pipeline already bound.
     func encodeDraws(encoder: MTLRenderCommandEncoder, setFragmentParams: Bool) {

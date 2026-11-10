@@ -3493,3 +3493,45 @@ fragment ShadedFragmentOut heightfield_fragment(
     return shadedFragmentBody(
         sv, uniforms, bodyUniforms, matcapTexture, shadowMap, iblSpecular, iblDiffuse, brdfLUT);
 }
+
+// MARK: Heightfield pick
+
+struct HeightfieldPickOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition;
+    float2 gridPos;
+};
+
+vertex HeightfieldPickOut heightfield_pick_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    HeightfieldPickOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    out.gridPos = v.gridPos;
+    return out;
+}
+
+// Face pick (kind 0) whose primitive is the CELL index, `y * width + x`, of the pixel's position
+// on the drawn surface. The cell comes from the interpolated grid position, not from a triangle
+// index, so it is exact laterally at every level of detail; the height, attribute and id are read
+// from the CPU mirror by cell.
+fragment PickFragmentOut heightfield_pick_fragment(
+    HeightfieldPickOut in [[stage_in]],
+    constant Uniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]]
+) {
+    if (isClippedBySectionPlanes(in.worldPosition, uniforms)) discard_fragment();
+    int2 cell = clamp(int2(floor(in.gridPos + 0.5)), int2(0), int2(params.size) - 1);
+    PickFragmentOut out;
+    out.pickID = packPickID(bodyUniforms.objectIndex, uint(cell.y) * params.size.x + uint(cell.x), 0u);
+    return out;
+}
