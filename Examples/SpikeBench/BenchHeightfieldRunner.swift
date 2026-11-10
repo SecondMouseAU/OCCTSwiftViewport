@@ -47,8 +47,15 @@ final class BenchHeightfieldRunner {
 
     /// Medians and means over the measured frames.
     struct Measure {
+        /// Time between consecutive frames finishing, with frames queued back to back: what one
+        /// frame costs in steady state, whichever of the GPU and the CPU is slower. Median, the
+        /// fast end (10th percentile) and the slow end (95th).
+        var frame: Double
+        var frame10: Double
+        var frame95: Double
+        /// `gpuEndTime - gpuStartTime` of each frame's command buffer, median. With frames
+        /// overlapping in the queue this runs above the frame time.
         var gpu: Double
-        var gpu95: Double
         var encode: Double
         var update: Double
         var plan: Double
@@ -133,8 +140,8 @@ final class BenchHeightfieldRunner {
             backgroundColor: SIMD4(0.12, 0.12, 0.14, 1),
             shouldStop: { RunControl.shared.cancelled }
         ) { frame in
-            // Keep a few frames queued, not all of them; never wait while the GPU has no work.
-            while renderer.benchFramesInFlight >= 3 { usleep(50) }
+            // Keep two frames queued, not all of them: the GPU always has the next one to start.
+            while renderer.benchFramesInFlight >= 2 { usleep(50) }
             s.controller.animateTo(BenchHeightfieldScene.orbitCamera(frame: frame), duration: 0)
             if let load {
                 let start = DispatchTime.now().uptimeNanoseconds
@@ -147,8 +154,14 @@ final class BenchHeightfieldRunner {
         let samples = Array(await renderer.benchStopRecording().dropFirst(warmup))
         func values(_ f: (ViewportFrameSample) -> Double) -> [Double] { samples.map(f) }
         let gpu = values { $0.gpuSeconds * 1e3 }.filter { $0 > 0 }
+        let ends = values { $0.gpuEndTime }
+        var intervals: [Double] = []
+        for i in ends.indices.dropFirst() where ends[i] > 0 && ends[i - 1] > 0 {
+            intervals.append((ends[i] - ends[i - 1]) * 1e3)
+        }
         return Measure(
-            gpu: Stats.median(gpu), gpu95: Stats.percentile(gpu, 0.95),
+            frame: Stats.median(intervals), frame10: Stats.percentile(intervals, 0.10),
+            frame95: Stats.percentile(intervals, 0.95), gpu: Stats.median(gpu),
             encode: Stats.median(values { $0.encodeSeconds * 1e3 }),
             update: Stats.median(values { $0.heightfieldUpdateSeconds * 1e3 }),
             plan: Stats.median(values { $0.heightfieldPlanSeconds * 1e3 }),
@@ -169,9 +182,9 @@ final class BenchHeightfieldRunner {
         let gpuTable = "139.gpu"
         report.table(
             gpuTable,
-            title: "#139 GPU frame time by mesh-cell target, \(o.width)x\(o.height), orbiting camera, no edits",
+            title: "#139 frame time by mesh-cell target (frames back to back; frame = interval between frames finishing), \(o.width)x\(o.height), orbiting camera, no edits",
             columns: [
-                "passes", "msaa", "cell px", "gpu med", "gpu p95", "cpu encode", "plan", "tiles",
+                "passes", "msaa", "cell px", "frame med", "frame p10", "frame p95", "gpu span", "cpu encode", "plan", "tiles",
                 "draws/frame", "frames",
             ])
         var cases: [Case] = []
@@ -194,7 +207,7 @@ final class BenchHeightfieldRunner {
             title: "#139 replace() load, regions of 130x120 cells per frame, 4 px cells, MSAA 4",
             columns: [
                 "edits/frame", "pattern", "replace CPU", "cpu encode", "update CPU",
-                "upload MB/frame", "gpu med", "gpu over none", "holds 16.6 ms",
+                "upload MB/frame", "frame med", "frame p10", "frame over none", "gpu span", "holds 16.6 ms",
             ])
         cases.append(Case(table: editTable, id: "e0"))
         for pattern in BenchHeightfieldScene.EditPattern.allCases {
@@ -207,7 +220,10 @@ final class BenchHeightfieldRunner {
         let precisionTable = "139.precision"
         report.table(
             precisionTable, title: "#139 float16 against float32 heights, 4 px cells, MSAA 4",
-            columns: ["precision", "edits/frame", "gpu med", "upload MB/frame", "replace CPU", "cpu encode"])
+            columns: [
+                "precision", "edits/frame", "frame med", "frame p10", "gpu span", "upload MB/frame",
+                "replace CPU", "cpu encode",
+            ])
         for float16 in [false, true] {
             for edits in [0, 200] {
                 cases.append(
@@ -221,7 +237,7 @@ final class BenchHeightfieldRunner {
         let pickTable = "139.pick"
         report.table(
             pickTable, title: "#139 cost of the pick pass (picking enabled), 4 px cells, MSAA 4",
-            columns: ["pick pass", "gpu med", "cpu encode", "draws/frame"])
+            columns: ["pick pass", "frame med", "frame p10", "gpu span", "cpu encode", "draws/frame"])
         for picking in [false, true] {
             cases.append(
                 Case(table: pickTable, id: picking ? "on" : "off", key: SessionKey(picking: picking)))
@@ -247,32 +263,33 @@ final class BenchHeightfieldRunner {
                     gpuTable, c.id,
                     [
                         c.key.allPasses ? "shadows+SSAO+silhouettes" : "shaded only",
-                        "\(c.key.msaa)", "\(Int(c.targetPixels))", cell(m.gpu), cell(m.gpu95),
+                        "\(c.key.msaa)", "\(Int(c.targetPixels))", cell(m.frame), cell(m.frame10),
+                        cell(m.frame95), cell(m.gpu),
                         cell(m.encode), cell(m.plan), "\(Int(m.tiles))", "\(Int(m.draws))",
                         "\(m.gpuFrames)",
                     ])
             case editTable:
-                if c.edits == 0 { noEditGPU = m.gpu }
-                let cpu = m.replace + m.encode
+                if c.edits == 0 { noEditGPU = m.frame }
                 report.row(
                     editTable, c.id,
                     [
                         "\(c.edits)", c.edits == 0 ? "-" : c.pattern.rawValue, cell(m.replace),
                         cell(m.encode), cell(m.update), String(format: "%.2f", m.uploadMB),
-                        cell(m.gpu), noEditGPU.map { cell(m.gpu - $0) } ?? "-",
-                        max(cpu, m.gpu) < 16.6 ? "yes" : "NO",
+                        cell(m.frame), cell(m.frame10), noEditGPU.map { cell(m.frame - $0) } ?? "-",
+                        cell(m.gpu), m.frame < 16.6 ? "yes" : "NO",
                     ])
             case precisionTable:
                 report.row(
                     precisionTable, c.id,
                     [
-                        c.key.float16 ? "float16" : "float32", "\(c.edits)", cell(m.gpu),
-                        String(format: "%.2f", m.uploadMB), cell(m.replace), cell(m.encode),
+                        c.key.float16 ? "float16" : "float32", "\(c.edits)", cell(m.frame),
+                        cell(m.frame10), cell(m.gpu), String(format: "%.2f", m.uploadMB),
+                        cell(m.replace), cell(m.encode),
                     ])
             default:
                 report.row(
                     pickTable, c.id,
-                    [c.id, cell(m.gpu), cell(m.encode), "\(Int(m.draws))"])
+                    [c.id, cell(m.frame), cell(m.frame10), cell(m.gpu), cell(m.encode), "\(Int(m.draws))"])
             }
         }
         session = nil

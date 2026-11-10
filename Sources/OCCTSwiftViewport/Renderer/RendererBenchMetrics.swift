@@ -17,6 +17,10 @@ public struct ViewportFrameSample: Sendable {
     public var encodeSeconds: Double = 0
     /// `gpuEndTime - gpuStartTime` of the frame's command buffer; 0 until it has completed.
     public var gpuSeconds: Double = 0
+    /// `gpuEndTime` of the frame's command buffer (seconds on the GPU's clock); 0 until it has
+    /// completed. Differences between consecutive frames give the frame interval when frames
+    /// are queued back to back and their `gpuSeconds` spans overlap.
+    public var gpuEndTime: Double = 0
     /// Bytes copied into heightfield staging buffers for this frame.
     public var heightfieldUploadedBytes: Int = 0
     /// Tiles planned for the heightfields' shaded pass (one pass's worth).
@@ -157,6 +161,7 @@ final class RendererBenchMetrics: @unchecked Sendable {
             lock.lock()
             if frameEpoch == epoch, index < samples.count {
                 samples[index].gpuSeconds = buffer.gpuEndTime - buffer.gpuStartTime
+                samples[index].gpuEndTime = buffer.gpuEndTime
                 pendingGPU -= 1
             }
             lock.unlock()
