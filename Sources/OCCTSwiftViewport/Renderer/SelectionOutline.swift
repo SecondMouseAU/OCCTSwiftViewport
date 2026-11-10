@@ -40,6 +40,16 @@ struct SelectionMaskDraw {
     }
 }
 
+/// One selected or hovered heightfield body for the selection-mask pass.
+struct HeightfieldMaskDraw {
+    /// Mask code: `SelectionMaskCode.selected` or `.hovered`.
+    let code: UInt32
+    let modelMatrix: simd_float4x4
+    let draw: HeightfieldDrawSet
+    /// World-space bounds, for the outline's scissor rectangle.
+    let worldBounds: BoundingBox?
+}
+
 /// The values `selection_mask_fragment` writes into the selection mask.
 enum SelectionMaskCode {
     static let selected: UInt32 = 1
@@ -194,9 +204,14 @@ extension RendererSharedSetup {
     ///   - pipelines: The selection-mask pipelines.
     ///   - uniforms: The frame's scene uniforms (for the view-projection and clip planes); each
     ///     draw sets its own model matrix.
+    ///   - heightfieldDraws: The selected and hovered heightfield bodies, masked after the meshes
+    ///     of their code.
+    ///   - heightfieldPipeline: The heightfield selection-mask pipeline.
     static func encodeSelectionMaskPass(
         commandBuffer: MTLCommandBuffer, mask: MTLTexture, draws: [SelectionMaskDraw],
-        pipelines: SelectionMaskPipelines, uniforms: Uniforms
+        pipelines: SelectionMaskPipelines, uniforms: Uniforms,
+        heightfieldDraws: [HeightfieldMaskDraw] = [],
+        heightfieldPipeline: MTLRenderPipelineState? = nil
     ) {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = mask
@@ -205,10 +220,28 @@ extension RendererSharedSetup {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "selection_mask"
+        /// A heightfield's tiles, rasterised with the mask code.
+        func maskHeightfields(code: UInt32) {
+            guard let heightfieldPipeline else { return }
+            for item in heightfieldDraws where item.code == code {
+                var bodyUniforms = uniforms
+                bodyUniforms.modelMatrix = item.modelMatrix
+                var code = item.code
+                encoder.setFragmentBytes(&code, length: MemoryLayout<UInt32>.size, index: 2)
+                item.draw.encodeDepth(
+                    encoder: encoder, pipeline: heightfieldPipeline, uniforms: &bodyUniforms)
+            }
+        }
         let ordered =
             draws.filter { $0.code == SelectionMaskCode.hovered }
             + draws.filter { $0.code != SelectionMaskCode.hovered }
+        var hoveredHeightfieldsDone = false
         for draw in ordered {
+            // Hovered heightfields go in after the hovered meshes and before anything selected.
+            if !hoveredHeightfieldsDone, draw.code != SelectionMaskCode.hovered {
+                maskHeightfields(code: SelectionMaskCode.hovered)
+                hoveredHeightfieldsDone = true
+            }
             var bodyUniforms = uniforms
             bodyUniforms.modelMatrix = draw.modelMatrix
             var code = draw.code
@@ -236,6 +269,9 @@ extension RendererSharedSetup {
                 type: .triangle, indexCount: draw.indexCount, indexType: .uint32,
                 indexBuffer: draw.indexBuffer, indexBufferOffset: 0)
         }
+        // Hovered first, so a selected body wins where the two overlap.
+        if !hoveredHeightfieldsDone { maskHeightfields(code: SelectionMaskCode.hovered) }
+        maskHeightfields(code: SelectionMaskCode.selected)
         encoder.endEncoding()
     }
 

@@ -290,6 +290,24 @@ struct HeightfieldDrawSet {
     }
 }
 
+/// One deferred translucent surface of the sorted transparent pass: a mesh body or a heightfield.
+enum TransparentSurface<Buffers> {
+    case mesh(body: ViewportBody, buffers: Buffers, objectIndex: UInt32)
+    case heightfield(HeightfieldRenderCache.Entry)
+
+    /// The world position the surfaces are depth-sorted by.
+    func worldCenter(meshBounds: (ViewportBody, Buffers) -> BoundingBox?) -> SIMD3<Float> {
+        switch self {
+        case .mesh(let body, let buffers, _):
+            return RendererSharedSetup.worldCenter(
+                of: meshBounds(body, buffers), transform: body.transform)
+        case .heightfield(let entry):
+            return RendererSharedSetup.worldCenter(
+                of: entry.body.boundingBox, transform: entry.body.transform)
+        }
+    }
+}
+
 // MARK: - Per-renderer cache
 
 /// What one renderer keeps for all of its heightfield bodies: the shared kernel and index
@@ -308,6 +326,8 @@ final class HeightfieldRenderCache {
         let draw: HeightfieldDrawSet
         /// The tiles whose shadows the camera can see; `nil` when shadows are off.
         let shadowDraw: HeightfieldDrawSet?
+        /// Whether the field changed since this renderer last drew it.
+        let changed: Bool
     }
 
     private let device: MTLDevice
@@ -316,6 +336,8 @@ final class HeightfieldRenderCache {
     private var pipelinesBySamples: [Int: HeightfieldPipelines] = [:]
     private var shadowPipeline: MTLRenderPipelineState?
     private var depthPipeline: MTLRenderPipelineState?
+    private var selectionMaskPipeline: MTLRenderPipelineState?
+    private var stencilPipelinesBySamples: [Int: MTLRenderPipelineState] = [:]
     private(set) var states: [String: HeightfieldGPU] = [:]
     private lazy var planPool = FrameBufferPool(device: device)
 
@@ -364,6 +386,38 @@ final class HeightfieldRenderCache {
         return depthPipeline
     }
 
+    /// The selection-mask pipeline: `heightfield_depth_vertex` + `selection_mask_fragment`,
+    /// single-sample `.r8Uint` colour and no depth.
+    func selectionMaskPipelineState() -> MTLRenderPipelineState? {
+        if let selectionMaskPipeline { return selectionMaskPipeline }
+        selectionMaskPipeline = RendererSharedSetup.makePipelineState(
+            device: device, label: "heightfield_selection_mask", library: library,
+            vertexFunction: "heightfield_depth_vertex",
+            fragmentFunction: "selection_mask_fragment",
+            colorPixelFormat: RendererSharedSetup.selectionMaskPixelFormat,
+            depthPixelFormat: .invalid)
+        return selectionMaskPipeline
+    }
+
+    /// The stencil-mark pipeline of the selection outline: writes no colour, so the main pass
+    /// stencil marks the silhouette.
+    func stencilMarkPipelineState(sampleCount: Int, depthFormat: MTLPixelFormat)
+        -> MTLRenderPipelineState?
+    {
+        if let cached = stencilPipelinesBySamples[sampleCount] { return cached }
+        let descriptor = RendererSharedSetup.renderPipelineDescriptor(
+            label: "heightfield_stencil_mark", library: library,
+            vertexFunction: "heightfield_depth_vertex",
+            fragmentFunction: "depth_only_clip_fragment", colorPixelFormat: .bgra8Unorm,
+            depthPixelFormat: depthFormat, stencilPixelFormat: depthFormat,
+            sampleCount: sampleCount, blending: .disabled, vertexDescriptor: nil)
+        descriptor.colorAttachments[0].writeMask = []
+        stencilPipelinesBySamples[sampleCount] =
+            RendererSharedSetup
+            .makeRenderPipelineStateReporting(device: device, descriptor: descriptor)
+        return stencilPipelinesBySamples[sampleCount]
+    }
+
     /// Creates or refreshes the GPU state of every visible heightfield body, drops the state of
     /// bodies no longer passed, encodes the pending uploads at the head of `commandBuffer`, and
     /// plans each body's tiles for this camera.
@@ -397,7 +451,7 @@ final class HeightfieldRenderCache {
                 }
             }
             guard let state = states[body.id] else { continue }
-            state.encodeUpdates(commandBuffer: commandBuffer)
+            let changed = state.encodeUpdates(commandBuffer: commandBuffer)
             let planView = HeightfieldView(
                 model: body.transform, view: view, projection: projection,
                 viewportHeight: viewportHeight, targetPixels: targetPixels,
@@ -420,7 +474,7 @@ final class HeightfieldRenderCache {
             entries.append(
                 Entry(
                     body: body, objectIndex: index, state: state,
-                    draw: state.drawSet(plan: plan), shadowDraw: shadowDraw))
+                    draw: state.drawSet(plan: plan), shadowDraw: shadowDraw, changed: changed))
         }
         for id in states.keys where !active.contains(id) { states.removeValue(forKey: id) }
         return entries
@@ -508,6 +562,11 @@ final class HeightfieldGPU {
 
     private var bytesPerHeight: Int { pixelFormat == .r16Float ? 2 : 4 }
 
+    /// The widest texture the device allows, in texels.
+    ///
+    /// A test lowers it to provoke the failure path of a field the GPU cannot hold.
+    static var textureSideLimit = 16_384
+
     init?(field: Heightfield, device: MTLDevice, shared: HeightfieldShared) {
         self.field = field
         self.device = device
@@ -518,6 +577,7 @@ final class HeightfieldGPU {
         paddedHeight =
             (HeightfieldLayout.drawTileCount(cells: field.height) + 1)
             * HeightfieldLayout.tileCells
+        guard max(paddedWidth, paddedHeight) <= Self.textureSideLimit else { return nil }
         let format = Self.storageFormat(for: field.precision, supportsHalf: Self.supportsHalf)
 
         let heightDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -557,13 +617,20 @@ final class HeightfieldGPU {
 
     /// Encodes the uploads and pyramid rebuild for every edit since this renderer last drew, at
     /// the head of `commandBuffer`.
-    func encodeUpdates(commandBuffer: MTLCommandBuffer) {
+    ///
+    /// - Returns: Whether anything changed since the last draw: an edit or a ramp change.
+    @discardableResult
+    func encodeUpdates(commandBuffer: MTLCommandBuffer) -> Bool {
         let started = DispatchTime.now().uptimeNanoseconds
         defer {
             lastUpdateSeconds = Double(DispatchTime.now().uptimeNanoseconds - started) * 1e-9
         }
         let (version, changes, rampVersion) = field.changes(since: seenVersion)
-        if rampVersion != seenRampVersion { updateRamp(commandBuffer: commandBuffer) }
+        var changed = version != seenVersion
+        if rampVersion != seenRampVersion {
+            updateRamp(commandBuffer: commandBuffer)
+            changed = true
+        }
 
         var dirty: [SIMD2<Int>] = []
         let cols = HeightfieldLayout.tileCount(cells: field.width)
@@ -571,7 +638,7 @@ final class HeightfieldGPU {
         switch changes {
         case .none:
             seenVersion = version
-            return
+            return changed
         case .full:
             fullUploads += 1
             dirty.reserveCapacity(cols * rows)
@@ -594,9 +661,10 @@ final class HeightfieldGPU {
             }
         }
         seenVersion = version
-        guard !dirty.isEmpty else { return }
+        guard !dirty.isEmpty else { return changed }
         upload(tiles: dirty, commandBuffer: commandBuffer)
         buildPyramid(tiles: dirty, commandBuffer: commandBuffer)
+        return changed
     }
 
     private func updateRamp(commandBuffer: MTLCommandBuffer) {

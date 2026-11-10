@@ -447,6 +447,18 @@ extension RendererSharedSetup {
         for entry in bodies where entry.body.renderLayer == .overlay && entry.body.isPickable {
             let body = entry.body
             let buffers = entry.buffers
+            if let heightfield = entry.heightfield {
+                // An overlay heightfield stamps its surface in every display mode, over the rest.
+                if let pipeline = pipelines.heightfield {
+                    var uniforms = makeUniforms()
+                    uniforms.modelMatrix = body.transform
+                    var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+                    heightfield.encodePick(
+                        encoder: pickEncoder, pipeline: pipeline, uniforms: &uniforms,
+                        bodyUniforms: &bodyUniforms)
+                }
+                continue
+            }
             if body.primitiveKind != .point, buffers.hasMesh, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             {
