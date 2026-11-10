@@ -264,7 +264,7 @@ struct RootView: View {
         ])
         let window = RunEnvironment.visibility()
         report.environment([
-            ("windowAtStart", "visible=\(window.visible) key=\(window.key)"),
+            ("windowBeforeRun", "visible=\(window.visible) key=\(window.key)"),
             ("otherInstances", "\(RunEnvironment.otherInstances().count)"),
         ])
     }
