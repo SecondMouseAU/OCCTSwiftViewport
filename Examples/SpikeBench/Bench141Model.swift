@@ -75,6 +75,7 @@ final class Bench141Model: ObservableObject {
     enum Failure: Error {
         case noRenderer
         case notDrawing(drawn: Int, expected: Int)
+        case screenLocked
         case cancelled
 
         var message: String {
@@ -85,6 +86,9 @@ final class Bench141Model: ObservableObject {
                 "the viewport drew \(drawn) of \(expected) warm-up frames, so nothing can be measured. "
                     + "A window that is hidden, minimised, on another Space or completely covered is not drawn by the system. "
                     + "Keep SpikeBench frontmost and uncovered while a #141 run is in progress."
+            case .screenLocked:
+                "the Mac's screen is locked, and a locked Mac draws no windows at all, so the viewport gets no frames. "
+                    + "Unlock it, keep it awake and keep SpikeBench in front for a #141 run. The #139 table does not need this."
             case .cancelled:
                 "cancelled"
             }
@@ -277,6 +281,7 @@ final class Bench141Model: ObservableObject {
     /// Throws when the viewport is not drawing (the warm-up records far fewer frames than ticks),
     /// rather than returning an empty window.
     func measure(mutation: Mutation, warmup: Int, frames: Int) async throws -> Window {
+        if RunEnvironment.screenLocked() { throw Failure.screenLocked }
         guard let renderer = await waitForRenderer() else { throw Failure.noRenderer }
         try checkCancelled()
         measuring = true
@@ -291,6 +296,7 @@ final class Bench141Model: ObservableObject {
         let warmFrames = renderer.benchRestartRecording().count
         if warmFrames < max(1, warmup / 4) {
             stopTicking()
+            if RunEnvironment.screenLocked() { throw Failure.screenLocked }
             throw Failure.notDrawing(drawn: warmFrames, expected: warmup)
         }
 

@@ -46,6 +46,7 @@ extension Bench141Model {
         }
         var results: [String: Saved] = [:]
         var aborted: String?
+        var rateNotes: [String] = []
 
         /// Measures one window and adds its row; on failure records why and stops the run.
         func run(
@@ -71,6 +72,8 @@ extension Bench141Model {
                         ms(encode), ms(max(0, median - encode)), over, ms(gpu), drawn,
                         "\(window.rebuilds)",
                     ])
+                let rate = Double(window.samples.count) / Double(max(window.ticks, 1))
+                if rate > 1.1 || rate < 0.9 { rateNotes.append("\(id) \(String(format: "%.2f", rate))") }
                 results[id] = Saved(window: window, median: median)
             } catch let failure as Failure {
                 aborted = failure.message
@@ -173,6 +176,12 @@ extension Bench141Model {
         let other = RunEnvironment.otherInstances()
         for table in [casesTable, case2, verdict] {
             report.footer(table, visibility.summary)
+            if !rateNotes.isEmpty {
+                report.footer(
+                    table,
+                    "CAUTION draws per 60 Hz tick differ from 1.00 in: \(rateNotes.joined(separator: ", ")). "
+                        + "Each tick's main-thread CPU then covers that many draw callbacks; compare only rows drawn at the same rate.")
+            }
             report.footer(
                 table,
                 other.isEmpty

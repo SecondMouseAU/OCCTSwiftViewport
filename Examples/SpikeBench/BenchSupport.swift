@@ -177,11 +177,24 @@ enum RunEnvironment {
         #endif
     }
 
+    /// Whether the login session's screen is locked. A locked Mac draws no windows at all, so a
+    /// viewport on it gets no frames (the cause of an empty #141 table).
+    static func screenLocked() -> Bool {
+        #if os(macOS)
+            guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+                return false
+            }
+            return (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+        #else
+            return false
+        #endif
+    }
+
     /// Whether the window is at least partly on screen (so the system keeps drawing it) and
     /// whether it is the key window of the active app.
     static func visibility() -> (visible: Bool, key: Bool) {
         #if os(macOS)
-            guard let window = mainWindow else { return (false, false) }
+            guard let window = mainWindow, !screenLocked() else { return (false, false) }
             let visible =
                 window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
             return (visible, window.isKeyWindow && NSApp.isActive)
