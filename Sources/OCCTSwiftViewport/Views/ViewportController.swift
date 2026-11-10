@@ -200,8 +200,9 @@ public final class ViewportController: ObservableObject {
     /// Internal so the input router's focus-on-point raycast shares its bounding-box cache.
     lazy var pivotStrategy = PivotStrategy()
 
-    /// Overlay bodies' local bounds by ID, with the generation they were read at.
-    private var overlayBoundsCache: [String: (generation: UInt64, bounds: BoundingBox?)] = [:]
+    /// Overlay bodies' local bounds by ID, with the `boundsKey` they were read at (not
+    /// `generation`: see `ViewportBody.generation`).
+    private var overlayBoundsCache: [String: (key: BoundsKey, bounds: BoundingBox?)] = [:]
 
     /// Current aspect ratio (updated by MetalViewportView).
     public internal(set) var lastAspectRatio: Float = 1.0
@@ -830,16 +831,16 @@ extension ViewportController {
             showAxes: showAxes, cameraState: cameraState, localBounds: cachedOverlayBounds(of:))
     }
 
-    /// An overlay body's local bounds, rescanned only when its generation changes.
+    /// An overlay body's local bounds, rescanned only when its `boundsKey` changes.
     ///
     /// `orthographicEyeBounds(of:)` runs on every orthographic camera change; the dynamic
     /// pivot's cache holds geometry-layer bodies only.
-    private func cachedOverlayBounds(of body: ViewportBody) -> BoundingBox? {
-        if let entry = overlayBoundsCache[body.id], entry.generation == body.generation {
+    func cachedOverlayBounds(of body: ViewportBody) -> BoundingBox? {
+        if let entry = overlayBoundsCache[body.id], entry.key == body.boundsKey {
             return entry.bounds
         }
         let bounds = body.boundingBox
-        overlayBoundsCache[body.id] = (body.generation, bounds)
+        overlayBoundsCache[body.id] = (body.boundsKey, bounds)
         return bounds
     }
 

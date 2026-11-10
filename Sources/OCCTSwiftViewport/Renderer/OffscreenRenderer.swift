@@ -672,6 +672,8 @@ public final class OffscreenRenderer: Sendable {
 
     // Body buffer cache
     private var bodyBufferCache: [String: BodyBuffersOffscreen] = [:]
+    /// A geometry-only cache key, deliberately `generation` and not `boundsKey`: the buffers are
+    /// built from the body's value-type arrays, which cannot change in place (#237).
     private var bodyGeneration: [String: UInt64] = [:]
 
     // GPU pick pass, built on the first pick so renders that never pick pay nothing.
@@ -680,6 +682,8 @@ public final class OffscreenRenderer: Sendable {
     private var basePickPipelines: PickPipelines?
     private var refinedPickPipelines: [PickPipelineKey: RefinedPickPipelines] = [:]
     /// Point-sprite pick vertices by body ID, rebuilt when the body's generation changes.
+    ///
+    /// Geometry-only (built from `vertices`), so `generation` is the right key, not `boundsKey`.
     private var pickPointBuffers: [String: (generation: UInt64, buffer: MTLBuffer)] = [:]
 
     // MARK: - Init

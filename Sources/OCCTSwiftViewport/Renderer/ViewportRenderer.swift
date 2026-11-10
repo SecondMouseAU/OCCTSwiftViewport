@@ -540,6 +540,10 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     /// Cached MTLBuffers keyed by body ID.
     private var bodyBufferCache: [String: BodyBuffers] = [:]
     /// Generation counter per body ID (detects geometry changes).
+    ///
+    /// A geometry-only cache key, deliberately `generation` and not `boundsKey`: the buffers are
+    /// built from the body's value-type arrays, which cannot change in place. Bounds caches use
+    /// `ViewportBody.boundsKey` (#237).
     private var bodyGeneration: [String: UInt64] = [:]
     /// `ViewportBody.triangleStylesGeneration` each cached `triangleStyleBuffer` was built from.
     private var bodyStyleGeneration: [String: UInt64] = [:]
@@ -2611,9 +2615,13 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
     /// A body's local bounds: the buffer cache's when current for its generation, else read from
     /// the body, so the frame that first shows a body is fitted too (#157).
+    ///
+    /// The buffer cache's box was scanned from the value-type arrays, which cannot change without
+    /// a new `generation`, so it is only trusted for a body without in-place content (whose bounds
+    /// follow `boundsKey` instead, #237); those are read from the body, which is O(1) for them.
     private func cachedLocalBounds(of body: ViewportBody) -> BoundingBox? {
         let cached =
-            bodyGeneration[body.id] == body.generation
+            body.inPlaceContent == nil && bodyGeneration[body.id] == body.generation
             ? bodyBufferCache[body.id]?.localBoundingBox : nil
         return cached ?? body.boundingBox
     }

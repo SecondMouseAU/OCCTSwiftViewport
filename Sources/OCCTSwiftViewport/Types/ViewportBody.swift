@@ -6,6 +6,29 @@
 import os
 import simd
 
+/// What a per-body bounds cache compares to know a body's bounds are still current.
+///
+/// A body's `generation`, plus the version of the shared content it draws, if any. See
+/// ``ViewportBody/boundsKey``.
+struct BoundsKey: Hashable, Sendable {
+    let generation: UInt64
+    let contentVersion: UInt64
+}
+
+/// Content a body draws from a shared handle that is edited in place, rather than from its
+/// value-type arrays.
+///
+/// A `ViewportBody` is a value type, so any change to its arrays takes a new `generation`. A
+/// handle shared between copies can change without the body being touched at all; it publishes
+/// that through `boundsVersion` so caches keyed on ``ViewportBody/boundsKey`` notice.
+protocol InPlaceBodyContent: AnyObject, Sendable {
+    /// Local-space bounds of everything the content draws, or `nil` when it draws nothing.
+    var contentBounds: BoundingBox? { get }
+
+    /// Changes whenever `contentBounds` changes, and may change more often.
+    var boundsVersion: UInt64 { get }
+}
+
 /// Render-time layering for a body.
 ///
 /// `.geometry` participates in normal depth testing. `.overlay` is drawn after the
@@ -128,7 +151,28 @@ public struct ViewportBody: Identifiable, Sendable {
     ///
     /// Copies share a generation until one of them is mutated. Two bodies with the same `id`
     /// and `generation` therefore hold the same geometry.
+    ///
+    /// **Invariant:** any change that affects a body's bounds must change `generation`, or the
+    /// body must expose a different ``boundsKey``. Caches of bounds key on `boundsKey`, never on
+    /// `generation`; only caches of GPU buffers built from the value-type arrays, which cannot
+    /// change in place, may key on `generation` alone.
     public private(set) var generation: UInt64
+
+    /// What a per-body bounds cache compares to know the bounds are still current.
+    ///
+    /// Equal to the body's `generation`, plus the version of its ``inPlaceContent`` if it has any.
+    var boundsKey: BoundsKey {
+        BoundsKey(generation: generation, contentVersion: inPlaceContent?.boundsVersion ?? 0)
+    }
+
+    /// The shared, in-place-editable content this body draws instead of its mesh arrays, or `nil`.
+    ///
+    /// Assigning takes a fresh generation. Edits made through the handle do not: they change
+    /// ``boundsKey`` instead. A body with in-place content draws, and is bounded by, only that
+    /// content (its `vertexData`, `edges` and the like are ignored).
+    var inPlaceContent: (any InPlaceBodyContent)? {
+        didSet { geometryDidChange() }
+    }
 
     /// Takes a fresh generation after a geometry field changed (not called during `init`).
     private mutating func geometryDidChange() {
@@ -531,8 +575,10 @@ extension ViewportBody {
     /// arcs count because they are drawn too: leaving them out let the near clip plane, fitted to
     /// these bounds, cut off edges lying in front of the mesh, and gave edge-only bodies no
     /// bounds at all (issue #135). Used for clip-plane fitting, frustum culling, shadow framing, picking
-    /// and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
+    /// and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all. A body with
+    /// ``inPlaceContent`` is bounded by that content alone.
     public var boundingBox: BoundingBox? {
+        if let inPlaceContent { return inPlaceContent.contentBounds }
         var bbMin = SIMD3<Float>(repeating: .infinity)
         var bbMax = SIMD3<Float>(repeating: -.infinity)
         var hasPoint = false
