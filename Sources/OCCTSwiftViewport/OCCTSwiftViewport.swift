@@ -106,6 +106,13 @@ public typealias _ScaleBarView = ScaleBarView
 public typealias _ScaleBarMetrics = ScaleBarMetrics
 public typealias _AuthoredColorSpace = AuthoredColorSpace
 
+// Heightfield surfaces
+public typealias _Heightfield = Heightfield
+public typealias _HeightfieldRegion = HeightfieldRegion
+public typealias _HeightfieldHit = HeightfieldHit
+public typealias _HeightfieldPrecision = HeightfieldPrecision
+public typealias _HeightfieldError = HeightfieldError
+
 // MARK: - Deprecated re-exports
 
 /// The pre-#111 spelling of `_PickResultFilter`.

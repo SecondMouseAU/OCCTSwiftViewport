@@ -429,6 +429,14 @@ public var hoverTint: SelectionTintStyle  // default: .hover
 
 Tint for `ViewportController.hoveredBodyID` when that body is not also selected (a selected body uses `selectionTint`). Not an `init` parameter.
 
+#### `heightfieldMeshCellPixels`
+
+```swift
+public var heightfieldMeshCellPixels: Float  // default: 4
+```
+
+The widest a [`Heightfield`](Heightfield.md) mesh cell may appear on screen, in pixels. Each 64 x 64-cell tile is drawn at the coarsest level of detail whose cell is no wider than this. Clamped to `Heightfield.meshCellPixelsRange` (`1...32`) when drawn; the sensible range is 3 to 8. 4 is the balanced default; **2 is a cost cliff**, about nine times the 4 px GPU time on an M4 at 1668 x 1194 with 4x MSAA (1.7 million triangles of one to two pixels). `OffscreenRenderOptions.heightfieldMeshCellPixels` carries the same field, and `init(matching:)` copies it.
+
 ---
 
 ### Edge lines

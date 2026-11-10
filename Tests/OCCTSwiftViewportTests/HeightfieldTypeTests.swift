@@ -170,6 +170,16 @@ struct HeightfieldTypeTests {
 
     // MARK: GPU settings
 
+    @Test("The Swift mirrors of the heightfield shader structs have the shaders' strides")
+    func shaderStructStrides() {
+        #expect(MemoryLayout<HeightfieldDrawParams>.stride == 48)
+        #expect(MemoryLayout<HeightfieldDrawParams>.size == 48)
+        #expect(MemoryLayout<HeightfieldTileInstance>.stride == 16)
+        #expect(MemoryLayout<HeightfieldTileInstance>.size == 16)
+        #expect(MemoryLayout<HeightfieldPyramidParams>.stride == 32)
+        #expect(MemoryLayout<HeightfieldPyramidParams>.size == 32)
+    }
+
     @Test("Half-float heights fall back to 32-bit where the platform cannot write them")
     func halfFloatFallsBack() {
         #expect(HeightfieldGPU.storageFormat(for: .float16, supportsHalf: true) == .r16Float)

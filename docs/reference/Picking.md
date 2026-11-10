@@ -132,6 +132,10 @@ The `id` string of the picked `ViewportBody`.
 
 Zero-based index of the body in draw order. Corresponds to `objectIndex` (the R channel) in the bit layout.
 
+#### `let heightfield: HeightfieldHit?`
+
+For a pick of a [`ViewportBody.heightfield`](Heightfield.md) body: the cell hit and its height, attribute and id, read when the pick was decoded; `nil` for every other pick. `triangleIndex` of such a result is the cell index (`y * width + x`) and `kind` is `.face`. The GPU pick hits the heightfield as drawn, which at a coarse level of detail can be cells from the true one; `ViewportController.refinePick(_:ndc:bodies:)` makes it exact, and `MetalViewportView` applies it to every tap. See [Heightfield](Heightfield.md#pickresultheightfield).
+
 #### `let triangleIndex: Int`
 
 The primitive index within the body, interpreted by `kind`:
@@ -242,6 +246,8 @@ Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so
 | `PickingConfiguration.pickRadius` | `OffscreenRenderOptions.pickRadius` |
 | `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
 | `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
+
+A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so it cannot be picked there.
 
 The offscreen calls are synchronous (the live ones complete asynchronously, after a GPU readback). Coordinates are render pixels, origin top left. Clip planes, `displayMode`, `isVisible`, `isPickable`, render layers, each body's `transform` and the `renderingQuality` surface path are applied as live. The full API is in [Rendering: GPU picking](Rendering.md#gpu-picking).
 

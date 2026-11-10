@@ -47,3 +47,4 @@ cd Examples/DocFigures && swift run DocFigures ../../docs/guides/cookbook/images
 - [Offscreen Rendering](offscreen-rendering.md) — `OffscreenRenderer` / `OffscreenRenderOptions` for headless PNGs, display modes, lighting, and measurement compositing.
 - [Gestures & Input](gestures-and-input.md) — `GestureConfiguration` presets (`.default` / `.blender` / `.fusion360`), the portable `ViewportInputEvent` model, and modifier keys.
 - [HUD Overlays](hud-overlays.md) — the orientation gnomon and the scale bar.
+- [Heightfield Surfaces](heightfield-surfaces.md) — a grid of cell heights edited in place by rectangle, per-cell attribute colour through a ramp, and exact cell picks.
