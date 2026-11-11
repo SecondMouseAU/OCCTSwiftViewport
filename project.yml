@@ -5,6 +5,8 @@ name: OCCTSwiftViewport
 include:
   - path: Examples/DirectMeshVerify/target.yml
     relativePaths: false
+  - path: Examples/SpikeBench/target.yml
+    relativePaths: false
 options:
   bundleIdPrefix: com.occtswift
   deploymentTarget:

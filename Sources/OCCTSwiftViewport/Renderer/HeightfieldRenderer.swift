@@ -233,6 +233,8 @@ struct HeightfieldDrawSet {
     let indexBuffers: [MTLBuffer]
     let indexCounts: [Int]
     let pickPipeline: LazyPipeline
+    /// Counts the instanced draws, for the benchmark hook.
+    var drawCounter: HeightfieldDrawCounter?
 
     /// Draws every planned tile with the shaded pipeline.
     ///
@@ -316,6 +318,7 @@ struct HeightfieldDrawSet {
                 type: .triangle, indexCount: indexCounts[level], indexType: .uint16,
                 indexBuffer: indexBuffers[level], indexBufferOffset: 0,
                 instanceCount: plan.ranges[level].count)
+            drawCounter?.increment()
         }
     }
 }
@@ -552,6 +555,8 @@ final class HeightfieldGPU {
     private(set) var fullUploads = 0
     /// Blit copy commands encoded since creation (two per block of consecutive dirty tiles).
     private(set) var blitCommands = 0
+    /// Instanced draw calls encoded since creation, over every pass.
+    let drawCounter = HeightfieldDrawCounter()
     /// Seconds the CPU spent on the last `encodeUpdates` / `makePlan`.
     private(set) var lastUpdateSeconds: Double = 0
     private(set) var lastPlanSeconds: Double = 0
@@ -1045,7 +1050,7 @@ final class HeightfieldGPU {
                 cellSize: field.cellSize, origin: field.origin,
                 rampMode: rampSpace == .linear ? 6 : 2),
             indexBuffers: shared.indexBuffers, indexCounts: shared.indexCounts,
-            pickPipeline: shared.pickPipeline)
+            pickPipeline: shared.pickPipeline, drawCounter: drawCounter)
     }
 
     // MARK: Test support

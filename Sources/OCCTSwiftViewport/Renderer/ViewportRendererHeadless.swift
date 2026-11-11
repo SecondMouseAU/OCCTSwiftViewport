@@ -133,7 +133,9 @@ extension ViewportRenderer {
         width: Int,
         height: Int,
         backgroundColor: SIMD4<Float>,
-        frameCount: Int = 1
+        frameCount: Int = 1,
+        beforeFrame: ((Int) -> Void)? = nil,
+        shouldStop: (() -> Bool)? = nil
     ) -> [UInt8]? {
         guard frameCount > 0 else { return nil }
 
@@ -150,7 +152,9 @@ extension ViewportRenderer {
             alpha: Double(backgroundColor.w)
         )
 
-        for _ in 0..<frameCount {
+        for frame in 0..<frameCount {
+            if shouldStop?() == true { break }
+            beforeFrame?(frame)
             guard let passDescriptor = targets.makeMainPassDescriptor(clearColor: clearColor) else {
                 return nil
             }
