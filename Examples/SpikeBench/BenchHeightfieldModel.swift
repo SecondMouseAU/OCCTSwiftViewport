@@ -149,7 +149,8 @@ final class BenchHeightfieldModel: ObservableObject {
         editLoad =
             settings.editsPerFrame > 0
             ? BenchHeightfieldScene.EditLoad(
-                count: settings.editsPerFrame, pattern: settings.pattern, field: field)
+                count: settings.editsPerFrame, pattern: settings.pattern, field: field,
+                base: Self.heights)
             : nil
     }
 
