@@ -26,6 +26,8 @@ final class BenchHeightfieldRunner {
         var height = 1194
         var warmup = 30
         var frames = 150
+        /// Runs the cases in reverse order, to tell an ordering effect from a configuration one.
+        var reverse = false
     }
 
     /// Everything that needs a new renderer (and a new field) when it changes. The mesh-cell
@@ -45,6 +47,9 @@ final class BenchHeightfieldRunner {
         var key = SessionKey()
         var edits = 0
         var pattern = BenchHeightfieldScene.EditPattern.sliding
+        /// Keep the previous case's renderer and field (with whatever edits it holds) instead of
+        /// building new ones. Every case starts from the pristine terrain unless it asks for this.
+        var reuse = false
     }
 
     /// Medians and means over the measured frames.
@@ -67,6 +72,10 @@ final class BenchHeightfieldRunner {
         var draws: Double
         var frames: Int
         var gpuFrames: Int
+        /// The frame time over the first and the last third of the measured frames: a drift
+        /// within one window (the GPU slowing down) shows as the two differing.
+        var firstThird: Double
+        var lastThird: Double
     }
 
     private final class BodyBox: @unchecked Sendable {
@@ -130,10 +139,12 @@ final class BenchHeightfieldRunner {
             key: key, controller: controller, renderer: renderer, field: field, box: box)
     }
 
-    private func session(for key: SessionKey) -> Session? {
-        if let session, session.key == key { return session }
+    /// A new renderer and field for `c`, so every case starts from the same terrain, unless it
+    /// asks (`reuse`) to carry on with the previous one.
+    private func session(for c: Case) -> Session? {
+        if c.reuse, let session, session.key == c.key { return session }
         session = nil  // release the old renderer and its textures first
-        session = makeSession(key)
+        session = makeSession(c.key)
         return session
     }
 
@@ -171,6 +182,7 @@ final class BenchHeightfieldRunner {
         for i in ends.indices.dropFirst() where ends[i] > 0 && ends[i - 1] > 0 {
             intervals.append((ends[i] - ends[i - 1]) * 1e3)
         }
+        let third = max(intervals.count / 3, 1)
         return Measure(
             frame: Stats.median(intervals), frame10: Stats.percentile(intervals, 0.10),
             frame95: Stats.percentile(intervals, 0.95), gpu: Stats.median(gpu),
@@ -181,7 +193,9 @@ final class BenchHeightfieldRunner {
             uploadMB: Stats.mean(values { Double($0.heightfieldUploadedBytes) }) / 1_048_576,
             tiles: Stats.median(values { Double($0.heightfieldTilesDrawn) }),
             draws: Stats.median(values { Double($0.heightfieldDrawCalls) }),
-            frames: samples.count, gpuFrames: gpu.count)
+            frames: samples.count, gpuFrames: gpu.count,
+            firstThird: Stats.median(Array(intervals.prefix(third))),
+            lastThird: Stats.median(Array(intervals.suffix(third))))
     }
 
     // MARK: Everything
@@ -199,7 +213,17 @@ final class BenchHeightfieldRunner {
                 "passes", "msaa", "cell px", "frame med", "frame p10", "frame p95", "gpu span", "cpu encode", "plan", "tiles",
                 "draws/frame", "frames",
             ])
+        let repeatTable = "139.repeat"
+        report.table(
+            repeatTable,
+            title: "#139 the same 4 px, MSAA 4, shaded-only scene measured again: at the start, fresh at the end, in one session, and after edits",
+            columns: [
+                "what", "frame med", "first third", "last third", "frame p10", "gpu span", "seconds into run",
+            ])
         var cases: [Case] = []
+        cases.append(Case(table: repeatTable, id: "anchor.start"))
+        cases.append(
+            Case(table: repeatTable, id: "anchor.all.start", key: SessionKey(allPasses: true)))
         let targets: [Float] = [2, 3, 4, 6, 8]
         for allPasses in [false, true] {
             for msaa in [4, 1] {
@@ -255,8 +279,23 @@ final class BenchHeightfieldRunner {
                 Case(table: pickTable, id: picking ? "on" : "off", key: SessionKey(picking: picking)))
         }
 
+        // The same scene again, to separate position in the run from configuration.
+        for n in 1...3 { cases.append(Case(table: repeatTable, id: "fresh\(n).end")) }
+        cases.append(Case(table: repeatTable, id: "oneSession.1"))
+        for n in 2...3 {
+            cases.append(Case(table: repeatTable, id: "oneSession.\(n)", reuse: true))
+        }
+        cases.append(
+            Case(
+                table: repeatTable, id: "edited.200disjoint", edits: 200, pattern: .disjoint))
+        cases.append(Case(table: repeatTable, id: "edited.then0edits", reuse: true))
+        cases.append(
+            Case(table: repeatTable, id: "anchor.all.end", key: SessionKey(allPasses: true)))
+        if o.reverse { cases.reverse() }
+
         var noEditGPU: Double?
         var stopped: String?
+        let runStart = DispatchTime.now().uptimeNanoseconds
         for (index, c) in cases.enumerated() {
             if RunControl.shared.cancelled {
                 stopped = "cancelled before case \(index + 1) of \(cases.count) (\(c.table) \(c.id))"
@@ -264,7 +303,7 @@ final class BenchHeightfieldRunner {
             }
             status("#139 \(index + 1)/\(cases.count): \(c.table) \(c.id)")
             await Task.yield()
-            guard let s = session(for: c.key) else {
+            guard let s = session(for: c) else {
                 report.note("no renderer for \(c.id): \(failure ?? "ViewportRenderer.init returned nil")")
                 continue
             }
@@ -297,6 +336,14 @@ final class BenchHeightfieldRunner {
                         c.key.float16 ? "float16" : "float32", "\(c.edits)", cell(m.frame),
                         cell(m.frame10), cell(m.gpu), String(format: "%.2f", m.uploadMB),
                         cell(m.replace), cell(m.encode),
+                    ])
+            case repeatTable:
+                let elapsed = Double(DispatchTime.now().uptimeNanoseconds - runStart) * 1e-9
+                report.row(
+                    repeatTable, c.id,
+                    [
+                        c.id, cell(m.frame), cell(m.firstThird), cell(m.lastThird),
+                        cell(m.frame10), cell(m.gpu), String(format: "%.0f", elapsed),
                     ])
             default:
                 report.row(
@@ -345,7 +392,7 @@ final class BenchHeightfieldRunner {
         // Under every table: how the run went. These are off-screen frames, so the window being
         // hidden does not matter here, but a second copy of the app on the GPU does.
         let other = RunEnvironment.otherInstances()
-        for table in [gpuTable, editTable, precisionTable, pickTable, rayTable] {
+        for table in [gpuTable, editTable, precisionTable, pickTable, repeatTable, rayTable] {
             report.footer(
                 table,
                 "off-screen frames, back to back (window state does not matter); other SpikeBench instances running: "

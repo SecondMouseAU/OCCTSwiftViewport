@@ -88,6 +88,8 @@ struct LaunchOptions {
     var ignoreOtherInstances = false
     /// Wait up to this many seconds for `thermalState` to read nominal before a run starts.
     var waitThermal: Double?
+    /// Run the #139 cases in reverse order (to tell ordering from configuration).
+    var reverse139 = false
     var size: (width: Int, height: Int)?
     var frames: Int?
     var warmup: Int?
@@ -107,6 +109,7 @@ struct LaunchOptions {
             case "--hide-window": hideWindow = true
             case "--ignore-other-instances": ignoreOtherInstances = true
             case "--wait-thermal": waitThermal = it.next().flatMap(Double.init)
+            case "--reverse139": reverse139 = true
             case "--frames": frames = it.next().flatMap(Int.init)
             case "--warmup": warmup = it.next().flatMap(Int.init)
             case "--size":
@@ -400,6 +403,7 @@ struct RootView: View {
         options.height = size.1
         options.warmup = launch.warmup ?? (launch.quick ? 8 : 30)
         options.frames = launch.frames ?? (launch.quick ? 20 : 150)
+        options.reverse = launch.reverse139
         let runner = BenchHeightfieldRunner(options: options)
         report.note(
             "#139 off-screen size \(options.width)x\(options.height), \(options.frames) frames after \(options.warmup) warm-up, median per row")
