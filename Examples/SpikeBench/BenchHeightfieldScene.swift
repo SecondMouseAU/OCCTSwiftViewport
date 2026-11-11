@@ -112,6 +112,11 @@ enum BenchHeightfieldScene {
     /// `count` regions of 130 x 120 cells per frame, with the payloads built up front so only
     /// `Heightfield.replace` is timed when they are applied. Two height payloads alternate
     /// frame to frame so every edit really changes the field.
+    ///
+    /// By default a payload is the terrain's own height in that cell plus or minus 1.5, so the
+    /// surface stays as rough as before and a frame's cost changes only by the update itself.
+    /// With `rough`, a payload is white noise of amplitude 30 per cell, which roughens whatever it
+    /// covers: a frame then costs more to draw as well, which is what the repeat table shows.
     struct EditLoad {
         var regions: [HeightfieldRegion]
         var heights: [[[Float]]]
@@ -120,7 +125,10 @@ enum BenchHeightfieldScene {
 
         var count: Int { regions.count }
 
-        init(count: Int, pattern: EditPattern, field: Heightfield) {
+        init(
+            count: Int, pattern: EditPattern, field: Heightfield, base: [Float],
+            rough: Bool = false
+        ) {
             let size = BenchHeightfieldScene.editSize
             var list: [HeightfieldRegion] = []
             switch pattern {
@@ -142,13 +150,21 @@ enum BenchHeightfieldScene {
             }
             let regionList = list
             regions = regionList
+            let fieldWidth = field.width
             heights = [0, 1].map { variant in
                 regionList.enumerated().map { index, region in
                     (0..<region.cellCount).map {
-                        30 * BenchHeightfieldScene.noise(
-                            $0 % region.width + (index + variant * 1000) * 7,
-                            $0 / region.width + index + variant * 1000)
-                            + Float((index + variant * 1000) % 13)
+                        let column = $0 % region.width
+                        let row = $0 / region.width
+                        if rough {
+                            return 30
+                                * BenchHeightfieldScene.noise(
+                                    column + (index + variant * 1000) * 7,
+                                    row + index + variant * 1000)
+                                + Float((index + variant * 1000) % 13)
+                        }
+                        let terrain = base[(region.y + row) * fieldWidth + region.x + column]
+                        return terrain + (variant == 0 ? 1.5 : -1.5)
                     }
                 }
             }

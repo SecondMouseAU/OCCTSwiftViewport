@@ -50,6 +50,8 @@ final class BenchHeightfieldRunner {
         /// Keep the previous case's renderer and field (with whatever edits it holds) instead of
         /// building new ones. Every case starts from the pristine terrain unless it asks for this.
         var reuse = false
+        /// White-noise edit payloads that roughen the field (see `EditLoad`).
+        var rough = false
     }
 
     /// Medians and means over the measured frames.
@@ -153,7 +155,8 @@ final class BenchHeightfieldRunner {
     private func measure(_ c: Case, in s: Session) async -> Measure {
         let renderer = s.renderer
         let load = c.edits > 0
-            ? BenchHeightfieldScene.EditLoad(count: c.edits, pattern: c.pattern, field: s.field)
+            ? BenchHeightfieldScene.EditLoad(
+                count: c.edits, pattern: c.pattern, field: s.field, base: heights, rough: c.rough)
             : nil
         let warmup = options.warmup
         var replaceMs: [Double] = []
@@ -285,10 +288,17 @@ final class BenchHeightfieldRunner {
         for n in 2...3 {
             cases.append(Case(table: repeatTable, id: "oneSession.\(n)", reuse: true))
         }
-        cases.append(
-            Case(
-                table: repeatTable, id: "edited.200disjoint", edits: 200, pattern: .disjoint))
-        cases.append(Case(table: repeatTable, id: "edited.then0edits", reuse: true))
+        // 200 disjoint edits, then none on the same field: with payloads that keep the terrain as
+        // rough as it was (the default, as in the edits table) and with white-noise payloads that
+        // roughen it.
+        for rough in [false, true] {
+            let name = rough ? "rough" : "smooth"
+            cases.append(
+                Case(
+                    table: repeatTable, id: "edit200disjoint.\(name)", edits: 200,
+                    pattern: .disjoint, rough: rough))
+            cases.append(Case(table: repeatTable, id: "edit200disjoint.\(name).then0", reuse: true))
+        }
         cases.append(
             Case(table: repeatTable, id: "anchor.all.end", key: SessionKey(allPasses: true)))
         if o.reverse { cases.reverse() }
