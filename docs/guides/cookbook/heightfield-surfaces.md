@@ -59,7 +59,9 @@ let terrain = try Heightfield(
 A heightfield body draws only the field: its mesh arrays are ignored. `color`, `material` (including
 opacity), `transform`, `isVisible` and `renderLayer` apply as for a mesh. The mesh cell target
 (`heightfieldMeshCellPixels`, 4 px by default) trades sharpness for GPU time; leave it alone unless
-you have measured.
+you have measured. **On an iPad the default costs about 20 ms per frame at full resolution with 4x
+MSAA, which misses 60 fps**: use 6 px or `msaaSampleCount: 1` there (about 6 ms). See
+[Things to know](#things-to-know).
 
 ---
 
@@ -195,7 +197,11 @@ gauge.renderLayer = .overlay         // drawn over everything, like a widget; no
 - **If the GPU cannot hold a field** the renderer logs once (`os.Logger`, subsystem
   `OCCTSwiftViewport`, category `Heightfield`) and does not draw it.
 - **Cost.** On an M4 in a release build a 2000 x 2000 field costs about 2.6 ms of GPU at the default
-  target; 2 px is a 9x cliff. Nothing has been measured on an iPad or iPhone yet; measure in a
-  **release** build, since a debug build's GPU timings are not representative.
+  target; 2 px is a 9x cliff. On an iPad Pro (M2) at 2732 x 2048 the same field costs about 20 ms at
+  the default target with 4x MSAA, which misses a 60 fps budget; with 6 px, or with MSAA off at
+  4 px, it is about 6 ms. The default stays at 4 px on every platform, so choose the setting for
+  your device. Nothing has been measured on an iPhone, and 5 px has not been measured anywhere.
+  Measure in a **release** build, since a debug build's GPU timings are not representative. The
+  [reference](../../reference/Heightfield.md#cost) has the iPad table.
 - **Offscreen.** `OffscreenRenderer` draws, shadows, outlines and picks a heightfield exactly as the
   live viewport does; `OffscreenRenderOptions.heightfieldMeshCellPixels` carries the target.
