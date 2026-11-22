@@ -183,7 +183,38 @@ var gauge = stock
 gauge.renderLayer = .overlay         // drawn over everything, like a widget; no outline or shadow
 ```
 
-`.wireframe` draws nothing for a heightfield (it has no edge geometry); use `.shaded`.
+---
+
+## Wireframe: a lattice on the surface
+
+`.wireframe` draws a heightfield as a **lattice** of lines on its displaced surface, in the body's colour
+(its `material`'s base colour when it has one; pick one that contrasts with the background), with the
+width and dash of `edgeLineConfiguration`, and nothing of the surface itself:
+
+```swift
+var config = ViewportConfiguration()
+config.edgeLineConfiguration = EdgeLineConfiguration(width: 1.5)   // optional: width and dash
+let controller = ViewportController(configuration: config)
+controller.displayMode = .wireframe
+```
+
+The lines stay about **16 pixels apart on screen at any zoom** (the smallest power-of-two number of
+cells that spans that), so a far-away field and a close-up read the same. Set
+`heightfieldLatticePixels` (on `ViewportConfiguration`, and on `OffscreenRenderOptions`, which
+`init(matching:)` copies) to change it; a value at or below the mesh cell (`heightfieldMeshCellPixels`,
+4 px) draws one line per mesh cell, a dense hatch:
+
+```swift
+config.heightfieldLatticePixels = 8        // denser; the default is 16, the range 1...256
+```
+
+The lattice is see-through, as a mesh's edges are in `.wireframe`: lines behind a ridge are drawn.
+Section planes, `transform` and `isVisible` apply as for the shaded surface. The lines are pickable and
+the gaps are not (a mesh in `.wireframe` is picked at its edges, not its faces): a tap on a line gives
+`PickResult.heightfield` with the cell under it, and `refinePick` makes it exact. Every other display
+mode draws the surface as before.
+
+---
 
 ---
 

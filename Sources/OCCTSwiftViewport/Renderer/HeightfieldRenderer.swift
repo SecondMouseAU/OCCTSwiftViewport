@@ -31,6 +31,25 @@ enum HeightfieldLayout {
         guard ratio >= 1 else { return 0 }
         return min(maxLevel, Int(log2(ratio).rounded(.down)))
     }
+
+    /// The coarsest lattice pitch, as a power of two of cells.
+    ///
+    /// 2^14 = 16,384 is past the longest side a field can have (`Heightfield.maximumDimension`),
+    /// so a field seen from very far draws a line or two. The shader reads the level from 4 bits.
+    static let maxLatticeLevel = 14
+
+    /// The pitch, as a power of two of cells, of a tile's `.wireframe` lattice lines.
+    ///
+    /// The smallest power of two of cells that spans at least `latticePixels` on screen, but never
+    /// finer than the tile's own mesh cell (`meshLevel`): there are no mesh edges between, so a
+    /// line there would cut across triangles. Powers of two nest, so neighbouring tiles whose
+    /// pitches differ by one level share every second line.
+    static func latticeLevel(cellPixels: Float, latticePixels: Float, meshLevel: Int) -> Int {
+        guard cellPixels > 0, latticePixels > 0 else { return maxLatticeLevel }
+        let ratio = latticePixels / cellPixels
+        let wanted = ratio <= 1 ? 0 : Int(log2(ratio).rounded(.up))
+        return min(maxLatticeLevel, max(meshLevel, wanted))
+    }
 }
 
 // MARK: - Shader mirrors
@@ -56,7 +75,9 @@ struct HeightfieldDrawParams {
 struct HeightfieldTileInstance {
     var origin: SIMD2<UInt32>
     var levels: UInt32
-    var pad: UInt32 = 0
+    /// The `.wireframe` lattice line pitch, a power of two of cells (see
+    /// `HeightfieldLayout.latticeLevel`); 0 in every other display mode.
+    var lattice: UInt32 = 0
 }
 
 /// Mirrors `HeightfieldPyramidParams`.
@@ -99,6 +120,9 @@ final class HeightfieldShared {
     /// The face-pick pipeline: `heightfield_pick_vertex` + `heightfield_pick_fragment`, which
     /// stamps the cell index.
     let pickPipeline: LazyPipeline
+    /// The lattice-pick pipeline for `.wireframe`: `heightfield_lattice_vertex` +
+    /// `heightfield_lattice_pick_fragment`, which stamps the cell index on the lattice lines only.
+    let latticePickPipeline: LazyPipeline
     /// `uint16` triangle indices of an `n x n`-quad tile grid, per level (`n = 64 >> level`).
     let indexBuffers: [MTLBuffer]
     let indexCounts: [Int]
@@ -113,6 +137,14 @@ final class HeightfieldShared {
                 device: device, label: "pick_heightfield", library: library,
                 vertexFunction: "heightfield_pick_vertex",
                 fragmentFunction: "heightfield_pick_fragment",
+                colorPixelFormat: PickPipelines.colorPixelFormat,
+                depthPixelFormat: PickPipelines.depthPixelFormat)
+        }
+        latticePickPipeline = LazyPipeline {
+            RendererSharedSetup.makePipelineState(
+                device: device, label: "pick_heightfield_lattice", library: library,
+                vertexFunction: "heightfield_lattice_vertex",
+                fragmentFunction: "heightfield_lattice_pick_fragment",
                 colorPixelFormat: PickPipelines.colorPixelFormat,
                 depthPixelFormat: PickPipelines.depthPixelFormat)
         }
@@ -148,6 +180,9 @@ final class HeightfieldShared {
 /// The render pipelines of the heightfield passes for one sample count.
 struct HeightfieldPipelines {
     let shaded: MTLRenderPipelineState
+    /// The `.wireframe` lattice, built on first use so a renderer that never draws one never
+    /// compiles it.
+    let lattice: LazyPipeline
 
     init?(device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat) {
         guard
@@ -158,6 +193,14 @@ struct HeightfieldPipelines {
                 stencilPixelFormat: depthFormat, sampleCount: sampleCount, blending: .sourceOver)
         else { return nil }
         self.shaded = shaded
+        lattice = LazyPipeline {
+            RendererSharedSetup.makePipelineState(
+                device: device, label: "heightfield_lattice", library: library,
+                vertexFunction: "heightfield_lattice_vertex",
+                fragmentFunction: "heightfield_lattice_fragment",
+                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
+                stencilPixelFormat: depthFormat, sampleCount: sampleCount, blending: .sourceOver)
+        }
     }
 }
 
@@ -178,6 +221,9 @@ struct HeightfieldView {
     /// World-space section planes (`dot(n, p) + w < 0` is clipped); a tile wholly behind one is
     /// not drawn.
     var clipPlanes: [SIMD4<Float>] = []
+    /// The on-screen spacing of `.wireframe` lattice lines, in pixels; `nil` when no lattice is
+    /// drawn, which leaves every tile's lattice pitch at 0.
+    var latticePixels: Float?
 }
 
 /// The light's view of the scene, for choosing which tiles cast shadows the camera can see.
@@ -208,6 +254,8 @@ struct HeightfieldTileLevels {
     let rows: Int
     /// Per tile, row-major.
     var levels: [UInt8]
+    /// Each tile's lattice line pitch as a power of two of cells (0 unless a lattice is planned).
+    var lattice: [UInt8]
     /// Whether the camera's frustum reaches each tile and no section plane clips it away.
     var cameraVisible: [Bool]
     /// Whether the camera's frustum reaches each tile.
@@ -233,6 +281,51 @@ struct HeightfieldDrawSet {
     let indexBuffers: [MTLBuffer]
     let indexCounts: [Int]
     let pickPipeline: LazyPipeline
+    let latticePickPipeline: LazyPipeline
+
+    /// Whether `displayMode` draws (and picks) the field as a lattice.
+    ///
+    /// The modes that show edges but not surfaces do, which today is `.wireframe`. Every other
+    /// mode draws the surface, or, for a heightfield, which has no edge geometry, nothing more.
+    static func drawsLattice(in displayMode: DisplayMode) -> Bool {
+        displayMode.showsEdges && !displayMode.showsSurfaces
+    }
+
+    /// The uniforms of a lattice draw: the edge configuration's width and dash pattern.
+    ///
+    /// With quad expansion off, whose native lines are one pixel wide and solid, so is the
+    /// lattice. `width` overrides the configured width (a pick's footprint).
+    static func latticeEdgeUniforms(
+        uniforms: Uniforms, configuration: EdgeLineConfiguration, viewportSize: SIMD2<Float>,
+        width: Float? = nil
+    ) -> EdgeUniforms {
+        var configuration = configuration
+        if !configuration.useQuadExpansion {
+            configuration.width = 1
+            configuration.dashPattern = .solid
+        }
+        return EdgeUniforms(
+            uniforms: uniforms, configuration: configuration, viewportSize: viewportSize,
+            width: width)
+    }
+
+    /// Draws the planned tiles as the `.wireframe` lattice: the surface's triangles through the
+    /// lattice pipeline, which keeps only the fragments on a line.
+    ///
+    /// `edgeUniforms` carries the edge configuration (width, dash), the clip planes and the body's
+    /// `modelMatrix`; the caller sets the depth-stencil state and cull mode. With the lattice
+    /// pick pipeline (`encodePick` of the pick pass) the same call stamps the lines' cells.
+    func encodeLattice(
+        encoder: MTLRenderCommandEncoder, pipeline: MTLRenderPipelineState,
+        edgeUniforms: inout EdgeUniforms, bodyUniforms: inout BodyUniforms
+    ) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+        encoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
+        encoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
+        encoder.setVertexTexture(heights, index: 0)
+        encodeDraws(encoder: encoder, setFragmentParams: true)
+    }
 
     /// Draws every planned tile with the shaded pipeline.
     ///
@@ -454,11 +547,17 @@ final class HeightfieldRenderCache {
     func prepare(
         bodies: [ViewportBody], commandBuffer: MTLCommandBuffer, view: simd_float4x4,
         projection: simd_float4x4, viewportHeight: Float, meshCellPixels: Float,
-        clipPlanes: [SIMD4<Float>] = [], shadow: HeightfieldShadowView? = nil
+        latticePixels: Float? = nil, clipPlanes: [SIMD4<Float>] = [],
+        shadow: HeightfieldShadowView? = nil
     ) -> [Entry] {
         let targetPixels = min(
             max(meshCellPixels, Heightfield.meshCellPixelsRange.lowerBound),
             Heightfield.meshCellPixelsRange.upperBound)
+        let latticeTarget = latticePixels.map {
+            min(
+                max($0, Heightfield.latticePixelsRange.lowerBound),
+                Heightfield.latticePixelsRange.upperBound)
+        }
         var entries: [Entry] = []
         var active = Set<String>()
         var objectIndex: UInt32 = 0
@@ -485,7 +584,7 @@ final class HeightfieldRenderCache {
             let planView = HeightfieldView(
                 model: body.transform, view: view, projection: projection,
                 viewportHeight: viewportHeight, targetPixels: targetPixels,
-                forcedLevel: forcedLevel, clipPlanes: clipPlanes)
+                forcedLevel: forcedLevel, clipPlanes: clipPlanes, latticePixels: latticeTarget)
             let levels = state.computeLevels(view: planView)
             let plan = state.pack(
                 levels: levels, mask: levels.cameraVisible, pool: planPool,
@@ -852,6 +951,7 @@ final class HeightfieldGPU {
         let modelView = view.view * view.model
 
         var levels = [UInt8](repeating: 0, count: cols * rows)
+        var lattice = [UInt8](repeating: 0, count: cols * rows)
         var inFrustum = [Bool](repeating: true, count: cols * rows)
         var unclipped = [Bool](repeating: true, count: cols * rows)
         var worldBoxes = [BoundingBox](
@@ -870,24 +970,34 @@ final class HeightfieldGPU {
                 worldBoxes[index] = world
                 if view.cull, !frustum.intersects(world) { inFrustum[index] = false }
                 if Self.isClippedAway(world, by: view.clipPlanes) { unclipped[index] = false }
-                if let forced = view.forcedLevel {
-                    levels[index] = UInt8(max(0, min(HeightfieldLayout.maxLevel, forced)))
-                    continue
-                }
                 let centre = (lo + hi) * 0.5
                 let radius = simd_length(world.max - world.min) * 0.5
                 let viewCentre = modelView * SIMD4(centre, 1)
-                let depth = orthographic ? 1 : max(-viewCentre.z - radius, 1e-3)
-                let cellPixels = worldCell * pixelsPerUnit / depth
-                levels[index] = UInt8(
-                    HeightfieldLayout.level(
-                        cellPixels: cellPixels, targetPixels: view.targetPixels))
+                if let forced = view.forcedLevel {
+                    levels[index] = UInt8(max(0, min(HeightfieldLayout.maxLevel, forced)))
+                } else {
+                    let depth = orthographic ? 1 : max(-viewCentre.z - radius, 1e-3)
+                    let cellPixels = worldCell * pixelsPerUnit / depth
+                    levels[index] = UInt8(
+                        HeightfieldLayout.level(
+                            cellPixels: cellPixels, targetPixels: view.targetPixels))
+                }
+                if let latticePixels = view.latticePixels {
+                    // The lattice's spacing follows what is on screen at the tile's centre, so a
+                    // tile's lines are about `latticePixels` apart however far away it is.
+                    let depth = orthographic ? 1 : max(-viewCentre.z, 1e-3)
+                    lattice[index] = UInt8(
+                        HeightfieldLayout.latticeLevel(
+                            cellPixels: worldCell * pixelsPerUnit / depth,
+                            latticePixels: latticePixels, meshLevel: Int(levels[index])))
+                }
             }
         }
         let visible = zip(inFrustum, unclipped).map { $0 && $1 }
         return HeightfieldTileLevels(
-            cols: cols, rows: rows, levels: levels, cameraVisible: visible, inFrustum: inFrustum,
-            unclipped: unclipped, worldBoxes: worldBoxes, worldCell: worldCell)
+            cols: cols, rows: rows, levels: levels, lattice: lattice, cameraVisible: visible,
+            inFrustum: inFrustum, unclipped: unclipped, worldBoxes: worldBoxes,
+            worldCell: worldCell)
     }
 
     /// Whether `box` lies wholly on the clipped side of one of `planes`.
@@ -990,7 +1100,8 @@ final class HeightfieldGPU {
                     | corner(1, 1) << 21
                 perLevel[own].append(
                     HeightfieldTileInstance(
-                        origin: SIMD2(UInt32(tx * t), UInt32(ty * t)), levels: packed))
+                        origin: SIMD2(UInt32(tx * t), UInt32(ty * t)), levels: packed,
+                        lattice: UInt32(tileLevels.lattice[ty * cols + tx])))
             }
         }
         let total = perLevel.reduce(0) { $0 + $1.count }
@@ -1045,7 +1156,7 @@ final class HeightfieldGPU {
                 cellSize: field.cellSize, origin: field.origin,
                 rampMode: rampSpace == .linear ? 6 : 2),
             indexBuffers: shared.indexBuffers, indexCounts: shared.indexCounts,
-            pickPipeline: shared.pickPipeline)
+            pickPipeline: shared.pickPipeline, latticePickPipeline: shared.latticePickPipeline)
     }
 
     // MARK: Test support

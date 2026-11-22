@@ -120,6 +120,12 @@ public final class Heightfield: InPlaceBodyContent, @unchecked Sendable {
     /// The values ``ViewportConfiguration/heightfieldMeshCellPixels`` is clamped to when drawn.
     public static let meshCellPixelsRange: ClosedRange<Float> = 1...32
 
+    /// The default for ``ViewportConfiguration/heightfieldLatticePixels``: 16 pixels.
+    public static let defaultLatticePixels: Float = 16
+
+    /// The values ``ViewportConfiguration/heightfieldLatticePixels`` is clamped to when drawn.
+    public static let latticePixelsRange: ClosedRange<Float> = 1...256
+
     /// The most cells a field can have along either side.
     ///
     /// The GPU height texture is padded to whole 64-cell tiles plus one, and a Metal texture is at

@@ -176,6 +176,10 @@ struct HeightfieldTypeTests {
         #expect(MemoryLayout<HeightfieldDrawParams>.size == 48)
         #expect(MemoryLayout<HeightfieldTileInstance>.stride == 16)
         #expect(MemoryLayout<HeightfieldTileInstance>.size == 16)
+        // `HeightfieldTile` in Shaders.metal: origin (0), levels (8), lattice pitch (12).
+        #expect(MemoryLayout<HeightfieldTileInstance>.offset(of: \.origin) == 0)
+        #expect(MemoryLayout<HeightfieldTileInstance>.offset(of: \.levels) == 8)
+        #expect(MemoryLayout<HeightfieldTileInstance>.offset(of: \.lattice) == 12)
         #expect(MemoryLayout<HeightfieldPyramidParams>.stride == 32)
         #expect(MemoryLayout<HeightfieldPyramidParams>.size == 32)
     }

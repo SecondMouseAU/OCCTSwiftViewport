@@ -1490,6 +1490,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
             meshCellPixels: controller.configuration.heightfieldMeshCellPixels,
+            latticePixels: HeightfieldDrawSet.drawsLattice(in: displayMode)
+                ? controller.configuration.heightfieldLatticePixels : nil,
             clipPlanes: RendererSharedSetup.activeClipPlanes(clipPlaneVecs, count: clipPlaneCount),
             shadow: shadowEnabled
                 ? HeightfieldShadowView(
@@ -1975,6 +1977,28 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
                     uniforms: &uniforms, bodyUniforms: &bodyUniforms)
             }
+        } else if HeightfieldDrawSet.drawsLattice(in: displayMode), let heightfieldPipelines,
+            let latticePipeline = heightfieldPipelines.lattice.value
+        {
+            // `.wireframe`: the surface is not drawn; its lattice is, like a mesh's edges, in
+            // the body's own colour with the edge configuration's width and dash, tested against
+            // the depth already drawn but not written, so the lines of one field never knock
+            // each other out.
+            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                var edgeUniforms = HeightfieldDrawSet.latticeEdgeUniforms(
+                    uniforms: uniforms, configuration: frameEdgeConfig,
+                    viewportSize: edgeViewportSize)
+                var bodyUniforms = BodyUniforms(
+                    body: entry.body, objectIndex: entry.objectIndex, isSelected: 0)
+                mainEncoder.setCullMode(.none)
+                mainEncoder.setDepthStencilState(highlightDepthState)
+                entry.draw.encodeLattice(
+                    encoder: mainEncoder, pipeline: latticePipeline, edgeUniforms: &edgeUniforms,
+                    bodyUniforms: &bodyUniforms)
+            }
+            mainEncoder.setDepthStencilState(depthState)
         }
 
         // 3.3 Transparent surface pass (issue #53): draw the deferred translucent

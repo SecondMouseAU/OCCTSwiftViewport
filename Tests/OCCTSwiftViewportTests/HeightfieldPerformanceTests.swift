@@ -115,7 +115,8 @@ struct HeightfieldPerformanceTests {
         let body = HeightfieldScene.body(field)
         func measure(
             _ name: String, mode: DisplayMode = .shaded, msaa: Int = 4, target: Float = 4,
-            forced: Int? = nil, size: (Int, Int) = (1668, 1194), allPasses: Bool = false
+            forced: Int? = nil, size: (Int, Int) = (1668, 1194), allPasses: Bool = false,
+            latticePixels: Float = Heightfield.defaultLatticePixels
         ) {
             renderer.heightfieldForcedLevel = forced
             var gpu: [Double] = []
@@ -131,6 +132,7 @@ struct HeightfieldPerformanceTests {
                     width: size.0, height: size.1, camera: camera, displayMode: mode)
                 options.msaaSampleCount = msaa
                 options.heightfieldMeshCellPixels = target
+                options.heightfieldLatticePixels = latticePixels
                 if allPasses {
                     // Shadow map, SSAO and silhouettes: the shadow and depth prepasses draw the
                     // field again.
@@ -160,6 +162,13 @@ struct HeightfieldPerformanceTests {
         measure("shaded msaa4 forced L5", forced: 5)
         measure("shaded msaa4 forced L6", forced: 6)
         measure("shaded msaa4 target2 1024x768", target: 2, size: (1024, 768))
+        // The `.wireframe` lattice (#254), at the default 4 px mesh cell.
+        measure("wireframe lattice 16 px msaa4", mode: .wireframe)
+        measure("wireframe lattice 16 px msaa1", mode: .wireframe, msaa: 1)
+        measure("wireframe lattice 8 px msaa4", mode: .wireframe, latticePixels: 8)
+        measure("wireframe lattice 32 px msaa4", mode: .wireframe, latticePixels: 32)
+        measure("wireframe lattice 1 px (every mesh cell) msaa4", mode: .wireframe, latticePixels: 1)
+        measure("wireframe lattice 16 px msaa4 target8", mode: .wireframe, target: 8)
     }
 
     @Test("The same surface as an ordinary mesh body, for comparison")

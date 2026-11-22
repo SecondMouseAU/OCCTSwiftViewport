@@ -23,7 +23,7 @@ Display mode for rendering geometry in the viewport. Assign to `ViewportControll
 
 #### `wireframe`
 
-Edges only — no surface shading. The fastest mode; useful for verifying topology.
+Edges only — no surface shading. The fastest mode; useful for verifying topology. A [`Heightfield`](Heightfield.md) has no edge geometry, so it draws a [lattice](Heightfield.md#the-wireframe-lattice) of lines on its displaced surface instead.
 
 ```swift
 controller.displayMode = .wireframe

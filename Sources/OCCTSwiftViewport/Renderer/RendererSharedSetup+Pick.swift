@@ -413,6 +413,28 @@ extension RendererSharedSetup {
         {
             stampEdges(entry)
         }
+        // Geometry-layer heightfield lattices: in `.wireframe`, a heightfield has no surface to
+        // stamp, but its lattice lines are its edges. They stamp the cell under the pixel as a face
+        // pick, so `PickResult.heightfield` and `refinePick` work as for a surface, and only where
+        // a line is drawn, as a mesh in `.wireframe` is picked at its edges and not its faces.
+        if HeightfieldDrawSet.drawsLattice(in: displayMode) {
+            for entry in bodies
+            where entry.body.renderLayer == .geometry && entry.body.isPickable {
+                guard let heightfield = entry.heightfield,
+                    let pipeline = heightfield.latticePickPipeline.value
+                else { continue }
+                var uniforms = makeUniforms()
+                uniforms.modelMatrix = entry.body.transform
+                var edgeUniforms = HeightfieldDrawSet.latticeEdgeUniforms(
+                    uniforms: uniforms, configuration: edgeConfig,
+                    viewportSize: frame.viewportSize,
+                    width: edgeConfig.useQuadExpansion ? pickEdgeWidth : frame.contentScale)
+                var bodyUniforms = BodyUniforms(body: entry.body, objectIndex: entry.objectIndex)
+                heightfield.encodeLattice(
+                    encoder: pickEncoder, pipeline: pipeline, edgeUniforms: &edgeUniforms,
+                    bodyUniforms: &bodyUniforms)
+            }
+        }
         // Geometry-layer arcs (issue #48), each drawn separately so the fragment stamps its arc
         // index.
         for d in frame.arcs where d.body.renderLayer == .geometry && d.body.isPickable {

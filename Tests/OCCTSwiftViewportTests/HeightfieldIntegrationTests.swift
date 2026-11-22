@@ -294,15 +294,21 @@ struct HeightfieldIntegrationTests {
 
     // MARK: Wireframe
 
-    @Test("Wireframe draws nothing for a heightfield and does not crash; shaded-with-edges draws it")
-    func wireframeIsADefinedNoOp() throws {
+    @Test("Wireframe draws a lattice, not the surface; shaded-with-edges draws the surface")
+    func wireframeDrawsALatticeNotTheSurface() throws {
         for (name, render) in Self.renderers {
             let field = HeightfieldScene.body(try Self.flatField(), color: Self.green)
             let wire = try render([field], .wireframe, [], nil)
             let drawn = (0..<Self.size * Self.size).filter {
                 !Self.isBackground(wire, $0 % Self.size, $0 / Self.size)
             }
-            #expect(drawn.isEmpty, "\(name): wireframe drew \(drawn.count) px for a heightfield")
+            // Lines, which the old no-op did not draw (#254), and not a filled surface.
+            #expect(drawn.count > 200, "\(name): wireframe drew only \(drawn.count) px")
+            #expect(
+                drawn.count < Self.size * Self.size / 4,
+                "\(name): wireframe drew \(drawn.count) px, which is a surface")
+            // The middle of a lattice cell is empty.
+            #expect(Self.isBackground(wire, 62, 62), "\(name)")
             let edges = try render([field], .shadedWithEdges, [], nil)
             #expect(!Self.isBackground(edges, Self.size / 2, Self.size / 2), "\(name)")
         }

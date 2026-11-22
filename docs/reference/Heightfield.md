@@ -17,8 +17,8 @@ from [`PickResult.heightfield`](#pickresultheightfield).
 
 ## Topics
 - [Heightfield](#heightfield-1) · [HeightfieldRegion](#heightfieldregion) · [HeightfieldHit](#heightfieldhit) · [HeightfieldPrecision](#heightfieldprecision) · [HeightfieldError](#heightfielderror)
-- [ViewportBody.heightfield](#viewportbodyheightfield) · [PickResult.heightfield](#pickresultheightfield) · [heightfieldMeshCellPixels](#heightfieldmeshcellpixels) · [ViewportController.refinePick](#viewportcontrollerrefinepick)
-- [How it is drawn](#how-it-is-drawn) · [Trade-offs](#trade-offs) · [Limits](#limits-and-failure) · [What is supported](#what-is-supported) · [Cost](#cost)
+- [ViewportBody.heightfield](#viewportbodyheightfield) · [PickResult.heightfield](#pickresultheightfield) · [heightfieldMeshCellPixels](#heightfieldmeshcellpixels) · [heightfieldLatticePixels](#heightfieldlatticepixels) · [ViewportController.refinePick](#viewportcontrollerrefinepick)
+- [How it is drawn](#how-it-is-drawn) · [The wireframe lattice](#the-wireframe-lattice) · [Trade-offs](#trade-offs) · [Limits](#limits-and-failure) · [What is supported](#what-is-supported) · [Cost](#cost)
 
 ---
 
@@ -67,6 +67,8 @@ Row-major arrays, row 0 first. `attributes` and `ids` default to 0; passing `ids
 | `maximumDimension` | 16,321 |
 | `defaultMeshCellPixels` | 4 |
 | `meshCellPixelsRange` | `1...32` |
+| `defaultLatticePixels` | 16 |
+| `latticePixelsRange` | `1...256` |
 
 #### `static let maximumDimension`
 
@@ -237,6 +239,12 @@ natural level on smooth ground, and tens of cells beside a 30-unit step at 57 de
 a top-down pick is exact at every level). [`refinePick`](#viewportcontrollerrefinepick) makes it
 exact.
 
+In `.wireframe` the surface is not drawn, so it is not picked either: the **lattice lines** are
+(see [the wireframe lattice](#the-wireframe-lattice)). A pixel on a line returns the same `.face`
+pick with the cell under it; a pixel between lines returns `nil`, as a mesh in `.wireframe` picks
+at its edges and not its faces. `PickResult.heightfield` is set, and `refinePick` still makes the
+cell exact.
+
 ## heightfieldMeshCellPixels
 
 ```swift
@@ -256,6 +264,22 @@ cell is no wider than this. **Documented range `1...32`** (clamped when drawn); 
 - 8 costs about 1.2 ms.
 
 An older GPU will have its cliff elsewhere; these numbers are from an M4 (see [Cost](#cost)).
+
+## heightfieldLatticePixels
+
+```swift
+ViewportConfiguration.heightfieldLatticePixels: Float   // default 16
+OffscreenRenderOptions.heightfieldLatticePixels: Float  // default 16; init(matching:) copies it
+```
+
+How far apart the lines of the [`.wireframe` lattice](#the-wireframe-lattice) are on screen, in
+drawable pixels. Each tile's lines are the smallest power-of-two number of cells apart that spans at
+least this many pixels, so the pitch of a line is between this value and twice it. **Documented range
+`1...256`** (clamped when drawn). A value at or below the mesh cell
+([`heightfieldMeshCellPixels`](#heightfieldmeshcellpixels), 4 px) draws one line per mesh cell, the
+true wireframe of what the GPU draws; at the default 4 px mesh cell that is a dense hatch (about 2 to 4
+pixels apart), which fades out where lines come closer than 3 pixels. It has no effect in any other
+display mode.
 
 ## ViewportController.refinePick
 
@@ -302,6 +326,40 @@ pick** has no single ray: it reports the cell of the drawn surface under each pi
   textures at the head of the frame's command buffer. The CPU never writes a texture the GPU may be
   reading, whatever the frames in flight, and an edit made before a frame is in that frame.
 
+## The wireframe lattice
+
+`.wireframe` draws a heightfield as a **lattice**: lines of constant grid position on the displaced
+surface, in the body's own colour, as an edge-only body's edges are. Nothing else of the surface is
+drawn.
+
+- **Same surface.** The lattice is drawn through the tile planner and `hfDisplace` the shaded passes
+  use (the lattice vertex function calls it), so its lines lie on the surface that is drawn at each
+  tile's level of detail, not on a polyline sampled from the heights: a line that crosses a one-cell
+  step climbs the step, and a section plane, `transform`, `isVisible` and tile culling apply exactly as
+  for the shaded surface. The live renderer and `OffscreenRenderer` share the implementation. An
+  overlay-layer field still draws its surface in `.wireframe`, as in every mode.
+- **Spacing in pixels.** Each tile's lines are `2^k` cells apart, `k` chosen on the CPU from the
+  tile's on-screen cell size (see [`heightfieldLatticePixels`](#heightfieldlatticepixels), default
+  16 px), never finer than the tile's mesh cell, so no line cuts across triangles. Zooming steps the
+  pitch by factors of two. Where one tile's pitch is twice its neighbour's, every second line of the
+  finer tile ends at the border; lines at every multiple of the coarser pitch continue across it.
+- **Line style.** Width and dash follow `edgeLineConfiguration` (`useQuadExpansion = false` gives a
+  one-pixel solid line); the colour is the body's own, `ViewportBody.color`, or the base colour of its
+  `material` when it has one (`effectiveMaterial`, as for an edge-only body): choose one that
+  contrasts with the background. A dash runs along each line, measured in the field's XY plane in body-local units from
+  the field's origin, so it continues across tiles. Lines are anti-aliased by their own coverage and
+  fade out where, on a surface seen at a grazing angle, they come closer than 3 pixels.
+- **See-through.** Lines behind a ridge are drawn, as a mesh's edges are in `.wireframe`: the surface
+  writes no depth. Lines are tested against opaque geometry drawn before them but write no depth.
+- **Picking.** The lines are picked, not the gaps; see
+  [`PickResult.heightfield`](#pickresultheightfield).
+- **Cost.** The lattice rasterises the same triangles as the shaded surface and keeps the fragments on a
+  line, so it costs about what the shaded surface does at the same
+  [mesh cell target](#heightfieldmeshcellpixels): on an M4 in a release build, 2000 x 2000 cells at
+  1668 x 1194, 4x MSAA, 2.3 ms against 2.6 ms for the shaded surface (1.7 ms with MSAA 1; 8 px mesh
+  cells, 1.2 ms for the surface). The lattice pitch barely changes it (2.2 to 2.5 ms from 32 to 1 px).
+  M4 numbers only; nothing has been measured on an iPad or iPhone.
+
 ## Trade-offs
 
 **The pyramid window is hierarchical (`s - 1`).** Level L texel `k` is the minimum of level L-1
@@ -344,8 +402,8 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 
 | Feature | Behaviour |
 |---------|-----------|
-| Shaded, flat, unlit, x-ray, shaded with edges | Drawn. A heightfield has no edge geometry, so "with edges" adds nothing. |
-| `.wireframe` | **Defined no-op**: nothing is drawn, nothing is picked, no crash. A lattice view is not provided; use `.shaded`. |
+| Shaded, flat, unlit, x-ray, shaded with edges | Drawn. A heightfield has no edge geometry, so "with edges" adds nothing (the lattice is drawn only in `.wireframe`). |
+| `.wireframe` | A **lattice** on the displaced surface, see-through, in the body's colour with the edge configuration's width and dash; the surface itself is not drawn. The lines are picked (the cell under the pixel), the gaps are not. See [the wireframe lattice](#the-wireframe-lattice). |
 | Translucency (`opacity < 1`, `.xray`) | Drawn in the sorted transparent pass with no depth writes, depth-sorted with translucent meshes by world-bounds centre. A single sheet needs no cull order. |
 | Shadows | Casts shadows. The shadow plan is separate from the camera's: it keeps tiles outside the view whose shadow can fall into it, and culls the rest. |
 | SSAO, silhouettes | The field writes the depth prepass (not when translucent, as for meshes). |
