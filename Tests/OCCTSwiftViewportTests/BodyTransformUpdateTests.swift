@@ -14,11 +14,11 @@
 // - GPU buffers are keyed by `id` and `generation` (`ViewportRenderer.ensureBuffers`), so a
 //   transform change takes the "geometry still valid" early return and builds nothing.
 //
-// The renderer's mesh buffers are not reachable from a test, but `ensureBuffers` builds a body's
-// vertex, index, edge and colour buffers in one `BodyBuffers` value and replaces it whole, so the
-// identity of the cached edge buffers (`cachedEdgeBuffers(for:)`, the accessor #140 added) shows
-// whether that rebuild ran. Every body below has edges, and the control test proves the edge
-// buffers do change when the mesh does, so the check can fail.
+// The renderer exposes the identity of each body's cached buffers to tests: the mesh buffers
+// through `cachedMeshBuffers(for:)` (added for #141) and the edge buffers through
+// `cachedEdgeBuffers(for:)` (#140). `ensureBuffers` builds them in one `BodyBuffers` value and
+// replaces it whole. Every body below has edges, and the control test proves both kinds of buffer
+// do change when the mesh does, so the checks can fail.
 //
 // The live tests drive the renderer's own `encodeFrame` headlessly, as `draw(in:)` does.
 
@@ -44,8 +44,10 @@ private final class TransformBodyStore {
 @MainActor
 private var retainedTransformControllers: [ViewportController] = []
 
-/// The identity of each edge buffer a body has cached, `nil` for one it has none of.
-private struct EdgeBufferIdentities: Equatable {
+/// The identity of each buffer a body has cached, `nil` for one it has none of.
+private struct BufferIdentities: Equatable {
+    var vertex: ObjectIdentifier?
+    var index: ObjectIdentifier?
     var native: ObjectIdentifier?
     var quad: ObjectIdentifier?
     var colors: ObjectIdentifier?
@@ -136,14 +138,18 @@ struct BodyTransformUpdateTests {
 
     private func edgeBuffers(
         _ renderer: ViewportRenderer, _ bodies: [ViewportBody]
-    ) -> [String: EdgeBufferIdentities] {
-        var out: [String: EdgeBufferIdentities] = [:]
+    ) -> [String: BufferIdentities] {
+        var out: [String: BufferIdentities] = [:]
         for body in bodies {
-            guard let buffers = renderer.cachedEdgeBuffers(for: body.id) else { continue }
-            out[body.id] = EdgeBufferIdentities(
-                native: buffers.native.map { ObjectIdentifier($0) },
-                quad: buffers.quad.map { ObjectIdentifier($0) },
-                colors: buffers.colors.map { ObjectIdentifier($0) })
+            guard let edges = renderer.cachedEdgeBuffers(for: body.id),
+                let mesh = renderer.cachedMeshBuffers(for: body.id)
+            else { continue }
+            out[body.id] = BufferIdentities(
+                vertex: mesh.vertex.map { ObjectIdentifier($0) },
+                index: mesh.index.map { ObjectIdentifier($0) },
+                native: edges.native.map { ObjectIdentifier($0) },
+                quad: edges.quad.map { ObjectIdentifier($0) },
+                colors: edges.colors.map { ObjectIdentifier($0) })
         }
         return out
     }
@@ -201,8 +207,10 @@ struct BodyTransformUpdateTests {
         let identities = edgeBuffers(renderer, store.bodies)
         #expect(identities.count == 21, "every body should have cached buffers")
         #expect(
-            identities.values.allSatisfy { $0.native != nil && $0.quad != nil },
-            "the check needs every body to have edge buffers")
+            identities.values.allSatisfy {
+                $0.vertex != nil && $0.index != nil && $0.native != nil && $0.quad != nil
+            },
+            "the check needs every body to have mesh and edge buffers")
 
         var last = first
         for step in 1...60 {
@@ -226,7 +234,10 @@ struct BodyTransformUpdateTests {
         let identities = edgeBuffers(renderer, store.bodies)
         let generations = store.bodies.map(\.generation)
         #expect(identities.count == 100)
-        #expect(identities.values.allSatisfy { $0.native != nil && $0.quad != nil })
+        #expect(
+            identities.values.allSatisfy {
+                $0.vertex != nil && $0.index != nil && $0.native != nil && $0.quad != nil
+            })
 
         for step in 1...30 {
             var next = store.bodies.map { $0 }
@@ -248,7 +259,7 @@ struct BodyTransformUpdateTests {
         let key = store.bodies[0].boundsKey
 
         // Nudge one vertex position only: the edges are not touched, yet the whole cached entry
-        // (and so the edge buffers sharing it with the mesh buffers) must be rebuilt.
+        // (the mesh buffers and the edge buffers sharing it) must be rebuilt.
         var changed = store.bodies[0].vertexData
         changed[0] += 0.01
         store.bodies[0].vertexData = changed
@@ -259,6 +270,8 @@ struct BodyTransformUpdateTests {
         let after = edgeBuffers(renderer, store.bodies)
         let mover = try #require(after["mover"])
         let moverBefore = try #require(identities["mover"])
+        #expect(mover.vertex != moverBefore.vertex, "the changed body kept its old vertex buffer")
+        #expect(mover.index != moverBefore.index, "the changed body kept its old index buffer")
         #expect(mover.native != moverBefore.native, "the changed body kept its old buffers")
         #expect(mover.quad != moverBefore.quad, "the changed body kept its old buffers")
         #expect(after["static-0"] == identities["static-0"], "an untouched body was rebuilt")
