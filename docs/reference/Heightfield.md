@@ -348,17 +348,24 @@ drawn.
   `material` when it has one (`effectiveMaterial`, as for an edge-only body): choose one that
   contrasts with the background. A dash runs along each line, measured in the field's XY plane in body-local units from
   the field's origin, so it continues across tiles. Lines are anti-aliased by their own coverage and
-  fade out where, on a surface seen at a grazing angle, they come closer than 3 pixels.
+  fade out where, on a surface seen at a grazing angle, they come closer than 3 pixels. As for an
+  edge-only body, `edgeIntensity` and the depth fade do not apply.
 - **See-through.** Lines behind a ridge are drawn, as a mesh's edges are in `.wireframe`: the surface
   writes no depth. Lines are tested against opaque geometry drawn before them but write no depth.
 - **Picking.** The lines are picked, not the gaps; see
   [`PickResult.heightfield`](#pickresultheightfield).
+- **Lines at multiples of the pitch.** Lines stand at the field's cell 0 and every pitch after it, so the
+  far border (the last row and column) has a line only where it falls on one.
 - **Cost.** The lattice rasterises the same triangles as the shaded surface and keeps the fragments on a
-  line, so it costs about what the shaded surface does at the same
-  [mesh cell target](#heightfieldmeshcellpixels): on an M4 in a release build, 2000 x 2000 cells at
-  1668 x 1194, 4x MSAA, 2.3 ms against 2.6 ms for the shaded surface (1.7 ms with MSAA 1; 8 px mesh
-  cells, 1.2 ms for the surface). The lattice pitch barely changes it (2.2 to 2.5 ms from 32 to 1 px).
-  M4 numbers only; nothing has been measured on an iPad or iPhone.
+  line, so the vertex and raster cost is the surface's, with none of its lighting. On an M4 in a release
+  build (2000 x 2000 cells, 1668 x 1194, 4x MSAA, 4 px mesh cell) it measured 0.7 to 2.5 ms against 2.5 to
+  4.5 ms for the shaded surface in the same sessions, and about a fifth to a third of the shaded frame
+  when the two were drawn alternately, frame by frame. Those figures are noisy (the GPU's clock state
+  and other load moved them threefold between runs), so read them as "no dearer than the surface", not
+  as a precise number. The lattice pitch did not change it measurably, and
+  [`heightfieldMeshCellPixels`](#heightfieldmeshcellpixels) moves it as it moves the surface. M4 numbers
+  only; nothing has been measured on an iPad or iPhone. The benchmark is
+  `HeightfieldPerformanceTests/latticeCost` (see [Cost](#cost)).
 
 ## Trade-offs
 

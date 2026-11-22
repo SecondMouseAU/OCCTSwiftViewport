@@ -31,25 +31,6 @@ enum HeightfieldLayout {
         guard ratio >= 1 else { return 0 }
         return min(maxLevel, Int(log2(ratio).rounded(.down)))
     }
-
-    /// The coarsest lattice pitch, as a power of two of cells.
-    ///
-    /// 2^14 = 16,384 is past the longest side a field can have (`Heightfield.maximumDimension`),
-    /// so a field seen from very far draws a line or two. The shader reads the level from 4 bits.
-    static let maxLatticeLevel = 14
-
-    /// The pitch, as a power of two of cells, of a tile's `.wireframe` lattice lines.
-    ///
-    /// The smallest power of two of cells that spans at least `latticePixels` on screen, but never
-    /// finer than the tile's own mesh cell (`meshLevel`): there are no mesh edges between, so a
-    /// line there would cut across triangles. Powers of two nest, so neighbouring tiles whose
-    /// pitches differ by one level share every second line.
-    static func latticeLevel(cellPixels: Float, latticePixels: Float, meshLevel: Int) -> Int {
-        guard cellPixels > 0, latticePixels > 0 else { return maxLatticeLevel }
-        let ratio = latticePixels / cellPixels
-        let wanted = ratio <= 1 ? 0 : Int(log2(ratio).rounded(.up))
-        return min(maxLatticeLevel, max(meshLevel, wanted))
-    }
 }
 
 // MARK: - Shader mirrors
@@ -282,50 +263,6 @@ struct HeightfieldDrawSet {
     let indexCounts: [Int]
     let pickPipeline: LazyPipeline
     let latticePickPipeline: LazyPipeline
-
-    /// Whether `displayMode` draws (and picks) the field as a lattice.
-    ///
-    /// The modes that show edges but not surfaces do, which today is `.wireframe`. Every other
-    /// mode draws the surface, or, for a heightfield, which has no edge geometry, nothing more.
-    static func drawsLattice(in displayMode: DisplayMode) -> Bool {
-        displayMode.showsEdges && !displayMode.showsSurfaces
-    }
-
-    /// The uniforms of a lattice draw: the edge configuration's width and dash pattern.
-    ///
-    /// With quad expansion off, whose native lines are one pixel wide and solid, so is the
-    /// lattice. `width` overrides the configured width (a pick's footprint).
-    static func latticeEdgeUniforms(
-        uniforms: Uniforms, configuration: EdgeLineConfiguration, viewportSize: SIMD2<Float>,
-        width: Float? = nil
-    ) -> EdgeUniforms {
-        var configuration = configuration
-        if !configuration.useQuadExpansion {
-            configuration.width = 1
-            configuration.dashPattern = .solid
-        }
-        return EdgeUniforms(
-            uniforms: uniforms, configuration: configuration, viewportSize: viewportSize,
-            width: width)
-    }
-
-    /// Draws the planned tiles as the `.wireframe` lattice: the surface's triangles through the
-    /// lattice pipeline, which keeps only the fragments on a line.
-    ///
-    /// `edgeUniforms` carries the edge configuration (width, dash), the clip planes and the body's
-    /// `modelMatrix`; the caller sets the depth-stencil state and cull mode. With the lattice
-    /// pick pipeline (`encodePick` of the pick pass) the same call stamps the lines' cells.
-    func encodeLattice(
-        encoder: MTLRenderCommandEncoder, pipeline: MTLRenderPipelineState,
-        edgeUniforms: inout EdgeUniforms, bodyUniforms: inout BodyUniforms
-    ) {
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-        encoder.setFragmentBytes(&edgeUniforms, length: MemoryLayout<EdgeUniforms>.size, index: 1)
-        encoder.setFragmentBytes(&bodyUniforms, length: MemoryLayout<BodyUniforms>.size, index: 2)
-        encoder.setVertexTexture(heights, index: 0)
-        encodeDraws(encoder: encoder, setFragmentParams: true)
-    }
 
     /// Draws every planned tile with the shaded pipeline.
     ///

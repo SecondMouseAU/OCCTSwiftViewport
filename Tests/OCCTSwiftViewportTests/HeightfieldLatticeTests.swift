@@ -27,6 +27,7 @@ struct LatticeSetup {
     var meshCellPixels: Float?
     var forcedLevel: Int?
     var msaa = 1
+    var edgeIntensity: Float?
 }
 
 @MainActor
@@ -120,6 +121,7 @@ enum LatticeScene {
         options.edgeLineConfiguration = setup.edge
         options.clipPlanes = setup.clipPlanes
         options.msaaSampleCount = setup.msaa
+        if let intensity = setup.edgeIntensity { options.edgeIntensity = intensity }
         if let pixels = setup.latticePixels { options.heightfieldLatticePixels = pixels }
         if let pixels = setup.meshCellPixels { options.heightfieldMeshCellPixels = pixels }
         return options
@@ -150,6 +152,7 @@ enum LatticeScene {
         controller.showAxes = false
         controller.enableTAA = false
         controller.clipPlanes = setup.clipPlanes
+        if let intensity = setup.edgeIntensity { controller.edgeIntensity = intensity }
         guard let renderer = ViewportRenderer(controller: controller, bodies: .constant(bodies))
         else {
             Issue.record("Metal device unavailable; skipping")
@@ -338,7 +341,7 @@ struct HeightfieldLatticeTests {
                 }
                 g += Int(pitchCells)
             }
-            #expect(checked >= 2 || scale == 600 || scale == 300, "scale \(scale): \(checked)")
+            #expect(checked >= 2, "scale \(scale): only \(checked) lines checked")
         }
     }
 
@@ -554,7 +557,9 @@ struct HeightfieldLatticeTests {
         }
     }
 
-    @Test("Edge intensity and the surface colour do not dim or recolour the lattice")
+    @Test(
+        "The lattice is drawn in the body's colour, undimmed by edge intensity, as an edge-only body is"
+    )
     func latticeIsTheBodyColour() throws {
         // The field's own colour, red: the lattice is red, not the contrast-adaptive edge colour.
         let red = LatticeScene.body(
@@ -575,7 +580,98 @@ struct HeightfieldLatticeTests {
                 try render([blue], LatticeSetup()), Int(p.x.rounded(.down)), Int(p.y.rounded(.down))
             )
             #expect(m.z > m.x + 40 && m.z > m.y + 40, "\(name): material colour \(m)")
+
+            // Edge intensity dims and hides a meshed body's edges; an edge-only body's, and the
+            // lattice, ignore it (no depth fade either).
+            var dark = LatticeSetup()
+            dark.edgeIntensity = 0
+            let off = try render([red], dark)
+            #expect(
+                off == pixels, "\(name): edgeIntensity 0 changed the lattice")
         }
+    }
+
+    @Test("Lines are at multiples of the pitch from the first cell: the far border has none")
+    func borderLineOnlyWhereThePitchLandsOnIt() throws {
+        // 140 cells at a pitch of 32: lines at 0, 32, 64, 96 and 128, and the last cell, 139, is
+        // not a multiple.
+        let field = try LatticeScene.field(140) { _, _ in 0 }
+        let body = LatticeScene.body(field)
+        let camera = LatticeScene.topDown
+        for (name, render) in LatticeScene.renderers {
+            let pixels = try render([body], LatticeSetup())
+            let line = LatticeScene.project(SIMD3(Self.centre(128), 50, 0), camera: camera)
+            let border = LatticeScene.project(SIMD3(Self.centre(139), 50, 0), camera: camera)
+            #expect(simd_distance(line, border) > 4)
+            #expect(LatticeScene.hasInk(pixels, near: line), "\(name): no line at 128")
+            #expect(!LatticeScene.hasInk(pixels, near: border), "\(name): a line at the border")
+        }
+    }
+
+    // MARK: Perspective
+
+    /// A perspective camera, the common one: tiles near the camera have a finer pitch in cells
+    /// than tiles far away, and each tile's lines are about the target apart on screen.
+    @Test("A perspective camera sets each tile's pitch from its own distance")
+    func perspectivePitchFollowsDistance() throws {
+        guard let renderer = OffscreenRenderer() else {
+            Issue.record("Metal device unavailable; skipping")
+            return
+        }
+        let n = 1024
+        let field = try LatticeScene.field(n) { _, _ in 0 }
+        let body = LatticeScene.body(field)
+        let camera = CameraState(
+            rotation: simd_quatf(angle: 1.0, axis: SIMD3(1, 0, 0)), distance: 1100,
+            pivot: SIMD3(512, 512, 0))
+        let size = 256
+        var options = HeightfieldScene.options(
+            width: size, height: size, camera: camera, displayMode: .wireframe)
+        options.msaaSampleCount = 1
+        _ = try #require(renderer.render(bodies: [body], options: options))
+        let plan = try #require(renderer.heightfieldState(forBodyID: "field")?.lastPlan)
+        let buffer = try #require(plan.instanceBuffer)
+
+        let viewProjection = camera.projectionMatrix(aspectRatio: 1) * camera.viewMatrix
+        func pixel(_ p: SIMD3<Float>) -> SIMD2<Float>? {
+            let clip = viewProjection * SIMD4(p, 1)
+            guard clip.w > 1e-3 else { return nil }
+            return SIMD2(
+                (clip.x / clip.w * 0.5 + 0.5) * Float(size),
+                (0.5 - clip.y / clip.w * 0.5) * Float(size))
+        }
+
+        var latticeLevels = Set<UInt32>()
+        var checked = 0
+        for level in 0..<HeightfieldLayout.levelCount where plan.ranges[level].count > 0 {
+            let instances = buffer.contents().advanced(
+                by: plan.ranges[level].first * MemoryLayout<HeightfieldTileInstance>.stride
+            ).bindMemory(to: HeightfieldTileInstance.self, capacity: plan.ranges[level].count)
+            for i in 0..<plan.ranges[level].count {
+                let tile = instances[i]
+                latticeLevels.insert(tile.lattice)
+                // Never finer than the tile's mesh cell.
+                #expect(Int(tile.lattice) >= level)
+                // On screen, a tile's lines are about the target apart: measured along x from the
+                // tile's centre, within the tolerance that perspective foreshortening within a
+                // tile allows. Only where the pitch was set by the target, not the mesh cell.
+                guard Int(tile.lattice) > level else { continue }
+                let centre = SIMD3<Float>(
+                    Float(tile.origin.x) + 32.5, Float(tile.origin.y) + 32.5, 0)
+                let pitch = Float(1 << tile.lattice)
+                guard let a = pixel(centre), let b = pixel(centre + SIMD3(pitch, 0, 0)),
+                    a.x > 0, a.x < Float(size), a.y > 0, a.y < Float(size)
+                else { continue }
+                let pitchPixels = simd_distance(a, b)
+                #expect(
+                    pitchPixels > 10 && pitchPixels < 40,
+                    "tile \(tile.origin) level \(level) lattice \(tile.lattice): \(pitchPixels) px")
+                checked += 1
+            }
+        }
+        #expect(checked > 20, "only \(checked) tiles were checked")
+        // Near tiles are finer than far ones: the pitch is not one value for the field.
+        #expect(latticeLevels.count >= 2, "lattice levels \(latticeLevels)")
     }
 
     // MARK: Body properties

@@ -1445,20 +1445,12 @@ public final class OffscreenRenderer: Sendable {
             let latticePipeline = heightfieldPipelines.lattice.value
         {
             // `.wireframe`: the lattice, as the live renderer draws it.
-            for entry in heightfieldEntries where entry.body.renderLayer == .geometry {
-                var uniforms = makeUniforms()
-                uniforms.modelMatrix = entry.body.transform
-                var edgeUniforms = HeightfieldDrawSet.latticeEdgeUniforms(
-                    uniforms: uniforms, configuration: options.edgeLineConfiguration,
-                    viewportSize: SIMD2<Float>(Float(w), Float(h)))
-                var bodyUniforms = BodyUniforms(body: entry.body, objectIndex: 0, isSelected: 0)
-                mainEncoder.setCullMode(.none)
-                mainEncoder.setDepthStencilState(highlightDepthState)
-                entry.draw.encodeLattice(
-                    encoder: mainEncoder, pipeline: latticePipeline, edgeUniforms: &edgeUniforms,
-                    bodyUniforms: &bodyUniforms)
-            }
-            mainEncoder.setDepthStencilState(depthState)
+            HeightfieldDrawSet.encodeLatticePass(
+                encoder: mainEncoder, entries: heightfieldEntries, pipeline: latticePipeline,
+                edgeConfiguration: options.edgeLineConfiguration,
+                viewportSize: SIMD2<Float>(Float(w), Float(h)), makeUniforms: makeUniforms,
+                depthState: highlightDepthState, restoreDepthState: depthState,
+                objectIndex: { _ in 0 })
         }
 
         // Transparent surface pass (issue #53): deferred translucent bodies,
