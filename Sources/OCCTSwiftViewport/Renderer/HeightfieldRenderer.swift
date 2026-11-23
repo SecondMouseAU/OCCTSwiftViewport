@@ -490,10 +490,13 @@ final class HeightfieldRenderCache {
         let targetPixels = min(
             max(meshCellPixels, Heightfield.meshCellPixelsRange.lowerBound),
             Heightfield.meshCellPixelsRange.upperBound)
+        // A NaN passes through `min` and `max`, so it takes the default.
         let latticeTarget = latticePixels.map {
-            min(
-                max($0, Heightfield.latticePixelsRange.lowerBound),
-                Heightfield.latticePixelsRange.upperBound)
+            $0.isNaN
+                ? Heightfield.defaultLatticePixels
+                : min(
+                    max($0, Heightfield.latticePixelsRange.lowerBound),
+                    Heightfield.latticePixelsRange.upperBound)
         }
         var entries: [Entry] = []
         var active = Set<String>()

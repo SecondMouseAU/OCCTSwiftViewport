@@ -11,7 +11,9 @@
 // Run it in a RELEASE build: a debug build's GPU times are 2 to 4 times worse and its CPU times
 // far worse, and say nothing about release.
 //
-// Each scenario prints its median CPU and GPU milliseconds over the measured frames.
+// Each scenario prints its median CPU and GPU milliseconds over the measured frames. `latticeCost`
+// (#254) draws the `.wireframe` lattice and the shaded surface alternately, frame by frame, because
+// the GPU's clock state otherwise moves one variant's figure against the next.
 
 import Foundation
 import Testing

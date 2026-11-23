@@ -216,8 +216,6 @@ mode draws the surface as before.
 
 ---
 
----
-
 ## Things to know
 
 - **Limits.** At most 16,321 cells a side, and memory is real: about 25 MB for 2000 x 2000 with

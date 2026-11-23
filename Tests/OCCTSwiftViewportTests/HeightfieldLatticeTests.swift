@@ -817,12 +817,18 @@ struct HeightfieldLatticeTests {
 
         // Out-of-range values draw a lattice rather than nothing, or a crash.
         let body = LatticeScene.body(try LatticeScene.flatField())
-        for pixels: Float in [-5, 0, 0.01, 1e6] {
+        for pixels: Float in [-5, 0, 0.01, 1e6, .infinity] {
             var setup = LatticeSetup()
             setup.latticePixels = pixels
             let image = try LatticeScene.offscreen([body], setup)
             #expect(LatticeScene.drawnCount(image) > 0, "latticePixels \(pixels)")
         }
+        // NaN is not a size: it draws as the default does.
+        var nan = LatticeSetup()
+        nan.latticePixels = .nan
+        #expect(
+            try LatticeScene.offscreen([body], nan)
+                == LatticeScene.offscreen([body], LatticeSetup()))
     }
 
     @Test("Other display modes ignore the lattice setting and draw the surface as before")
