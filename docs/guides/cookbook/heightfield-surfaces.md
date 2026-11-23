@@ -202,6 +202,6 @@ gauge.renderLayer = .overlay         // drawn over everything, like a widget; no
   4 px, it is about 6 ms. The default stays at 4 px on every platform, so choose the setting for
   your device. Nothing has been measured on an iPhone, and 5 px has not been measured anywhere.
   Measure in a **release** build, since a debug build's GPU timings are not representative. The
-  [reference](../../reference/Heightfield.md#cost) has the iPad table.
+  [reference](../../reference/Heightfield.md#cost-on-an-ipad) has the iPad table.
 - **Offscreen.** `OffscreenRenderer` draws, shadows, outlines and picks a heightfield exactly as the
   live viewport does; `OffscreenRenderOptions.heightfieldMeshCellPixels` carries the target.
