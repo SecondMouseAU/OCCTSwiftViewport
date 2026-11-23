@@ -276,5 +276,6 @@ struct BodyTransformUpdateTests {
         #expect(mover.quad != moverBefore.quad, "the changed body kept its old buffers")
         #expect(after["static-0"] == identities["static-0"], "an untouched body was rebuilt")
         #expect(after["static-1"] == identities["static-1"], "an untouched body was rebuilt")
+        #expect(after["static-2"] == identities["static-2"], "an untouched body was rebuilt")
     }
 }
