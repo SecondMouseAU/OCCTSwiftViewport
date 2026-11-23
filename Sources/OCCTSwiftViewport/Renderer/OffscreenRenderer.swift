@@ -223,6 +223,10 @@ public struct OffscreenRenderOptions: Sendable {
     /// `ViewportConfiguration.heightfieldMeshCellPixels`.
     public var heightfieldMeshCellPixels: Float
 
+    /// How far apart the lines of a heightfield's `.wireframe` lattice are, in pixels, matching
+    /// `ViewportConfiguration.heightfieldLatticePixels`.
+    public var heightfieldLatticePixels: Float
+
     /// Whether interleaved bodies get crease-aware normal smoothing, matching
     /// `ViewportConfiguration.autoSmoothNormals`.
     public var autoSmoothNormals: Bool
@@ -360,6 +364,8 @@ public struct OffscreenRenderOptions: Sendable {
         hoverTint: SelectionTintStyle = ViewportController.defaultConfiguration.hoverTint,
         heightfieldMeshCellPixels: Float =
             ViewportController.defaultConfiguration.heightfieldMeshCellPixels,
+        heightfieldLatticePixels: Float =
+            ViewportController.defaultConfiguration.heightfieldLatticePixels,
         autoSmoothNormals: Bool = ViewportController.defaultConfiguration.autoSmoothNormals,
         normalSmoothingCreaseAngle: Float =
             ViewportController.defaultConfiguration.normalSmoothingCreaseAngle,
@@ -407,6 +413,7 @@ public struct OffscreenRenderOptions: Sendable {
         self.selectionTint = selectionTint
         self.hoverTint = hoverTint
         self.heightfieldMeshCellPixels = heightfieldMeshCellPixels
+        self.heightfieldLatticePixels = heightfieldLatticePixels
         self.autoSmoothNormals = autoSmoothNormals
         self.normalSmoothingCreaseAngle = normalSmoothingCreaseAngle
         self.enableSilhouettes = enableSilhouettes
@@ -462,6 +469,7 @@ public struct OffscreenRenderOptions: Sendable {
             selectionTint: config.selectionTint,
             hoverTint: config.hoverTint,
             heightfieldMeshCellPixels: config.heightfieldMeshCellPixels,
+            heightfieldLatticePixels: config.heightfieldLatticePixels,
             autoSmoothNormals: config.autoSmoothNormals,
             normalSmoothingCreaseAngle: config.normalSmoothingCreaseAngle,
             enableSilhouettes: config.enableSilhouettes,
@@ -885,6 +893,8 @@ public final class OffscreenRenderer: Sendable {
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
             meshCellPixels: options.heightfieldMeshCellPixels,
+            latticePixels: HeightfieldDrawSet.drawsLattice(in: displayMode)
+                ? options.heightfieldLatticePixels : nil,
             clipPlanes: RendererSharedSetup.activeClipPlanes(
                 setup.clipPlanes, count: setup.clipPlaneCount),
             shadow: shadowEnabled
@@ -1431,6 +1441,16 @@ public final class OffscreenRenderer: Sendable {
                     encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
                     uniforms: &uniforms, bodyUniforms: &bodyUniforms)
             }
+        } else if HeightfieldDrawSet.drawsLattice(in: displayMode), let heightfieldPipelines,
+            let latticePipeline = heightfieldPipelines.lattice.value
+        {
+            // `.wireframe`: the lattice, as the live renderer draws it.
+            HeightfieldDrawSet.encodeLatticePass(
+                encoder: mainEncoder, entries: heightfieldEntries, pipeline: latticePipeline,
+                edgeConfiguration: options.edgeLineConfiguration,
+                viewportSize: SIMD2<Float>(Float(w), Float(h)), makeUniforms: makeUniforms,
+                depthState: highlightDepthState, restoreDepthState: depthState,
+                objectIndex: { _ in 0 })
         }
 
         // Transparent surface pass (issue #53): deferred translucent bodies,
@@ -1874,7 +1894,9 @@ public final class OffscreenRenderer: Sendable {
             heightfieldCache.prepare(
                 bodies: bodies, commandBuffer: commandBuffer, view: setup.viewMatrix,
                 projection: setup.projMatrix, viewportHeight: Float(h),
-                meshCellPixels: options.heightfieldMeshCellPixels
+                meshCellPixels: options.heightfieldMeshCellPixels,
+                latticePixels: HeightfieldDrawSet.drawsLattice(in: options.displayMode)
+                    ? options.heightfieldLatticePixels : nil
             ).map { ($0.body.id, $0) }, uniquingKeysWith: { $1 })
 
         // Every visible body in draw order, with the index its texels carry.

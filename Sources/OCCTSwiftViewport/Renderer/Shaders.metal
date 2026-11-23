@@ -1241,6 +1241,39 @@ struct EdgeUniforms {
     float2   _pad2;  // explicit tail pad: Swift binds sizeof(EdgeUniforms) = 352 bytes (#231)
 };
 
+// Whether the dash pattern of `uniforms` leaves a gap at `arcLength` (distance along the line from
+// its start, in the units of the pattern). Shared by the quad edge fragment and the heightfield
+// lattice, so a dash configured once looks the same on both.
+inline bool edgeDashHidden(float arcLength, constant EdgeUniforms &uniforms) {
+    uint patternType = uniforms.dashPatternType;
+    if (patternType == 0u) return false;
+    float dashLength = max(uniforms.dashPatternParams.x, 0.0);
+    float gapLength = max(uniforms.dashPatternParams.y, 0.0);
+    float dotLength = max(uniforms.dashPatternParams.z, 0.0);
+    float phase = uniforms.dashPatternParams.w;
+    if (patternType == 3u) {
+        float period = dashLength + gapLength + dotLength + gapLength;
+        if (period > 0.0) {
+            float pos = fmod(arcLength + phase, period);
+            if (pos < 0.0) { pos += period; }
+            if ((pos > dashLength && pos < dashLength + gapLength)
+                || pos > dashLength + gapLength + dotLength) {
+                return true;
+            }
+        }
+    } else {
+        float period = dashLength + gapLength;
+        if (period > 0.0) {
+            float pos = fmod(arcLength + phase, period);
+            if (pos < 0.0) { pos += period; }
+            if (pos > dashLength) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 vertex QuadEdgeVertexOut quad_edge_vertex(
     QuadEdgeVertexIn in [[stage_in]],
     constant EdgeUniforms &uniforms [[buffer(1)]]
@@ -1345,33 +1378,7 @@ inline WireframeFragmentOut quadEdgeFragmentColor(
 
     // Dash test runs first so it applies to edge-only bodies too, which return early below.
     float alpha = 1.0;
-    uint patternType = uniforms.dashPatternType;
-    if (patternType != 0u) {
-        float dashLength = max(uniforms.dashPatternParams.x, 0.0);
-        float gapLength = max(uniforms.dashPatternParams.y, 0.0);
-        float dotLength = max(uniforms.dashPatternParams.z, 0.0);
-        float phase = uniforms.dashPatternParams.w;
-        if (patternType == 3u) {
-            float period = dashLength + gapLength + dotLength + gapLength;
-            if (period > 0.0) {
-                float pos = fmod(in.arcLength + phase, period);
-                if (pos < 0.0) { pos += period; }
-                if ((pos > dashLength && pos < dashLength + gapLength)
-                    || pos > dashLength + gapLength + dotLength) {
-                    discard_fragment();
-                }
-            }
-        } else {
-            float period = dashLength + gapLength;
-            if (period > 0.0) {
-                float pos = fmod(in.arcLength + phase, period);
-                if (pos < 0.0) { pos += period; }
-                if (pos > dashLength) {
-                    discard_fragment();
-                }
-            }
-        }
-    }
+    if (edgeDashHidden(in.arcLength, uniforms)) discard_fragment();
 
     float3 bodyColor = bodyUniforms.color.rgb;
     float bodyAlpha = bodyUniforms.color.a;
@@ -3278,7 +3285,8 @@ struct HeightfieldTile {
     uint2 origin;   // the tile's first vertex, in fine cells (a multiple of HF_TILE_CELLS)
     uint  levels;   // levels shared with neighbours, 3 bits each. Bits 0-11: edges -X +X -Y +Y.
                     // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y
-    uint  _pad;
+    uint  lattice;  // `.wireframe` lattice: line pitch of this tile as a power of two of fine
+                    // cells (bits 0-3). Unused, 0, by every other pass.
 };
 
 // Swift mirror: HeightfieldDrawParams in HeightfieldRenderer.swift. Stride 48.
@@ -3567,5 +3575,118 @@ vertex PickVertexOut heightfield_depth_vertex(
     float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
     out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
     out.worldPosition = worldPos.xyz;
+    return out;
+}
+
+// MARK: Heightfield lattice (`.wireframe`)
+
+// A heightfield in `.wireframe` draws a lattice: lines of constant grid position, on the same
+// displaced surface the shaded passes draw (the vertex function is `hfDisplace` again, with the
+// edge pass's `EdgeUniforms`, so width, dash and clip planes are the edge configuration's). The
+// lines are computed per fragment from the interpolated grid position, so they stay a constant
+// number of screen pixels wide and follow the surface exactly, including up a step, where a
+// polyline sampled at points would cut across it. The surface itself is not drawn: fragments off a
+// line are discarded.
+//
+// The spacing of a tile's lines is `HeightfieldTile.lattice`, a power of two of fine cells chosen
+// on the CPU from the tile's on-screen cell size, never finer than the tile's mesh cell. Powers of
+// two nest, so where a tile's pitch is twice its neighbour's every second line continues across
+// the border.
+
+struct HeightfieldLatticeOut {
+    float4 clipPosition [[position]];
+    float3 worldPosition [[centroid_perspective]];
+    float2 gridPos;
+    uint   pitchLevel [[flat]];
+};
+
+vertex HeightfieldLatticeOut heightfield_lattice_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    HeightfieldLatticeOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+    out.worldPosition = worldPos.xyz;
+    out.gridPos = v.gridPos;
+    out.pitchLevel = tiles[iid].lattice & 15u;
+    return out;
+}
+
+// One family of lattice lines. `g` is the grid position along one axis in units of the pitch, so
+// the lines are at its integers. Returns the coverage, 0 to 1, of a line `halfWidthPx` either side
+// of its centre, anti-aliased over a pixel, and fades the lines out as they come closer than 3
+// pixels, to nothing at 1.5 (a surface seen at a grazing angle packs them together, and a solid
+// mass of lines says less than none). Must be called from uniform control flow: it takes
+// screen-space derivatives.
+inline float hfLatticeAxis(float g, float halfWidthPx) {
+    float perPixel = max(length(float2(dfdx(g), dfdy(g))), 1e-7);  // pitches per pixel across the line
+    float distancePx = abs(fract(g + 0.5) - 0.5) / perPixel;
+    float cover = saturate(halfWidthPx + 0.5 - distancePx);
+    float pitchPx = 1.0 / perPixel;
+    return cover * saturate((pitchPx - 1.5) / 1.5);
+}
+
+// The lattice coverage at `gridPos`. With `dashed`, the edge configuration's dash pattern runs along
+// each line, measured over the field's XY plane in body-local units (a height change does not
+// stretch it), from the field's origin, so it continues across tiles.
+inline float hfLatticeCoverage(
+    float2 gridPos, uint pitchLevel, constant HeightfieldParams &params,
+    constant EdgeUniforms &uniforms, bool dashed
+) {
+    float2 g = gridPos / float(1u << pitchLevel);
+    float halfWidthPx = 0.5 * max(uniforms.edgeParams.x, 0.0);
+    float acrossX = hfLatticeAxis(g.x, halfWidthPx);  // lines of constant x, running along y
+    float acrossY = hfLatticeAxis(g.y, halfWidthPx);
+    if (dashed) {
+        if (acrossX > 0.0 && edgeDashHidden(gridPos.y * params.cellSize.y, uniforms)) acrossX = 0.0;
+        if (acrossY > 0.0 && edgeDashHidden(gridPos.x * params.cellSize.x, uniforms)) acrossY = 0.0;
+    }
+    return max(acrossX, acrossY);
+}
+
+fragment WireframeFragmentOut heightfield_lattice_fragment(
+    HeightfieldLatticeOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]]
+) {
+    float coverage = hfLatticeCoverage(in.gridPos, in.pitchLevel, params, uniforms, true);
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        if (dot(uniforms.clipPlanes[cp].xyz, in.worldPosition) + uniforms.clipPlanes[cp].w < 0.0) {
+            discard_fragment();
+        }
+    }
+    if (coverage <= 0.0) discard_fragment();
+    // Like an edge-only body, the lattice is drawn in the body's own colour.
+    WireframeFragmentOut out;
+    out.color = float4(bodyUniforms.color.rgb, bodyUniforms.color.a * coverage);
+    return out;
+}
+
+// Lattice pick: the lines the lattice draws stamp the CELL under the pixel, as a face pick, as the
+// surface does in the shaded modes; between the lines nothing is stamped. Dashes are ignored, so a
+// dashed line is picked along its whole length, as a dashed mesh edge is.
+fragment PickFragmentOut heightfield_lattice_pick_fragment(
+    HeightfieldLatticeOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]]
+) {
+    float coverage = hfLatticeCoverage(in.gridPos, in.pitchLevel, params, uniforms, false);
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        if (dot(uniforms.clipPlanes[cp].xyz, in.worldPosition) + uniforms.clipPlanes[cp].w < 0.0) {
+            discard_fragment();
+        }
+    }
+    if (coverage < 0.5) discard_fragment();
+    int2 cell = clamp(int2(floor(in.gridPos + 0.5)), int2(0), int2(params.size) - 1);
+    PickFragmentOut out;
+    out.pickID = packPickID(bodyUniforms.objectIndex, uint(cell.y) * params.size.x + uint(cell.x), 0u);
     return out;
 }

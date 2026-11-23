@@ -438,6 +438,18 @@ public struct ViewportConfiguration: Sendable {
     /// field.
     public var heightfieldMeshCellPixels: Float = Heightfield.defaultMeshCellPixels
 
+    /// How far apart the lines of a heightfield's `.wireframe` lattice are on screen, in pixels.
+    ///
+    /// A ``Heightfield`` in `.wireframe` draws a lattice on its surface. Each tile's lines are the
+    /// smallest power-of-two number of cells apart that spans at least this many pixels, so the
+    /// lattice stays legible at any zoom, and the spacing steps by factors of two as the camera
+    /// moves. A line is never closer than the tile's mesh cell (``heightfieldMeshCellPixels``), so a
+    /// value at or below that draws one line per mesh cell, the true wireframe of what the GPU
+    /// draws. Clamped to ``Heightfield/latticePixelsRange`` when drawn. `OffscreenRenderOptions`
+    /// carries the same field. Width, dash and colour come from ``edgeLineConfiguration`` and the
+    /// body's colour.
+    public var heightfieldLatticePixels: Float = Heightfield.defaultLatticePixels
+
     // MARK: - Edge Lines
 
     /// Configuration for edge/wireframe line rendering (width, dash pattern, quad expansion).

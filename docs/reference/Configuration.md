@@ -439,6 +439,14 @@ public var heightfieldMeshCellPixels: Float  // default: 4
 
 The widest a [`Heightfield`](Heightfield.md) mesh cell may appear on screen, in pixels. Each 64 x 64-cell tile is drawn at the coarsest level of detail whose cell is no wider than this. Clamped to `Heightfield.meshCellPixelsRange` (`1...32`) when drawn; the sensible range is 3 to 8. 4 is the balanced default; **2 is a cost cliff**, about nine times the 4 px GPU time on an M4 at 1668 x 1194 with 4x MSAA (1.7 million triangles of one to two pixels). `OffscreenRenderOptions.heightfieldMeshCellPixels` carries the same field, and `init(matching:)` copies it.
 
+#### `heightfieldLatticePixels`
+
+```swift
+public var heightfieldLatticePixels: Float  // default: 16
+```
+
+How far apart the lines of a [`Heightfield`](Heightfield.md)'s `.wireframe` lattice are on screen, in drawable pixels. Each tile's lines are the smallest power-of-two number of cells apart that spans at least this many pixels (so between this and twice this), and never closer than the tile's mesh cell, so a value at or below `heightfieldMeshCellPixels` draws one line per mesh cell. Clamped to `Heightfield.latticePixelsRange` (`1...256`) when drawn; no effect in other display modes. Width, dash and colour come from [`edgeLineConfiguration`](#edge-lines) and the body. `OffscreenRenderOptions.heightfieldLatticePixels` carries the same field, and `init(matching:)` copies it. See [the wireframe lattice](Heightfield.md#the-wireframe-lattice).
+
 ---
 
 ### Edge lines

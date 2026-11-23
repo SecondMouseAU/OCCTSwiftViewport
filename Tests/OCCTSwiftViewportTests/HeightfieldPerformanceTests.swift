@@ -11,7 +11,9 @@
 // Run it in a RELEASE build: a debug build's GPU times are 2 to 4 times worse and its CPU times
 // far worse, and say nothing about release.
 //
-// Each scenario prints its median CPU and GPU milliseconds over the measured frames.
+// Each scenario prints its median CPU and GPU milliseconds over the measured frames. `latticeCost`
+// (#254) draws the `.wireframe` lattice and the shaded surface alternately, frame by frame, because
+// the GPU's clock state otherwise moves one variant's figure against the next.
 
 import Foundation
 import Testing
@@ -160,6 +162,66 @@ struct HeightfieldPerformanceTests {
         measure("shaded msaa4 forced L5", forced: 5)
         measure("shaded msaa4 forced L6", forced: 6)
         measure("shaded msaa4 target2 1024x768", target: 2, size: (1024, 768))
+    }
+
+    @Test("The .wireframe lattice against the shaded surface (#254), frame by frame")
+    func latticeCost() throws {
+        guard let renderer = OffscreenRenderer() else { return }
+        let field = try HeightfieldScene.terrainField(width: 2000, height: 2000)
+        let body = HeightfieldScene.body(field)
+        struct Variant {
+            var mode: DisplayMode
+            var msaa = 4
+            var target: Float = 4
+            var latticePixels: Float = Heightfield.defaultLatticePixels
+        }
+        // The GPU's clock moves with load, so a variant measured after another is not comparable
+        // to it. Each pair is drawn alternately, frame by frame, so both see the same clocks, and
+        // the medians of the two are compared.
+        let pairs: [(String, Variant, Variant)] = [
+            (
+                "4 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded),
+                Variant(mode: .wireframe)
+            ),
+            (
+                "4 px mesh cell, msaa4: lattice 1 px (every mesh cell)", Variant(mode: .shaded),
+                Variant(mode: .wireframe, latticePixels: 1)
+            ),
+            (
+                "4 px mesh cell, msaa4: lattice 32 px", Variant(mode: .shaded),
+                Variant(mode: .wireframe, latticePixels: 32)
+            ),
+            (
+                "4 px mesh cell, msaa1: lattice 16 px", Variant(mode: .shaded, msaa: 1),
+                Variant(mode: .wireframe, msaa: 1)
+            ),
+            (
+                "8 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded, target: 8),
+                Variant(mode: .wireframe, target: 8)
+            ),
+        ]
+        for (name, shaded, lattice) in pairs {
+            var gpu = [[Double]](repeating: [], count: 2)
+            for frame in 0..<240 {
+                let camera = CameraState(
+                    rotation: simd_quatf(angle: Float(frame / 2) * 0.03, axis: SIMD3(0, 0, 1))
+                        * simd_quatf(angle: 0.9, axis: SIMD3(1, 0, 0)),
+                    distance: 2600, pivot: SIMD3(1000, 1000, 0))
+                let variant = frame % 2 == 0 ? shaded : lattice
+                var options = HeightfieldScene.options(
+                    width: 1668, height: 1194, camera: camera, displayMode: variant.mode)
+                options.msaaSampleCount = variant.msaa
+                options.heightfieldMeshCellPixels = variant.target
+                options.heightfieldLatticePixels = variant.latticePixels
+                _ = renderer.render(bodies: [body], options: options)
+                if frame >= 40 { gpu[frame % 2].append(renderer.lastGPUSeconds * 1e3) }
+            }
+            print(
+                String(
+                    format: "LATTICE %@: shaded %.2f ms (best %.2f), lattice %.2f ms (best %.2f)",
+                    name, Self.median(gpu[0]), gpu[0].min() ?? 0, Self.median(gpu[1]),
+                    gpu[1].min() ?? 0))
+        }
     }
 
     @Test("The same surface as an ordinary mesh body, for comparison")

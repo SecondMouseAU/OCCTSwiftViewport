@@ -105,8 +105,8 @@ struct HeightfieldPickRefinementTests {
         #expect(over.heightfield == nil)
     }
 
-    @Test("A heightfield is not picked where the display mode draws no surface")
-    func wireframeIsNotPicked() throws {
+    @Test("In .wireframe the heightfield's surface is not picked, only its lattice lines (#254)")
+    func wireframePicksOnlyTheLattice() throws {
         guard let renderer = OffscreenRenderer() else {
             Issue.record("Metal device unavailable; skipping")
             return
@@ -117,7 +117,16 @@ struct HeightfieldPickRefinementTests {
         let wireframe = renderer.performPick(
             bodies: bodies, at: SIMD2(128, 128), options: Self.options(displayMode: .wireframe))
         #expect(shaded?.heightfield != nil)
+        // The surface at (128, 128) lies between lattice lines: nothing there to pick.
         #expect(wireframe == nil)
+        // The lines themselves pick; the full lattice test is HeightfieldLatticeTests.
+        var picked = 0
+        for x in 0..<256
+        where renderer.performPick(
+            bodies: bodies, at: SIMD2(x, 128), options: Self.options(displayMode: .wireframe))
+            != nil
+        { picked += 1 }
+        #expect(picked > 2 && picked < 40, "\(picked) of 256 pixels on a row pick the lattice")
     }
 
     @Test("Offscreen and live picks of the same scene agree")

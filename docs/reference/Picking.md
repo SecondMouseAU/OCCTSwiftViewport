@@ -247,7 +247,7 @@ Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so
 | `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
 | `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
 
-A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so it cannot be picked there.
+A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so its surface is not picked there; its [lattice lines](Heightfield.md#the-wireframe-lattice) are, as a mesh in `.wireframe` is picked at its edges and not its faces: a pixel on a line returns the cell under it (`PickResult.heightfield` set, `refinePick` applies), a pixel between lines returns `nil`.
 
 The offscreen calls are synchronous (the live ones complete asynchronously, after a GPU readback). Coordinates are render pixels, origin top left. Clip planes, `displayMode`, `isVisible`, `isPickable`, render layers, each body's `transform` and the `renderingQuality` surface path are applied as live. The full API is in [Rendering: GPU picking](Rendering.md#gpu-picking).
 

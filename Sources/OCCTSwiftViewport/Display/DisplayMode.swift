@@ -12,6 +12,9 @@ import Foundation
 public enum DisplayMode: String, CaseIterable, Sendable {
 
     /// Wireframe rendering - edges only.
+    ///
+    /// A ``Heightfield`` has no edge geometry, so it draws a lattice of lines on its displaced
+    /// surface instead (see ``ViewportConfiguration/heightfieldLatticePixels``).
     case wireframe
 
     /// Shaded rendering with lighting.
