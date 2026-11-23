@@ -254,8 +254,13 @@ cell is no wider than this. **Documented range `1...32`** (clamped when drawn); 
   1.7 million triangles of one to two pixels each, which MSAA 4 and a lit fragment make expensive.
   MSAA 1 at 2 px is 3.6 ms. Pay it only where a cell-exact silhouette matters.
 - 8 costs about 1.2 ms.
+- **On an iPad the default is expensive.** On an iPad Pro (M2) rendering 2732 x 2048 with 4x MSAA,
+  4 px costs about 20 ms, which misses 60 fps. 6 px costs about 5.8 ms, and 4 px with MSAA 1 about
+  5.9 ms. 2 px is a 132 ms cliff there. The default is the same on every platform (4); set
+  `heightfieldMeshCellPixels` (or the MSAA sample count) for the device. 5 px has not been measured.
 
-An older GPU will have its cliff elsewhere; these numbers are from an M4 (see [Cost](#cost)).
+An older GPU will have its cliff elsewhere; the M4 numbers are in [Cost](#cost), and the iPad
+numbers are in [Cost on an iPad](#cost-on-an-ipad).
 
 ## ViewportController.refinePick
 
@@ -359,10 +364,11 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 ## Cost
 
 All measured on an M4 (10-core GPU), release build, 2000 x 2000 cells, 1668 x 1194, MSAA 4, camera
-orbiting. **Nothing has been measured on an iPad or iPhone**, and an older A-series GPU's
-micro-triangle and MSAA behaviour is the main risk; treat these as a ceiling on what to expect, not a
-promise. A debug build is 2 to 4 times slower on the GPU and says nothing about release (the GPU is
-idle-clocked between frames that are far apart; see the Rendering page).
+orbiting. **These are M4 numbers; they do not carry over to an iPad** (see
+[Cost on an iPad](#cost-on-an-ipad)), and nothing has been measured on an iPhone. An older A-series
+GPU's micro-triangle and MSAA behaviour is the main risk. A debug build is 2 to 4 times slower on the
+GPU and says nothing about release (the GPU is idle-clocked between frames that are far apart; see
+the Rendering page).
 
 | Scenario | GPU ms |
 |----------|--------|
@@ -375,3 +381,27 @@ idle-clocked between frames that are far apart; see the Rendering page).
 CPU encode of a whole frame, plan included, is about 0.13 ms; `replace` x 200 is 2.6 to 4.2 ms on the
 caller's thread. The benchmark is `HeightfieldPerformanceTests`, off by default:
 `VIEWPORT_HEIGHTFIELD_PERF=1 swift test -c release -Xswiftc -enable-testing --filter HeightfieldPerformanceTests`.
+
+### Cost on an iPad
+
+Measured on an iPad Pro 12.9-inch (6th generation, M2), release build, 2000 x 2000 cells, rendered
+offscreen at 2732 x 2048 (2.8 times the pixels of the M4 runs above, so the two tables are not
+comparable one to one). Three runs; plain rows agreed to within 1%. The iPad was on battery, and the
+default row rose by 8 to 10% after three minutes of continuous rendering.
+
+| Scenario | GPU ms |
+|----------|--------|
+| Shaded, 4 px target, MSAA 4 (the default) | 18.4 cold, about 20 warm |
+| Shaded, 4 px target, MSAA 1 | 5.9 |
+| Shaded, 6 px target, MSAA 4 | 5.8 |
+| Shaded, 2 px target, MSAA 4 | 132 |
+| Shaded + shadow map + SSAO + silhouettes, 4 px, MSAA 4 | 35 to 41 |
+| Shaded + shadow map + SSAO + silhouettes, 6 px, MSAA 4 | 13 to 18 |
+| Update only: 200 sliding edits | +0.9 |
+| Update only: 200 disjoint edits (15.6 MB per frame) | +2.2 |
+| A pick through the pick pass | +1.2 |
+
+`Heightfield.raycast` takes under 5 microseconds. `precision: .float16` cuts the upload from 15.6 MB
+to 9.3 MB but does not change GPU time (20.3 ms against 20.4 ms). The field's roughness matters: a
+field roughened with noise of plus or minus 30 units cost 28.5 ms against 20.3 ms for the smooth one
+on a frame with no edits, so measure with your own data. 5 px and the iPhone have not been measured.
