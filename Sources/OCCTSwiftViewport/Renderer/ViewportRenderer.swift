@@ -1141,6 +1141,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         return (buffers.edgeVertexBuffer, buffers.quadEdgeVertexBuffer, buffers.edgeColorBuffer)
     }
 
+    /// The cached mesh buffers for a body, or `nil` when it has none cached; for tests.
+    ///
+    /// Object identity of the vertex, normal and index buffers shows whether a mutation re-created
+    /// them (#141).
+    func cachedMeshBuffers(for bodyID: String) -> (
+        vertex: MTLBuffer?, normal: MTLBuffer?, index: MTLBuffer?
+    )? {
+        guard let buffers = bodyBufferCache[bodyID] else { return nil }
+        return (buffers.vertexBuffer, buffers.normalBuffer, buffers.indexBuffer)
+    }
+
     /// Invalidates cached buffers so they are rebuilt on next draw.
     public func invalidateBuffers() {
         bodyBufferCache.removeAll()
