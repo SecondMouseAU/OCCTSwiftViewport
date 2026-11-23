@@ -453,9 +453,10 @@ struct HeightfieldLatticeTests {
         }
     }
 
-    /// A wall of 60 across the front half, with the camera tilted so the wall's top hides a strip
-    /// of the floor behind it. Lines behind a ridge are drawn: a lattice is see-through, as a
-    /// mesh's edges are in `.wireframe`.
+    /// Lines behind a ridge are drawn: a lattice is see-through, as a mesh's edges are in `.wireframe`.
+    ///
+    /// A wall across the front half, with the camera tilted so the wall's top hides a strip of the
+    /// floor behind it.
     @Test("Lines behind a ridge are drawn: the lattice is see-through")
     func linesBehindARidgeShow() throws {
         let wall: Float = 40
@@ -518,6 +519,26 @@ struct HeightfieldLatticeTests {
                     LatticeScene.hasInk(pixels, near: p),
                     "\(name): the floor line behind the wall at \(point) is hidden")
             }
+        }
+    }
+
+    /// Two fields whose lines coincide on screen, the nearer drawn first: the farther field's lines
+    /// still show, so the lattice writes no depth (a line of one field never knocks out another's).
+    @Test("The lattice writes no depth: a farther lattice drawn after a nearer one still shows")
+    func latticeWritesNoDepth() throws {
+        let field = try LatticeScene.flatField()
+        var near = LatticeScene.body(field, id: "near", color: SIMD4(0.1, 0.8, 0.1, 1))
+        near.transform.columns.3 = SIMD4(0, 0, 30, 1)
+        let far = LatticeScene.body(field, id: "far", color: SIMD4(0.9, 0.1, 0.1, 1))
+        let p = LatticeScene.project(SIMD3(Self.centre(64), 50, 0), camera: LatticeScene.topDown)
+        for (name, render) in LatticeScene.renderers {
+            // Top-down, both fields' lines coincide: whichever is drawn last is on top where it is
+            // not rejected by depth. With the nearer field drawn first and depth written, the
+            // farther one would be rejected and the pixel would stay green.
+            let pixels = try render([near, far], LatticeSetup())
+            let c = HeightfieldIntegrationTests.rgb(
+                pixels, Int(p.x.rounded(.down)), Int(p.y.rounded(.down)))
+            #expect(c.x > c.y + 30, "\(name): the farther lattice is knocked out: \(c)")
         }
     }
 
@@ -863,9 +884,10 @@ struct HeightfieldLatticeTests {
 
     // MARK: Picking
 
-    /// What a `.wireframe` pick of the lattice reports. The field is 100 cells in a 160 px view,
-    /// 300 units across, so pixel `(x, y)` is over the cell `(x - 80) * 1.875 + 50`, rows
-    /// reversed; the lines are at cells 0, 32, 64 and 96.
+    /// The cell a `.wireframe` lattice pick reports at `pixel`.
+    ///
+    /// The field is 100 cells in a 160 px view, 300 units across, so pixel `(x, y)` is over the
+    /// cell `(x - 80) * 1.875 + 50`, rows reversed; the lines are at cells 0, 32, 64 and 96.
     private static func cell(atPixel pixel: SIMD2<Int>) -> SIMD2<Int> {
         let scale: Float = 300 / 160
         return SIMD2(

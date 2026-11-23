@@ -179,7 +179,10 @@ struct HeightfieldPerformanceTests {
         // to it. Each pair is drawn alternately, frame by frame, so both see the same clocks, and
         // the medians of the two are compared.
         let pairs: [(String, Variant, Variant)] = [
-            ("4 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded), Variant(mode: .wireframe)),
+            (
+                "4 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded),
+                Variant(mode: .wireframe)
+            ),
             (
                 "4 px mesh cell, msaa4: lattice 1 px (every mesh cell)", Variant(mode: .shaded),
                 Variant(mode: .wireframe, latticePixels: 1)

@@ -25,6 +25,7 @@ extension HeightfieldLayout {
     static func latticeLevel(cellPixels: Float, latticePixels: Float, meshLevel: Int) -> Int {
         guard cellPixels > 0, latticePixels > 0 else { return maxLatticeLevel }
         let ratio = latticePixels / cellPixels
+        guard ratio.isFinite else { return maxLatticeLevel }
         let wanted = ratio <= 1 ? 0 : Int(log2(ratio).rounded(.up))
         return min(maxLatticeLevel, max(meshLevel, wanted))
     }

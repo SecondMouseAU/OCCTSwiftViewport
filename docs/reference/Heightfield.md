@@ -356,6 +356,10 @@ drawn.
   [`PickResult.heightfield`](#pickresultheightfield).
 - **Lines at multiples of the pitch.** Lines stand at the field's cell 0 and every pitch after it, so the
   far border (the last row and column) has a line only where it falls on one.
+- **Limit: a field seen from very far.** When a tile's pitch is 64 cells or more, its lines fall on
+  tile borders. Where the neighbouring tile's pitch is coarser and does not divide that border, only
+  the finer tile draws the line, so it is half as wide there. This needs cells under about a quarter of a
+  pixel, such as a field of several thousand cells that fits in a few hundred pixels.
 - **Cost.** The lattice rasterises the same triangles as the shaded surface and keeps the fragments on a
   line, so the vertex and raster cost is the surface's, with none of its lighting. On an M4 in a release
   build (2000 x 2000 cells, 1668 x 1194, 4x MSAA, 4 px mesh cell) it measured 0.7 to 2.5 ms against 2.5 to
