@@ -438,8 +438,8 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 ## Cost
 
 All measured on an M4 (10-core GPU), release build, 2000 x 2000 cells, 1668 x 1194, MSAA 4, camera
-orbiting. **These are M4 numbers; they do not carry over to an iPad** (see
-[Cost on an iPad](#cost-on-an-ipad)), and nothing has been measured on an iPhone. An older A-series
+orbiting. **These are M4 numbers; they do not carry over to an iPad or an iPhone** (see
+[Cost on an iPad](#cost-on-an-ipad) and [Cost on an iPhone](#cost-on-an-iphone)). An older A-series
 GPU's micro-triangle and MSAA behaviour is the main risk. A debug build is 2 to 4 times slower on the
 GPU and says nothing about release (the GPU is idle-clocked between frames that are far apart; see
 the Rendering page).
@@ -478,4 +478,50 @@ default row rose by 8 to 10% after three minutes of continuous rendering.
 `Heightfield.raycast` takes under 5 microseconds. `precision: .float16` cuts the upload from 15.6 MB
 to 9.3 MB but does not change GPU time (20.3 ms against 20.4 ms). The field's roughness matters: a
 field roughened with noise of plus or minus 30 units cost 28.5 ms against 20.3 ms for the smooth one
-on a frame with no edits, so measure with your own data. 5 px and the iPhone have not been measured.
+on a frame with no edits, so measure with your own data. 5 px has not been measured.
+
+### Cost on an iPhone
+
+Measured on an iPhone 15 Pro (A17 Pro, 6-core GPU, iOS 27.2.1), release build, 2000 x 2000 cells,
+rendered offscreen at the phone's native 2556 x 1179 (3.0 million pixels, against the iPad's 5.6
+million). Unplugged, Low Power Mode off, thermal state nominal at the start of each run and fair at
+the end. Two runs. The figures are the same measure as the iPad table: the interval between frames
+finishing, with frames queued back to back.
+
+**The phone's speed depends on its clock state.** The first rows of a run agreed between the two runs
+to within about 5%. The same default scene measured again later in a run, after a minute or more of
+heavy rendering, read 1.5 to 3 times slower (the 10th-percentile frame moved with the median, so this
+is the GPU's clock and not noise). Read the first column as the best case and the second as what a
+phone that has been busy gives.
+
+| Scenario | GPU ms, early in a run | Later in the same run |
+|----------|------------------------|-----------------------|
+| Shaded, 4 px target, MSAA 4 (the default) | 4.3 | 6 to 13 |
+| Shaded, 4 px target, MSAA 1 | 2.3 to 2.4 | not measured |
+| Shaded, 6 px target, MSAA 4 | 2.6 to 2.7 | not measured |
+| Shaded, 8 px target, MSAA 4 | 2.2 to 2.3 | not measured |
+| Shaded, 3 px target, MSAA 4 | 8.6 to 8.7 | not measured |
+| Shaded, 2 px target, MSAA 4 | 46 | not measured |
+| Shaded + shadow map + SSAO + silhouettes, 4 px, MSAA 4 | 11.0 to 11.6 | about 22 |
+| Shaded + shadow map + SSAO + silhouettes, 6 px, MSAA 4 | 7.8 to 8.2 | not measured |
+| Shaded + shadow map + SSAO + silhouettes, 4 px, MSAA 1 | 7.8 to 8.1 | not measured |
+| Update only: 200 sliding edits | +0.55 to +0.56 | not measured |
+| Update only: 200 disjoint edits (15.6 MB per frame) | +2.4 to +11.7, see below | not measured |
+| A pick through the pick pass | within noise (-0.4 to +0.6) | not measured |
+
+What this gives: at the default the surface alone holds a 60 fps budget (16.6 ms) in both states, and
+a 120 Hz budget (8.3 ms) early in a run and not reliably once warm. With shadows, SSAO and silhouettes
+on, the default misses 60 fps once the phone is warm; 6 px is about 8 ms early in a run. 3 px or finer
+is the cliff.
+
+The 200 disjoint edits case read +11.7 ms in one run and +2.4 ms in the other, because the table it
+sits in runs in a different clock state each time; neither figure is reliable.
+`precision: .float16` against `.float32` showed no clear difference with no edits and about 8% less
+frame time with 200 disjoint edits in both runs (upload 9.3 MB against 15.6 MB).
+`Heightfield.raycast` took 0 to 3.8 microseconds median and 13.6 microseconds at worst.
+
+On the default scene the iPhone read about four times faster than the iPad table above (4.3 ms
+against 18.4 ms) with 1.9 times fewer pixels, although the iPad's M2 GPU is the larger one on paper.
+That is unexplained and the iPad is being re-measured, so treat the iPad figures as provisional until
+it is. Not measured: the lattice (see [The wireframe lattice](#the-wireframe-lattice)) on a phone, a
+5 px target, a sustained run longer than about 90 seconds, and a second iPhone.
