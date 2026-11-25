@@ -68,7 +68,8 @@ struct WorldHitPointDirectMeshTests {
     }
 
     /// A point strictly inside triangle 0, off the diagonal the two triangles share (triangle 1
-    /// is the half where y > x), so no test depends on how a boundary hit is classified.
+    /// is the half where y > x), so a test using it does not depend on how a boundary hit is
+    /// classified. `issueProbe` is the one test that deliberately sits on that diagonal.
     private static let lowerRight: SIMD2<Float> = [1, -0.5]
     private static let upperLeft: SIMD2<Float> = [-1, 0.5]
 
