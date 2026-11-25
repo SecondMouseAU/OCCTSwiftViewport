@@ -67,9 +67,16 @@ struct WorldHitPointDirectMeshTests {
             id: "interleaved", vertexData: vertexData, indices: indices, edges: [], color: .one)
     }
 
-    private static func down(at xy: SIMD2<Float> = .zero) -> Ray {
+    /// A point strictly inside triangle 0, off the diagonal the two triangles share (triangle 1
+    /// is the half where y > x), so no test depends on how a boundary hit is classified.
+    private static let lowerRight: SIMD2<Float> = [1, -0.5]
+    private static let upperLeft: SIMD2<Float> = [-1, 0.5]
+
+    private static func down(at xy: SIMD2<Float> = lowerRight) -> Ray {
         Ray(origin: [xy.x, xy.y, 5], direction: [0, 0, -1])
     }
+
+    private static let lowerRightHit: SIMD3<Float> = [1, -0.5, 0]
 
     private static func translation(_ t: SIMD3<Float>) -> simd_float4x4 {
         var m = matrix_identity_float4x4
@@ -89,25 +96,37 @@ struct WorldHitPointDirectMeshTests {
         let body = Self.initBuilt()
         #expect(body.usesDirectMesh)
         #expect(body.vertices.isEmpty)
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, Self.lowerRightHit))
+    }
+
+    @Test("The probe from issue 247, on the edge the two triangles share, hits")
+    func issueProbe() {
+        // A ray from (0, 0, 5) along -Z through the middle of the square, triangle 0.
+        let ray = Ray(origin: [0, 0, 5], direction: [0, 0, -1])
+        let fromInit = Self.initBuilt().worldHitPoint(ray: ray, triangleIndex: 0)
+        let fromFactory = Self.factoryBuilt().worldHitPoint(ray: ray, triangleIndex: 0)
+        #expect(Self.isNear(fromInit, [0, 0, 0]))
+        #expect(Self.isNear(fromFactory, [0, 0, 0]))
     }
 
     @Test("A body from ViewportBody.directMesh hits the mesh")
     func factoryBuilt() {
         let body = Self.factoryBuilt()
         #expect(body.usesDirectMesh)
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, Self.lowerRightHit))
     }
 
     @Test("Each triangle index addresses its own triangle")
     func triangleIndexSelectsTriangle() {
         let body = Self.initBuilt()
-        let lowerRight = Self.down(at: [1, -1])
-        let upperLeft = Self.down(at: [-1, 1])
-        #expect(Self.isNear(body.worldHitPoint(ray: lowerRight, triangleIndex: 0), [1, -1, 0]))
-        #expect(body.worldHitPoint(ray: lowerRight, triangleIndex: 1) == nil)
-        #expect(Self.isNear(body.worldHitPoint(ray: upperLeft, triangleIndex: 1), [-1, 1, 0]))
-        #expect(body.worldHitPoint(ray: upperLeft, triangleIndex: 0) == nil)
+        let inLower = Self.down(at: Self.lowerRight)
+        let inUpper = Self.down(at: Self.upperLeft)
+        #expect(Self.isNear(body.worldHitPoint(ray: inLower, triangleIndex: 0), [1, -0.5, 0]))
+        #expect(body.worldHitPoint(ray: inLower, triangleIndex: 1) == nil)
+        #expect(Self.isNear(body.worldHitPoint(ray: inUpper, triangleIndex: 1), [-1, 0.5, 0]))
+        #expect(body.worldHitPoint(ray: inUpper, triangleIndex: 0) == nil)
     }
 
     @Test("An out-of-range triangle index returns nil")
@@ -137,18 +156,18 @@ struct WorldHitPointDirectMeshTests {
     @Test("An init-built direct-mesh body applies its transform")
     func initBuiltTransform() {
         let body = Self.initBuilt(transform: Self.translation([10, 0, 0]))
-        // The square now spans x in [8, 12]: x = 0 misses, x = 10 hits.
+        // The square now spans x in [8, 12]: the probe at x = 1 misses, x = 11 hits.
         #expect(body.worldHitPoint(ray: Self.down(), triangleIndex: 0) == nil)
-        let hit = body.worldHitPoint(ray: Self.down(at: [10, 0]), triangleIndex: 0)
-        #expect(Self.isNear(hit, [10, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(at: [11, -0.5]), triangleIndex: 0)
+        #expect(Self.isNear(hit, [11, -0.5, 0]))
     }
 
     @Test("A factory-built direct-mesh body applies its transform")
     func factoryBuiltTransform() {
         let body = Self.factoryBuilt(transform: Self.translation([10, 0, 0]))
         #expect(body.worldHitPoint(ray: Self.down(), triangleIndex: 0) == nil)
-        let hit = body.worldHitPoint(ray: Self.down(at: [10, 0]), triangleIndex: 0)
-        #expect(Self.isNear(hit, [10, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(at: [11, -0.5]), triangleIndex: 0)
+        #expect(Self.isNear(hit, [11, -0.5, 0]))
     }
 
     @Test("A scale and translation lift the hit point to world space")
@@ -157,10 +176,11 @@ struct WorldHitPointDirectMeshTests {
         m.columns.0.x = 2
         m.columns.1.y = 2
         let body = Self.initBuilt(transform: m)
-        // The square now spans (+-4, +-4) at z = 3, so x = 3 is inside and x = 5 is outside.
-        let inside = body.worldHitPoint(ray: Self.down(at: [3, 0]), triangleIndex: 0)
-        #expect(Self.isNear(inside, [3, 0, 3]))
-        #expect(body.worldHitPoint(ray: Self.down(at: [5, 0]), triangleIndex: 0) == nil)
+        // The square now spans (+-4, +-4) at z = 3: world (2, -1) is local (1, -0.5), and
+        // world x = 5 is outside.
+        let inside = body.worldHitPoint(ray: Self.down(at: [2, -1]), triangleIndex: 0)
+        #expect(Self.isNear(inside, [2, -1, 3]))
+        #expect(body.worldHitPoint(ray: Self.down(at: [5, -1]), triangleIndex: 0) == nil)
     }
 
     // MARK: - vertices is not the mesh
@@ -169,14 +189,16 @@ struct WorldHitPointDirectMeshTests {
     func sparseVertices() {
         // Two B-Rep corner points: fewer than the mesh has vertices.
         let body = Self.initBuilt(vertices: [[-2, -2, 0], [2, -2, 0]])
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, Self.lowerRightHit))
     }
 
     @Test("Unrelated vertices of the right count do not move the hit point")
     func unrelatedVertices() {
         // Same count as the mesh, but a square one unit up: reading them would hit at z = 1.
         let body = Self.initBuilt(vertices: Self.corners(z: 1))
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, Self.lowerRightHit))
     }
 
     @Test("A direct-mesh body wins over a stale vertexData")
@@ -194,7 +216,8 @@ struct WorldHitPointDirectMeshTests {
             meshPositions: Self.flat(Self.corners()),
             meshNormals: Self.normals
         )
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, Self.lowerRightHit))
     }
 
     // MARK: - Layouts that are not direct-mesh
@@ -202,9 +225,11 @@ struct WorldHitPointDirectMeshTests {
     @Test("An interleaved body still reads vertexData, whatever vertices holds")
     func interleavedUnchanged() {
         var body = Self.interleaved()
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let before = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(before, Self.lowerRightHit))
         body.vertices = Self.corners(z: 1)
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 0]))
+        let after = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(after, Self.lowerRightHit))
     }
 
     @Test("A half-populated direct mesh falls back to vertices, as the raycast does")
@@ -222,7 +247,8 @@ struct WorldHitPointDirectMeshTests {
             meshNormals: []
         )
         #expect(!body.usesDirectMesh)
-        #expect(Self.isNear(body.worldHitPoint(ray: Self.down(), triangleIndex: 0), [0, 0, 1]))
+        let hit = body.worldHitPoint(ray: Self.down(), triangleIndex: 0)
+        #expect(Self.isNear(hit, [1, -0.5, 1]))
     }
 
     @Test("A body with no triangle positions returns nil")
@@ -269,8 +295,17 @@ struct WorldHitPointDirectMeshTests {
             Issue.record("expected a distance measurement")
             return
         }
-        #expect(measurement.distance > 0)
-        #expect(abs(measurement.start.z) < 1e-4)
-        #expect(abs(measurement.end.z) < 1e-4)
+        // Each point is where the tap's ray meets the z = 0 plane, on the tapped triangle.
+        let start = Self.planeHit(ndc: [0.2, -0.2], camera: camera)
+        let end = Self.planeHit(ndc: [-0.2, 0.2], camera: camera)
+        #expect(Self.isNear(measurement.start, start))
+        #expect(Self.isNear(measurement.end, end))
+        #expect(abs(measurement.distance - simd_length(end - start)) < 1e-4)
+    }
+
+    // Where the camera ray through `ndc` meets the z = 0 plane, worked out without the body.
+    private static func planeHit(ndc: SIMD2<Float>, camera: CameraState) -> SIMD3<Float> {
+        let ray = Ray.fromCamera(ndc: ndc, cameraState: camera, aspectRatio: 1)
+        return ray.origin + ray.direction * (-ray.origin.z / ray.direction.z)
     }
 }
