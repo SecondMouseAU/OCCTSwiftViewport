@@ -238,6 +238,27 @@ Clipping planes for section views. Only planes with `isEnabled == true` are appl
 
 Committed measurement annotations rendered by `MeasurementOverlay`. Append directly for programmatic annotations, or let the tap-to-measure flow populate it via `measurementMode`.
 
+#### `sceneBounds(of:)`
+
+```swift
+public func sceneBounds(of bodies: [ViewportBody]) -> BoundingBox?
+```
+
+World-space bounds of the visible geometry-layer `bodies`, for an app that needs the scene's extent on each camera move (to keep a pivot, a clip range or a custom eye near the scene). It reads the cache the controller's dynamic pivot, orthographic eye placement and double-tap focus already use, so it is cheap enough to call on every camera change and an app need not keep a cache of its own (issue #252). `ViewportBody.boundingBox` is the contrast: local, and it reads every vertex on each call.
+
+A body's geometry is scanned the first time the cache sees it, and again only when its bounds change: a new `generation`, or an in-place edit of the content it draws, such as a [`Heightfield`](Heightfield.md) raised or recomputed through its handle. Moving a body by `transform` alone rescans nothing; the cache holds the local box and each call applies the body's current `transform` to it, so the result follows the body. A heightfield body is bounded by its field alone.
+
+Hidden bodies (`isVisible == false`), `.overlay`-layer bodies and bodies with no geometry are left out, as they are from the scene bounds the renderer frames its shadows and grid with. The result is `nil` when no body is left, an empty array included.
+
+Any list works, a selection as well as the whole scene. The cache is keyed by body `id`, and this call does not evict the bodies it leaves out, so a call with a selection does not make the next call over the whole scene rescan the rest. The one limit is on stale entries: once the cache holds more than twice the largest list it has been given since the viewport last pruned, plus 16, a call drops every entry it was not passed, and the bodies dropped are scanned again when next asked for. The viewport's own calls, which pass the whole scene, drop the entries of bodies no longer in it, so a list with bodies the viewport does not show is scanned again after each of them.
+
+```swift
+let bounds = controller.sceneBounds(of: bodies)   // BoundingBox?, world space
+if let bounds {
+    keepNear(bounds.center, within: bounds.diagonalLength)   // your own camera logic
+}
+```
+
 ---
 
 ### Post-Processing

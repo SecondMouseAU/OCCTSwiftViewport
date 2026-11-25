@@ -56,7 +56,11 @@ public final class PivotStrategy {
     ///
     /// Not `generation`: a body whose content is edited in place keeps its generation while its
     /// bounds change (issue #237).
-    private var boundsKeyCache: [String: BoundsKey] = [:]
+    private(set) var boundsKeyCache: [String: BoundsKey] = [:]
+
+    /// The most bodies one call has passed since the last pruning call: the size of the scene a
+    /// call that does not prune may be a part of.
+    private var sceneSize = 0
 
     public init() {}
 
@@ -148,6 +152,7 @@ public final class PivotStrategy {
     public func invalidateCache() {
         bbCache.removeAll()
         boundsKeyCache.removeAll()
+        sceneSize = 0
     }
 
     /// Exposes the current bounding box cache (for SceneRaycast).
@@ -157,19 +162,22 @@ public final class PivotStrategy {
 
     /// World-space bounds of the visible geometry-layer `bodies`, from the per-bounds-key cache,
     /// so calling it on every camera change does not rescan their geometry.
-    func sceneBounds(of bodies: [ViewportBody]) -> BoundingBox? {
-        updateCache(bodies: bodies)
+    ///
+    /// - Parameters:
+    ///   - bodies: The scene bodies.
+    ///   - pruning: Whether to drop the entries of bodies not in `bodies`. The viewport's own
+    ///     calls pass the whole scene and do; the public `ViewportController.sceneBounds(of:)`
+    ///     takes any list and does not, so a selection leaves the rest of the scene cached.
+    /// - Returns: The union of the bounds, or `nil` when no visible geometry-layer body has any.
+    func sceneBounds(of bodies: [ViewportBody], pruning: Bool = true) -> BoundingBox? {
+        updateCache(bodies: bodies, pruning: pruning)
         return sceneBoundingBox(bodies: bodies)
     }
 
     // MARK: - Private
 
-    private func updateCache(bodies: [ViewportBody]) {
-        // Track which IDs are still present
-        var activeIDs = Set<String>()
-
+    private func updateCache(bodies: [ViewportBody], pruning: Bool = true) {
         for body in bodies {
-            activeIDs.insert(body.id)
             // Hidden and overlay bodies are used by neither the scene bounds nor the raycast, so
             // they are not scanned (issue #180). A stale entry left from when one was used is
             // harmless: it is never read, and a body that becomes visible again is refreshed by
@@ -188,12 +196,21 @@ public final class PivotStrategy {
             boundsKeyCache[body.id] = body.boundsKey
         }
 
-        // Prune stale entries
-        for key in bbCache.keys where !activeIDs.contains(key) {
+        // Prune entries of bodies no longer passed in. A call that does not prune takes any list,
+        // a selection included, and must not evict the rest of the scene the viewport's own
+        // calls read: it only drops them once the cache is twice the scene's size, so removed
+        // bodies still do not pile up.
+        sceneSize = pruning ? bodies.count : max(sceneSize, bodies.count)
+        guard pruning || boundsKeyCache.count > 2 * sceneSize + Self.retainedSlack else { return }
+        let activeIDs = Set(bodies.map(\.id))
+        for key in boundsKeyCache.keys where !activeIDs.contains(key) {
             bbCache.removeValue(forKey: key)
             boundsKeyCache.removeValue(forKey: key)
         }
     }
+
+    /// How many entries past twice `sceneSize` a call that does not prune lets the cache hold.
+    private static let retainedSlack = 16
 
     /// World-space union of the cached bounds of `bodies`, each moved by its current `transform`.
     ///

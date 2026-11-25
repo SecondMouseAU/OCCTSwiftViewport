@@ -343,6 +343,15 @@ Configure via `ViewportConfiguration.dynamicPivotConfiguration`. The controller 
 
 A pivot change never moves the view. Every pivot the strategy returns is on the line of sight through the centre of the view, and the controller slides the pivot along it, changing only `distance`, so the camera's position and orientation stay exactly where the gesture left them, momentum or not. Before issue #200 the distance was kept, and the camera slid toward or away from the model after each gesture. Before issue #204 the zoomed-out pivot was the scene centre itself, off the line of sight whenever the user had panned, so releasing a pan slid the view back to centre the model.
 
+To read the scene's world bounds on each camera move, for example to keep your own pivot or eye near the scene, ask the controller. `sceneBounds(of:)` reads the same per-body cache the dynamic pivot uses, so it does not rescan vertices on every call, and a body moved by `transform` alone is not rescanned either:
+
+```swift
+// Hidden and .overlay bodies are left out; nil when nothing visible has geometry.
+if let bounds = viewport.sceneBounds(of: bodies) {
+    myPivotLogic.keepNear(bounds)
+}
+```
+
 To focus on a specific world point programmatically (bypassing the strategy):
 
 ```swift
