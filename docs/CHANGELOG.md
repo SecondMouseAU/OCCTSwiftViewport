@@ -4,6 +4,72 @@ All notable changes to OCCTSwiftViewport are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-11-25
+
+Adds a lattice for a heightfield in `.wireframe`, an opt-out that makes the GPU pick independent of the
+display mode, and `ViewportController.sceneBounds(of:)`, and fixes tap-to-measure on direct-mesh bodies
+built with the initializer. One behaviour change to read about: a heightfield in `.wireframe` is no
+longer a no-op. Nothing is source-incompatible.
+
+### Changed (read before upgrading)
+- **A heightfield in `.wireframe` is drawn as a lattice, and its lattice lines are picked** (#254).
+  In 1.3.2 it drew nothing and picked nothing, so a terrain scene switched to `.wireframe` went blank.
+  Every other display mode draws a heightfield exactly as in 1.3.2.
+
+### Added
+- **`.wireframe` draws a heightfield as a lattice** (#254, part of #139). Lines of constant grid position
+  are drawn on the displaced surface, in the body's colour with the width and dash of
+  `edgeLineConfiguration`, see-through like a mesh's edges, and nothing of the surface itself; section
+  planes, `transform` and tile culling apply as for the shaded surface. Each tile's lines are the
+  smallest power-of-two number of cells apart that spans `heightfieldLatticePixels` on screen, never
+  finer than the tile's mesh cell. The lines are picked (the cell under the pixel,
+  `PickResult.heightfield` set, `refinePick` unchanged) and the gaps are not. **Verified on an M4 Mac
+  only**; a line is drawn half as wide on a tile border when the field is seen from very far (#262).
+- **`ViewportConfiguration.heightfieldLatticePixels`** and
+  **`OffscreenRenderOptions.heightfieldLatticePixels`** (default 16, range `1...256` as
+  `Heightfield.latticePixelsRange`; `Heightfield.defaultLatticePixels`): how far apart the lattice lines
+  are on screen. No effect in other display modes.
+- **`PickingConfiguration.followsDisplayMode`** (default `true`) and
+  **`OffscreenRenderOptions.pickFollowsDisplayMode`** (default `true`, copied by `init(matching:)`)
+  (#250). Since 1.3.0 the GPU pick follows the display mode: faces are stamped only when the mode shows
+  surfaces, and a mesh body's edges and arcs only when it shows edges, so `.shaded` and `.wireframe`
+  each disable a pick kind. With `followsDisplayMode = false` every kind a body carries is stamped in
+  every display mode (what the pick did before 1.3.0), depth tested against the others as in
+  `.shadedWithEdges`: `.wireframe` picks faces, `.shaded` picks edges. A heightfield's surface is
+  stamped in every mode (its lattice is not stamped separately), and an overlay body's edges and arcs
+  are too. The setting changes only the pick, not what is drawn; the default is unchanged.
+  `ViewportController.selectionFilter` narrows to one kind, but it runs after the pick resolves a
+  primitive per pixel, so a rejected kind still occupies its pixels (#260). `PickingConfiguration.init`
+  gains a defaulted `followsDisplayMode:` parameter.
+- **`ViewportController.sceneBounds(of:)`: the scene's world bounds from the viewport's own cache**
+  (#252). Returns the union of the bounds of the visible geometry-layer bodies (hidden and overlay
+  bodies left out, `nil` when none has geometry), each moved by its current `transform`. A body is
+  scanned only when its bounds change, so a transform change rescans nothing and the call is cheap on
+  every camera move; it shares the cache the dynamic pivot, orthographic eye placement and double-tap
+  focus use, so an app needs none of its own. A call with a selection leaves the rest of the scene
+  cached.
+
+### Fixed
+- **Tap-to-measure on direct-mesh bodies built with the initializer** (#247, #136 M14).
+  `ViewportBody.worldHitPoint(ray:triangleIndex:)` read a direct-mesh body's triangles from `vertices`
+  (the vertex-pick array) instead of `meshPositions`, so a body built with
+  `ViewportBody(id:vertexData: [], indices:..., meshPositions:meshNormals:)` returned `nil` for a
+  measurement tap, or a wrong point when `vertices` held unrelated points, and `handleMeasurementPick`
+  dropped the tap. It now reads the same positions the renderer draws and `SceneRaycast` reads, with the
+  body's `transform` applied as before. Bodies from `ViewportBody.directMesh(...)` were not affected.
+- The dynamic pivot's bounds cache never dropped the entry of a body that had no bounds, so such entries
+  stayed until `invalidateCache()`.
+
+### Docs
+- The heightfield cost tables now cover an iPad Pro (M2) and an iPhone 15 Pro (`docs/reference/Heightfield.md`,
+  "Cost on an iPad" and "Cost on an iPhone"), with a warning in the cookbook. On the iPhone the default
+  (4 px, MSAA 4) measured about 4 ms early in a run and 6 to 13 ms once the phone had warmed; on the iPad
+  it measured about 20 ms, a figure that is much slower than the iPhone's for no reason found, and the iPad
+  is being re-measured (#139). The 4 px default is unchanged on every platform.
+- The gestures cookbook no longer assigns to the immutable `ViewportController.configuration` (#249).
+- The lattice's design, cost and limits are in `docs/reference/Heightfield.md` ("The wireframe lattice"),
+  and the picking page documents the `followsDisplayMode` opt-out and its limits.
+
 ## [1.3.2] - 2026-11-10
 
 Adds a dynamic heightfield surface (`Heightfield`), a headless GPU pick pass for `OffscreenRenderer`, and
