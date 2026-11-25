@@ -366,10 +366,14 @@ drawn.
   `false`, which picks the whole surface); see [`PickResult.heightfield`](#pickresultheightfield).
 - **Lines at multiples of the pitch.** Lines stand at the field's cell 0 and every pitch after it, so the
   far border (the last row and column) has a line only where it falls on one.
-- **Limit: a field seen from very far.** When a tile's pitch is 64 cells or more, its lines fall on
-  tile borders. Where the neighbouring tile's pitch is coarser and does not divide that border, only
-  the finer tile draws the line, so it is half as wide there. This needs cells under about a quarter of a
-  pixel, such as a field of several thousand cells that fits in a few hundred pixels.
+- **Lines on a tile border.** From a pitch of 64 cells a tile's lines fall on its borders, and each of
+  the two tiles that meet at a border draws its half of the line. A border is a multiple of 64 cells, so
+  tiles of the same pitch, or whose coarser pitch divides the border, draw it from both sides. Where
+  a neighbour's finer pitch reaches a border that this tile's coarser pitch does not, the tile draws its
+  half of that line too (the tile plan says which borders, in `HeightfieldTile.lattice`), so such a
+  line is as wide as any other. This arises only where neighbouring tiles differ in pitch, as they do
+  under a perspective camera, and the coarser pitch is 128 cells or more. The line along the field's own
+  edge, at cell 0, is the exception: one tile draws it and the surface ends at it, so it is half as wide.
 - **Cost.** The lattice rasterises the same triangles as the shaded surface and keeps the fragments on a
   line, so the vertex and raster cost is the surface's, with none of its lighting. On an M4 in a release
   build (2000 x 2000 cells, 1668 x 1194, 4x MSAA, 4 px mesh cell) it measured 0.7 to 2.5 ms against 2.5 to
