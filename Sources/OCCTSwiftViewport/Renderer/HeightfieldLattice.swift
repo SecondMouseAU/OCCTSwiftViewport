@@ -29,6 +29,36 @@ extension HeightfieldLayout {
         let wanted = ratio <= 1 ? 0 : Int(log2(ratio).rounded(.up))
         return min(maxLatticeLevel, max(meshLevel, wanted))
     }
+
+    /// The lattice borders of the tile at column `tx`, row `ty`: one bit per edge (-X, +X, -Y, +Y,
+    /// from bit 0) that is set when this tile draws a line on that border for its neighbour.
+    ///
+    /// A border is on a multiple of the tile size, so a tile with a pitch of 64 cells or more
+    /// draws its lines on its borders, half of each in each of the two tiles that meet there. When
+    /// the neighbour across a border draws a line there but this tile's coarser pitch does not
+    /// reach it, that line would be drawn by the neighbour alone, half as wide as any other. The
+    /// bit of that edge is then set, so this tile draws its half of the line too.
+    ///
+    /// `pitches` is every tile's pitch (`HeightfieldTileLevels.lattice`), row-major, culled tiles
+    /// included: a neighbour that is not drawn is off screen or clipped away, with its half of the
+    /// line, so this tile's half is drawn either way.
+    static func latticeBorders(tx: Int, ty: Int, cols: Int, rows: Int, pitches: [UInt8]) -> UInt32 {
+        let own = Int(pitches[ty * cols + tx])
+        // A pitch of 64 cells or less divides every border, so this tile draws all of them.
+        guard own > tileCells.trailingZeroBitCount else { return 0 }
+        var borders: UInt32 = 0
+        // Edges in the order the shader reads them: -X, +X, -Y, +Y.
+        for (slot, (dx, dy)) in [(-1, 0), (1, 0), (0, -1), (0, 1)].enumerated() {
+            let nx = tx + dx
+            let ny = ty + dy
+            guard nx >= 0, ny >= 0, nx < cols, ny < rows else { continue }
+            // The border's grid position along the axis the edge is across.
+            let border = (dx != 0 ? max(tx, nx) : max(ty, ny)) * tileCells
+            let neighbour = Int(pitches[ny * cols + nx])
+            if border % (1 << neighbour) == 0, border % (1 << own) != 0 { borders |= 1 << slot }
+        }
+        return borders
+    }
 }
 
 extension HeightfieldDrawSet {

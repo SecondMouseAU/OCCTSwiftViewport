@@ -55,6 +55,9 @@ struct HeightfieldDrawParams {
 /// Stride 16.
 struct HeightfieldTileInstance {
     var origin: SIMD2<UInt32>
+    /// The levels shared with neighbours, 3 bits each (edges, then corners), and from bit 24 the
+    /// `.wireframe` lattice borders the tile draws for its neighbours
+    /// (`HeightfieldLayout.latticeBorders`); 0 there in every other display mode.
     var levels: UInt32
     /// The `.wireframe` lattice line pitch, a power of two of cells (see
     /// `HeightfieldLayout.latticeLevel`); 0 in every other display mode.
@@ -1038,6 +1041,8 @@ final class HeightfieldGPU {
                     edge(-1, 0) | edge(1, 0) << 3 | edge(0, -1) << 6 | edge(0, 1) << 9
                     | corner(-1, -1) << 12 | corner(1, -1) << 15 | corner(-1, 1) << 18
                     | corner(1, 1) << 21
+                    | HeightfieldLayout.latticeBorders(
+                        tx: tx, ty: ty, cols: cols, rows: rows, pitches: tileLevels.lattice) << 24
                 perLevel[own].append(
                     HeightfieldTileInstance(
                         origin: SIMD2(UInt32(tx * t), UInt32(ty * t)), levels: packed,

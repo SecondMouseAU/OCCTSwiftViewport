@@ -3284,7 +3284,9 @@ fragment float4 skybox_fragment(
 struct HeightfieldTile {
     uint2 origin;   // the tile's first vertex, in fine cells (a multiple of HF_TILE_CELLS)
     uint  levels;   // levels shared with neighbours, 3 bits each. Bits 0-11: edges -X +X -Y +Y.
-                    // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y
+                    // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y. Bits 24-27: `.wireframe` lattice
+                    // borders, one bit per edge -X +X -Y +Y, set where the neighbour across the
+                    // edge draws a line on the border that this tile does not (0 in every other mode)
     uint  lattice;  // `.wireframe` lattice: line pitch of this tile as a power of two of fine
                     // cells (bits 0-3). Unused, 0, by every other pass.
 };
@@ -3592,12 +3594,19 @@ vertex PickVertexOut heightfield_depth_vertex(
 // on the CPU from the tile's on-screen cell size, never finer than the tile's mesh cell. Powers of
 // two nest, so where a tile's pitch is twice its neighbour's every second line continues across
 // the border.
+//
+// A pitch of 64 cells or more puts a tile's lines on its borders, where each tile draws its own half
+// of the line. When the neighbour draws a line on a border that this tile's coarser pitch does not
+// reach, the CPU says so in bits 24-27 of `HeightfieldTile.levels`, and this tile draws its half
+// too, so the line is as wide as any other (`hfLatticeBorderAxis`).
 
 struct HeightfieldLatticeOut {
     float4 clipPosition [[position]];
     float3 worldPosition [[centroid_perspective]];
     float2 gridPos;
     uint   pitchLevel [[flat]];
+    float2 tileGrid;            // gridPos from the tile's first vertex, 0 to HF_TILE_CELLS
+    uint   borders [[flat]];    // the tile's border bits, one per edge (-X +X -Y +Y)
 };
 
 vertex HeightfieldLatticeOut heightfield_lattice_vertex(
@@ -3615,6 +3624,8 @@ vertex HeightfieldLatticeOut heightfield_lattice_vertex(
     out.worldPosition = worldPos.xyz;
     out.gridPos = v.gridPos;
     out.pitchLevel = tiles[iid].lattice & 15u;
+    out.tileGrid = v.gridPos - float2(tiles[iid].origin);
+    out.borders = (tiles[iid].levels >> 24u) & 15u;
     return out;
 }
 
@@ -3632,17 +3643,34 @@ inline float hfLatticeAxis(float g, float halfWidthPx) {
     return cover * saturate((pitchPx - 1.5) / 1.5);
 }
 
+// The line a neighbour draws on this tile's border, along one axis. `t` is the grid position along
+// that axis from the tile's first vertex, 0 to HF_TILE_CELLS, and `low` and `high` say whether the
+// tile draws that border. The line is at the tile's edge, and fades by the on-screen size of a tile,
+// as a line at a pitch of 64 cells does. Must be called from uniform control flow, as
+// `hfLatticeAxis` is.
+inline float hfLatticeBorderAxis(float t, bool low, bool high, float halfWidthPx) {
+    float cover = hfLatticeAxis(t / float(HF_TILE_CELLS), halfWidthPx);
+    bool nearHigh = t >= 0.5 * float(HF_TILE_CELLS);
+    return (nearHigh ? high : low) ? cover : 0.0;
+}
+
 // The lattice coverage at `gridPos`. With `dashed`, the edge configuration's dash pattern runs along
 // each line, measured over the field's XY plane in body-local units (a height change does not
 // stretch it), from the field's origin, so it continues across tiles.
 inline float hfLatticeCoverage(
-    float2 gridPos, uint pitchLevel, constant HeightfieldParams &params,
-    constant EdgeUniforms &uniforms, bool dashed
+    float2 gridPos, uint pitchLevel, float2 tileGrid, uint borders,
+    constant HeightfieldParams &params, constant EdgeUniforms &uniforms, bool dashed
 ) {
     float2 g = gridPos / float(1u << pitchLevel);
     float halfWidthPx = 0.5 * max(uniforms.edgeParams.x, 0.0);
     float acrossX = hfLatticeAxis(g.x, halfWidthPx);  // lines of constant x, running along y
     float acrossY = hfLatticeAxis(g.y, halfWidthPx);
+    if (borders != 0u) {  // flat: the whole tile, so the derivatives stay in uniform control flow
+        acrossX = max(acrossX, hfLatticeBorderAxis(
+            tileGrid.x, (borders & 1u) != 0u, (borders & 2u) != 0u, halfWidthPx));
+        acrossY = max(acrossY, hfLatticeBorderAxis(
+            tileGrid.y, (borders & 4u) != 0u, (borders & 8u) != 0u, halfWidthPx));
+    }
     if (dashed) {
         if (acrossX > 0.0 && edgeDashHidden(gridPos.y * params.cellSize.y, uniforms)) acrossX = 0.0;
         if (acrossY > 0.0 && edgeDashHidden(gridPos.x * params.cellSize.x, uniforms)) acrossY = 0.0;
@@ -3656,7 +3684,8 @@ fragment WireframeFragmentOut heightfield_lattice_fragment(
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     constant HeightfieldParams &params [[buffer(3)]]
 ) {
-    float coverage = hfLatticeCoverage(in.gridPos, in.pitchLevel, params, uniforms, true);
+    float coverage = hfLatticeCoverage(
+        in.gridPos, in.pitchLevel, in.tileGrid, in.borders, params, uniforms, true);
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
         if (dot(uniforms.clipPlanes[cp].xyz, in.worldPosition) + uniforms.clipPlanes[cp].w < 0.0) {
             discard_fragment();
@@ -3678,7 +3707,8 @@ fragment PickFragmentOut heightfield_lattice_pick_fragment(
     constant BodyUniforms &bodyUniforms [[buffer(2)]],
     constant HeightfieldParams &params [[buffer(3)]]
 ) {
-    float coverage = hfLatticeCoverage(in.gridPos, in.pitchLevel, params, uniforms, false);
+    float coverage = hfLatticeCoverage(
+        in.gridPos, in.pitchLevel, in.tileGrid, in.borders, params, uniforms, false);
     for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
         if (dot(uniforms.clipPlanes[cp].xyz, in.worldPosition) + uniforms.clipPlanes[cp].w < 0.0) {
             discard_fragment();
