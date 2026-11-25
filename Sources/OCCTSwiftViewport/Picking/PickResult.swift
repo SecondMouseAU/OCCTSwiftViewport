@@ -10,7 +10,7 @@ import Foundation
 /// Encoded into the top 2 bits of the pick texture's G channel, so a single readback
 /// disambiguates faces / edges / vertices. The renderer's pick pass renders
 /// each kind with a distinct fragment shader that stamps the appropriate tag.
-public enum PrimitiveKind: UInt8, Sendable, Hashable {
+public enum PrimitiveKind: UInt8, Sendable, Hashable, CaseIterable {
     case face = 0
     case edge = 1
     case vertex = 2

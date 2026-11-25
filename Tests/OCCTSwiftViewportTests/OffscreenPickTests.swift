@@ -98,7 +98,8 @@ struct PickParityRig {
         quality: RenderingQuality = .standard,
         edge: EdgeLineConfiguration = EdgeLineConfiguration(width: 4), pickRadius: Int = 0,
         followsDisplayMode: Bool = true, clipPlanes: [ClipPlane] = [],
-        filter: PickResultFilter? = nil
+        filter: PickResultFilter? = nil,
+        pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
     ) throws {
         var camera = CameraState()
         camera.rotation =
@@ -113,7 +114,8 @@ struct PickParityRig {
         config.showViewCube = false
         config.renderingQuality = quality
         config.pickingConfiguration = PickingConfiguration(
-            isEnabled: true, pickRadius: pickRadius, followsDisplayMode: followsDisplayMode)
+            isEnabled: true, pickRadius: pickRadius, followsDisplayMode: followsDisplayMode,
+            pickableKinds: pickableKinds)
         let controller = ViewportController(configuration: config)
         controller.displayMode = displayMode
         controller.showGrid = false

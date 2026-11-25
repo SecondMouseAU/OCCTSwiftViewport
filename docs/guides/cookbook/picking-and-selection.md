@@ -39,19 +39,18 @@ Within that `7 x 7` neighbourhood the pick prefers a vertex over an edge over a 
 
 ## Picking a kind in every display mode
 
-By default the pick pass writes only what the display mode shows: no faces in `.wireframe`, and no edges of a mesh body in `.shaded`, `.flat`, `.unlit` or `.rendered`. An app with its own face / edge / vertex toggle, separate from how the model is drawn, wants the opposite. Turn the display-mode link off and narrow with the selection filter:
+By default the pick pass writes only what the display mode shows: no faces in `.wireframe`, and no edges of a mesh body in `.shaded`, `.flat`, `.unlit` or `.rendered`. An app with its own face / edge / vertex choice, separate from how the model is drawn, wants the opposite. Turn the display-mode link off and name the kind to pick with `pickableKinds`:
 
 ```swift
 var config = ViewportConfiguration.cad
-config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDisplayMode: false)
+config.pickingConfiguration = PickingConfiguration(
+    isEnabled: true, followsDisplayMode: false, pickableKinds: [.face])
 let controller = ViewportController(configuration: config)
 
-// from the toggle
-controller.selectionFilter = .faces      // or .edges, .vertices
 controller.displayMode = .wireframe      // faces are still picked
 ```
 
-Every kind a body carries is then written in every mode, depth tested against the others as in `.shadedWithEdges`. Nothing is drawn differently, so an edge the mode hides stays hidden and is still pickable. A face-only filter misses where an edge's pick band or a vertex's 8 pt square covers the pixel, because the filter runs after one primitive per pixel is chosen. In `.wireframe` an edge or vertex behind a face is not pickable where that face is in front. See [Picking](../../reference/Picking.md#picking-independent-of-the-display-mode).
+Every kind in the set is then written in every mode, depth tested against the others as in `.shadedWithEdges`; a kind outside it is never written, so a click on an edge's pick band or a vertex's 8 pt square returns the face under it. Nothing is drawn differently, so an edge the mode hides stays hidden and is still pickable if `.edge` is in the set. The set is fixed with the controller's configuration. `selectionFilter` can change while the viewport runs, but it cannot isolate a kind: it runs after one primitive per pixel is chosen, so `controller.selectionFilter = .faces` is a miss where an edge's band or a vertex's square covers the pixel. Use the set to pick the kind and the filter to pick the bodies. A face outside the set still hides what is behind it where the mode draws surfaces. See [Picking](../../reference/Picking.md#picking-one-kind).
 
 ---
 
@@ -71,8 +70,9 @@ let box = renderer.performRegionPick(
 ```
 
 For the same scene and camera the result equals the live `performPick` and `performRegionPick`.
-`options.pickRadius`, `options.pickFollowsDisplayMode` and `options.selectionFilter` play the roles of
-`PickingConfiguration.pickRadius`, `PickingConfiguration.followsDisplayMode` and
+`options.pickRadius`, `options.pickFollowsDisplayMode`, `options.pickableKinds` and
+`options.selectionFilter` play the roles of `PickingConfiguration.pickRadius`,
+`PickingConfiguration.followsDisplayMode`, `PickingConfiguration.pickableKinds` and
 `ViewportController.selectionFilter`. To pick many pixels
 of one scene, call `renderPickMap(bodies:options:)` once and use the returned `OffscreenPickMap`.
 See [Offscreen Rendering](offscreen-rendering.md#picking-headlessly).
@@ -161,7 +161,7 @@ config.hoverTint = .off                                                  // no w
 
 ## PickResultFilter chains
 
-A `PickResultFilter` is a composable predicate that runs on a decoded `PickResult` after the GPU pass. A result that fails the filter is treated as a miss: since the GPU resolves exactly one primitive per pixel, there is no fallback candidate.
+A `PickResultFilter` is a composable predicate that runs on a decoded `PickResult` after the GPU pass. A result that fails the filter is treated as a miss: since the GPU resolves exactly one primitive per pixel, there is no fallback candidate. To make the kind underneath win instead, leave the unwanted kinds out of `PickingConfiguration.pickableKinds` (see [Picking a kind in every display mode](#picking-a-kind-in-every-display-mode)); the filter keeps choosing bodies and layers.
 
 (Called `SelectionFilter` until v1.1.30; that spelling survives as a deprecated typealias. See [Picking & Selection](../../reference/Picking.md#pickresultfilter) for why it was renamed.)
 

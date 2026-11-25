@@ -1095,14 +1095,29 @@ public var followsDisplayMode: Bool  // default: true
 
 Whether what the pick pass writes follows the display mode. `true` writes faces only when the mode shows surfaces (`DisplayMode.showsSurfaces`) and a mesh body's edges and arcs only when it shows edges (`DisplayMode.drawsEdges(bodyHasMesh:)`), so geometry the user can't see never wins a pick; this is the behaviour since 1.3.0. `false` writes every kind a body carries in every display mode, as before 1.3.0: `.wireframe` picks faces and `.shaded` picks edges. Vertices are written in every mode either way.
 
-Set it to `false` when the pick kind (face, edge, vertex) is chosen separately from how the model is drawn, and narrow to one kind with `ViewportController.selectionFilter`. The setting changes only the pick pass: nothing is drawn differently. `OffscreenRenderOptions.pickFollowsDisplayMode` is the headless counterpart. The full table, the depth rules and the heightfield and overlay cases are in [Picking: Picking independent of the display mode](Picking.md#picking-independent-of-the-display-mode).
+Set it to `false` when the pick kind (face, edge, vertex) is chosen separately from how the model is drawn, and narrow to one kind with [`pickableKinds`](#pickablekinds). The setting changes only the pick pass: nothing is drawn differently. `OffscreenRenderOptions.pickFollowsDisplayMode` is the headless counterpart. The full table, the depth rules and the heightfield and overlay cases are in [Picking: Picking independent of the display mode](Picking.md#picking-independent-of-the-display-mode).
 
 ---
 
-### `init(isEnabled:pickRadius:followsDisplayMode:)`
+### `pickableKinds`
 
 ```swift
-public init(isEnabled: Bool = false, pickRadius: Int = 0, followsDisplayMode: Bool = true)
+public var pickableKinds: Set<PrimitiveKind>  // default: [.face, .edge, .vertex]
+```
+
+The kinds the pick pass writes. A kind outside the set is never written, so it takes no pixel and the kind underneath is picked: with `[.face]` and `followsDisplayMode` off, a click on an edge's pick band or a vertex's square in `.shaded` returns the face under it. A kind is written when it is in the set and, with `followsDisplayMode` on, the display mode shows it. The `pickRadius` neighbourhood choice (a vertex over an edge over a face) considers only the kinds in the set.
+
+The default is every kind, which is the pick pass as it was. `ViewportController.selectionFilter` is unchanged and still decides per result (body IDs, layers) after the pick; the set covers kinds only. A face outside the set still hides what is behind it where the mode draws surfaces, bodies on `PickLayer.widget` ignore the set as they bypass `selectionFilter`, and an empty set picks nothing outside the widget layer. The controller's `configuration` is fixed when it is created, so the set is fixed with it. `OffscreenRenderOptions.pickableKinds` is the headless counterpart. Details: [Picking: Picking one kind](Picking.md#picking-one-kind).
+
+---
+
+### `init(isEnabled:pickRadius:followsDisplayMode:pickableKinds:)`
+
+```swift
+public init(
+    isEnabled: Bool = false, pickRadius: Int = 0, followsDisplayMode: Bool = true,
+    pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
+)
 ```
 
 Creates a picking configuration.
@@ -1114,11 +1129,12 @@ var config = ViewportConfiguration.cad
 config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 3)
 ```
 
-**Example: a face / edge / vertex toggle that works in every display mode:**
+**Example: pick faces only, in every display mode, whatever is drawn over them:**
 
 ```swift
-config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDisplayMode: false)
-controller.selectionFilter = .edges   // or .faces, .vertices, from the toggle
+config.pickingConfiguration = PickingConfiguration(
+    isEnabled: true, followsDisplayMode: false, pickableKinds: [.face])
+controller.selectionFilter = .excludingBodyIDs(["ground_plane"])   // bodies, not kinds
 ```
 
 ---

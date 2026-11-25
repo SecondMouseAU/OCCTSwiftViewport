@@ -41,7 +41,7 @@ How much of the pick texture each primitive covers, in drawable pixels:
 | Edge, arc | With `EdgeLineConfiguration.useQuadExpansion` on (the default): a band as wide as the drawn edge, at least 1 pt (2 px on a 2× display). Dash gaps are pickable too. With it off: a 1 px line, like the drawn one. |
 | Vertex | An 8 × 8 pt square (16 × 16 px on a 2× display), centred on the vertex. |
 
-Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. Whether edges and faces are written in a given display mode is [`PickingConfiguration.followsDisplayMode`](#picking-independent-of-the-display-mode). A body's `edgeDrawRange` limits this to the segments it shows: the others are not written to the pick buffer, and the segments inside it report their absolute index. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
+Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. Whether edges and faces are written in a given display mode is [`PickingConfiguration.followsDisplayMode`](#picking-independent-of-the-display-mode), and which kinds are written at all is [`PickingConfiguration.pickableKinds`](#picking-one-kind). A body's `edgeDrawRange` limits this to the segments it shows: the others are not written to the pick buffer, and the segments inside it report their absolute index. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
 
 ---
 
@@ -257,9 +257,37 @@ Kinds each mode picks, from the same box with `edgeIndices` and `vertices` set:
 | `.shadedWithEdges`, `.xray` | edge, face, vertex | edge, face, vertex |
 | `.wireframe` | edge, vertex | edge, face, vertex |
 
-The setting changes only the pick pass. It draws nothing, and an edge the mode hides stays hidden. It costs what the extra stamps cost: the pick pass also draws the faces the mode hides (or the edges), tessellated and mesh-shader surfaces included, and with picking enabled the arcs the mode hides are sampled each frame for the pick (pickable bodies only). The kinds are depth tested against each other as `.shadedWithEdges` does: the nearest surface wins, and an edge or vertex lying on it wins the tie. So with it off, in `.wireframe` an edge or a vertex behind a face of the same or another body is not pickable where that face is in front, although the wireframe draws it. Overlay bodies follow the same rule: with it off their edges and arcs are written in every mode, drawn or not.
+The setting changes only the pick pass. It draws nothing, and an edge the mode hides stays hidden. It costs what the extra stamps cost: the pick pass also draws the faces the mode hides (or the edges), tessellated and mesh-shader surfaces included, and with picking enabled the arcs the mode hides are sampled each frame for the pick (pickable bodies only). The kinds are depth tested against each other as `.shadedWithEdges` does: the nearest surface wins, and an edge or vertex lying on it wins the tie. So with it off, in `.wireframe` an edge or a vertex behind a face of the same or another body is not pickable where that face is in front, although the wireframe draws it (leave `.face` out of [`pickableKinds`](#picking-one-kind) and nothing hides it). Overlay bodies follow the same rule: with it off their edges and arcs are written in every mode, drawn or not.
 
-Narrow to one kind with `ViewportController.selectionFilter` (`.faces`, `.edges`, `.vertices`): the filter runs after the pick resolves one primitive per pixel, so it can reject a kind but cannot make a hidden one appear, which is why the pass has to write every kind first. For the same reason a rejected kind still occupies its pixels: with `.faces` and `followsDisplayMode` off in `.shaded`, a click on the band of an edge (as wide as the drawn edge, at least 1 pt) or on a vertex's 8 pt square is a miss, not the face underneath. `pickRadius` does not change that, since it chooses among hits before the filter. Clip planes and each body's `transform` apply as for the default. `OffscreenRenderOptions.pickFollowsDisplayMode` is the same switch for the headless pick, and `OffscreenRenderOptions(matching:)` copies it.
+To pick one kind, narrow the pass with [`PickingConfiguration.pickableKinds`](#picking-one-kind). `ViewportController.selectionFilter` (`.faces`, `.edges`, `.vertices`) cannot isolate a kind: it runs after the pick resolves one primitive per pixel, so a rejected kind still occupies its pixels and the pick is a miss, not the kind underneath. With `.faces` as the filter and `followsDisplayMode` off in `.shaded`, a click on the band of an edge (as wide as the drawn edge, at least 1 pt) or on a vertex's 8 pt square is a miss, not the face under it, and `pickRadius` does not help, since it chooses among hits before the filter. A mask of `[.face]` returns that face. Clip planes and each body's `transform` apply as for the default. `OffscreenRenderOptions.pickFollowsDisplayMode` is the same switch for the headless pick, and `OffscreenRenderOptions(matching:)` copies it.
+
+### Picking one kind
+
+`PickingConfiguration.pickableKinds` is the set of kinds the pick pass writes. It defaults to every kind, which is the pick pass as it was. A kind outside the set is never written, so it takes no pixel and never wins one, and the kind underneath is picked instead:
+
+```swift
+config.pickingConfiguration = PickingConfiguration(
+    isEnabled: true, followsDisplayMode: false, pickableKinds: [.face])
+```
+
+With that, in `.shaded` or `.shadedWithEdges`, a pixel on an edge's pick band or on a vertex's square returns the face under it (a pixel with no face under it is a miss, as there is nothing to return).
+
+| `followsDisplayMode` | A kind in the set | A kind not in the set |
+|---|---|---|
+| `true` (default) | written where the display mode shows it, as in the table above | never written |
+| `false` | written in every mode | never written |
+
+The rules that follow are decided in one place, `PickStampRules`, which the live and the headless pick both use, so they agree.
+
+- **A face outside the set still hides what is behind it** where the mode draws surfaces (every mode but `.wireframe`). It is written as a blank occluder: it hides what is behind it and picks as a miss. So `[.vertex]` in `.shaded` does not pick the vertices behind a face, as the drawn model does not show them, while in `.wireframe`, which draws no surface, nothing hides them and they are picked. An edge or a vertex lying on a face still wins the depth tie.
+- **`pickRadius`** chooses only among the kinds in the set: a vertex over an edge over a face, restricted to them. With `[.face, .edge]` a vertex within the radius is never returned. The pass never writes a kind outside the set, so this matters only for a pick read from a texture drawn before the set changed.
+- **`selectionFilter` is unchanged.** It still decides per result (body IDs, layers, any predicate) after the pick, and a result it rejects is a miss. The set covers kinds only: use the set to choose the kind and the filter to choose the bodies.
+- **Widget-layer bodies ignore the set**, as they bypass `selectionFilter`: a manipulator (`PickLayer.widget`) keeps its edges and vertices when the app picks faces only.
+- **Heightfields:** a heightfield's surface, and the lattice lines that stand for it in `.wireframe`, are faces. With `.face` outside the set a heightfield is not picked, although in `.shaded` its surface still hides what is behind it.
+- **An empty set** writes nothing for user geometry; widget-layer bodies are still picked.
+- **Fixed with the controller.** `ViewportController.configuration` is set when the controller is created, so the set is too, like `pickRadius` and `followsDisplayMode`. Changing it means building a controller with the new configuration; `selectionFilter` is the setting that can change while the viewport runs.
+
+`OffscreenRenderOptions.pickableKinds` is the same set for the headless pick, `OffscreenRenderOptions(matching:)` copies it from the controller's configuration, and `OffscreenPickMap.pickableKinds` reports the set a map was rendered with.
 
 ---
 
@@ -274,6 +302,7 @@ Narrow to one kind with `ViewportController.selectionFilter` (`.faces`, `.edges`
 | the pick texture, held by the renderer | `OffscreenRenderer.renderPickMap(bodies:options:) -> OffscreenPickMap?`, then `pick(at:)` and `pickRegion(_:)` |
 | `PickingConfiguration.pickRadius` | `OffscreenRenderOptions.pickRadius` |
 | `PickingConfiguration.followsDisplayMode` | `OffscreenRenderOptions.pickFollowsDisplayMode` |
+| `PickingConfiguration.pickableKinds` | `OffscreenRenderOptions.pickableKinds` |
 | `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
 | `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
 
@@ -290,6 +319,8 @@ public struct PickResultFilter: Sendable
 ```
 
 A composable predicate over `PickResult`. Assign to `ViewportController.selectionFilter` to constrain what the user-geometry pick stream surfaces. A rejected pick is treated as a miss.
+
+The filter runs after the GPU pick has resolved one primitive per pixel, so it cannot make the kind underneath win: a click on an edge's band with `.faces` as the filter is a miss, not the face. To isolate a kind, narrow the pick pass itself with `PickingConfiguration.pickableKinds` ([Picking one kind](#picking-one-kind)); the filter then keeps its job of choosing bodies, layers and anything else about a result.
 
 Widget-layer picks bypass this filter; they are handled separately via `widgetPickResult`.
 

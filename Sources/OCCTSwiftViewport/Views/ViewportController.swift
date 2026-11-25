@@ -507,6 +507,10 @@ public final class ViewportController: ObservableObject {
     /// (clearing `pickResult`), since GPU picking resolves a single primitive per
     /// pixel and has no alternate candidate to fall through to. Widget-layer picks
     /// bypass the filter, since that stream is owned by an external consumer.
+    ///
+    /// To make the kind underneath win instead (a face under an edge's pick band), leave the
+    /// unwanted kinds out of `PickingConfiguration.pickableKinds`; the filter keeps deciding
+    /// per result (body IDs, layers).
     public var selectionFilter: PickResultFilter?
 
     /// Called by the view layer after a GPU pick readback completes.

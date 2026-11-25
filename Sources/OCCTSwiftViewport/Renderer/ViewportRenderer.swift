@@ -2107,7 +2107,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         var frameArcDraws: [FrameArcDraw] = []
         let pickStamping = PickStampRules(
             displayMode: displayMode,
-            followsDisplayMode: controller.configuration.pickingConfiguration.followsDisplayMode)
+            followsDisplayMode: controller.configuration.pickingConfiguration.followsDisplayMode,
+            pickableKinds: controller.configuration.pickingConfiguration.pickableKinds)
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
         let useQuadArcs = frameEdgeConfig.useQuadExpansion && quadEdgePipeline != nil
         var frameArcQuadBuffer: MTLBuffer?
@@ -3539,6 +3540,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         let heightfields = currentHeightfields
         let centerX = pixel.x - startX
         let centerY = pixel.y - startY
+        let kinds =
+            controller?.configuration.pickingConfiguration.pickableKinds
+            ?? Set(PrimitiveKind.allCases)
 
         commandBuffer.addCompletedHandler { @Sendable _ in
             // De-stride into one flat row-major array, as performRegionPick does.
@@ -3547,7 +3551,8 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 height: actualHeight)
             let bestResult = Self.bestNeighborhoodPickResult(
                 pickValues, width: actualWidth, center: SIMD2(centerX, centerY),
-                indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
+                indexMap: indexMap, layerMap: layerMap, heightfields: heightfields,
+                pickableKinds: kinds)
 
             Task { @MainActor in
                 completion(bestResult)
@@ -3708,16 +3713,19 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
     ///
     /// A vertex beats an edge, an edge beats a face; among hits of the same kind the one nearest
     /// `center` wins, and on an exact tie the first in row-major order is kept. Background and
-    /// undecodable pixels are skipped. `pickValues` is flat and row-major, `width` values per row;
-    /// `center` is the cursor's position within that region. Pulled out of the GPU readback path
-    /// as a pure function, like `decodeRegionPickResults`, so it is testable without a live draw.
+    /// undecodable pixels are skipped, and so are kinds outside `pickableKinds`
+    /// (`PickingConfiguration.pickableKinds`), which a hit on a `PickLayer.widget` body ignores.
+    /// `pickValues` is flat and row-major, `width` values per row; `center` is the cursor's
+    /// position within that region. Pulled out of the GPU readback path as a pure function, like
+    /// `decodeRegionPickResults`, so it is testable without a live draw.
     nonisolated static func bestNeighborhoodPickResult(
         _ pickValues: [UInt64],
         width: Int,
         center: SIMD2<Int>,
         indexMap: [Int: String],
         layerMap: [String: PickLayer],
-        heightfields: [String: Heightfield] = [:]
+        heightfields: [String: Heightfield] = [:],
+        pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
     ) -> PickResult? {
         guard width > 0 else { return nil }
         var bestResult: PickResult? = nil
@@ -3730,6 +3738,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                     pickValue: pickValue, indexMap: indexMap, layerMap: layerMap,
                     heightfields: heightfields)
             else {
+                continue
+            }
+            guard pickableKinds.contains(result.kind) || result.pickLayer == .widget else {
                 continue
             }
 
