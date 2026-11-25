@@ -307,8 +307,12 @@ var maya = GestureConfiguration(
 maya.orbitSensitivity = 0.006
 maya.enableInertia = false   // Maya-style: no momentum
 
-controller.configuration.gestureConfiguration = maya
+// Build the configuration first, then create the controller with it.
+let controller = ViewportController(
+    configuration: ViewportConfiguration(gestureConfiguration: maya))
 ```
+
+Gesture settings are read once, when the controller is created: `ViewportController.configuration` is a `let`, and the sensitivities, inertia and damping are copied into the camera controller at that point. To use a different mapping, create a new controller with a different `ViewportConfiguration`. To start from a preset instead of the defaults, begin with `var config = ViewportConfiguration.cad`, assign `config.gestureConfiguration = maya`, and pass `config`.
 
 ---
 
