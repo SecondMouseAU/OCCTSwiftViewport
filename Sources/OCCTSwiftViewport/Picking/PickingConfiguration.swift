@@ -35,6 +35,26 @@ public struct PickingConfiguration: Sendable {
     /// is drawn differently. See `docs/reference/Picking.md`.
     public var followsDisplayMode: Bool
 
+    /// The kinds the pick pass writes, so the app can pick one kind and let the others fall away.
+    ///
+    /// A kind outside the set is never written: it takes no pixel, so a click on an edge's pick
+    /// band or a vertex's square returns the face under it when `.face` is in the set and the
+    /// others are not. It is applied in the pick pass itself, and again in the `pickRadius`
+    /// neighbourhood choice (a vertex over an edge over a face, among the kinds in the set), so
+    /// the live and the offscreen pick (`OffscreenRenderOptions.pickableKinds`) agree.
+    /// `ViewportController.selectionFilter` still decides per result (body ids, layers) after the
+    /// pick; this set covers kinds only.
+    ///
+    /// A kind is written when it is in the set and, with `followsDisplayMode` on, the display
+    /// mode shows it. A face left out of the set still hides the edges and vertices behind it in
+    /// a mode that draws surfaces, but it picks as a miss. Bodies on `PickLayer.widget` ignore
+    /// the set, as they ignore `selectionFilter`. An empty set picks nothing outside the widget
+    /// layer.
+    ///
+    /// Defaults to every kind, which is the pick pass as it was before this setting. See
+    /// `docs/reference/Picking.md`.
+    public var pickableKinds: Set<PrimitiveKind>
+
     /// Creates a picking configuration.
     ///
     /// - Parameters:
@@ -42,9 +62,14 @@ public struct PickingConfiguration: Sendable {
     ///   - pickRadius: Pixel radius for neighborhood pick. Defaults to 0 (exact pixel).
     ///   - followsDisplayMode: Whether the pick pass writes only what the display mode shows.
     ///     Defaults to `true`.
-    public init(isEnabled: Bool = false, pickRadius: Int = 0, followsDisplayMode: Bool = true) {
+    ///   - pickableKinds: The kinds the pick pass writes. Defaults to every kind.
+    public init(
+        isEnabled: Bool = false, pickRadius: Int = 0, followsDisplayMode: Bool = true,
+        pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
+    ) {
         self.isEnabled = isEnabled
         self.pickRadius = min(max(0, pickRadius), 32)
         self.followsDisplayMode = followsDisplayMode
+        self.pickableKinds = pickableKinds
     }
 }

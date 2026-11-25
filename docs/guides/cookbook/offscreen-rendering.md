@@ -96,6 +96,7 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `measurements` | `[ViewportMeasurement]` | `[]` | See [Measurement overlays](#measurement-overlays) |
 | `pickRadius` | `Int` | `0` | Pick tolerance in pixels; see [Picking headlessly](#picking-headlessly) |
 | `pickFollowsDisplayMode` | `Bool` | `true` | `false` writes every kind a body carries in every display mode; see [Picking](../../reference/Picking.md#picking-independent-of-the-display-mode) |
+| `pickableKinds` | `Set<PrimitiveKind>` | every kind | The kinds the headless pick writes; one left out is never written, so the kind underneath is picked. See [Picking](../../reference/Picking.md#picking-one-kind) |
 | `selectionFilter` | `PickResultFilter?` | `nil` | Filter the headless pick passes hits through |
 
 All fields have defaults so you can construct with only the overrides you need. The scene
@@ -388,7 +389,7 @@ the live viewport (index it through `faceIndices`, `edgeIndices` or `vertexIndic
 `options.selectionFilter` to reject hits as `ViewportController.selectionFilter` does; a
 `.widget`-layer hit bypasses it. Pixel coordinates are render pixels with the origin at the top
 left. `OffscreenRenderOptions(matching: controller, ...)` copies the controller's `pickRadius`,
-`followsDisplayMode` and `selectionFilter`, so a snapshot and a pick can share one options value. Details:
+`followsDisplayMode`, `pickableKinds` and `selectionFilter`, so a snapshot and a pick can share one options value. Details:
 [GPU picking](../../reference/Rendering.md#gpu-picking).
 
 ---

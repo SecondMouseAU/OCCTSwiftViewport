@@ -136,6 +136,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `pickRadius` | `Int` | `0` | Tolerance of the offscreen GPU pick, mirroring `PickingConfiguration.pickRadius`: `0` picks the exact pixel, above `0` the best hit in the `(2 * pickRadius + 1)` square around it. Clamped to `0...32`. Used by [`renderPickMap`](#gpu-picking) and its pick methods; it changes nothing in a render. |
 | `pickFollowsDisplayMode` | `Bool` | `true` | Whether the offscreen GPU pick writes only what `displayMode` shows, mirroring `PickingConfiguration.followsDisplayMode`: faces when it shows surfaces, a mesh body's edges and arcs when it shows edges. `false` writes every kind a body carries in every mode (`.wireframe` picks faces, `.shaded` picks edges). See [Picking: Picking independent of the display mode](Picking.md#picking-independent-of-the-display-mode). It changes nothing in a render. |
 | `selectionFilter` | `PickResultFilter?` | `nil` | Filter the offscreen pick passes its hit through, mirroring `ViewportController.selectionFilter`; a `.widget`-layer hit bypasses it, as live. |
+| `pickableKinds` | `Set<PrimitiveKind>` | every kind | The kinds the offscreen GPU pick writes, mirroring `PickingConfiguration.pickableKinds`. A kind outside the set is never written, so it takes no pixel and never wins the `pickRadius` neighbourhood choice: with `[.face]`, a pixel on an edge's pick band or a vertex's square returns the face under it. A face outside the set still hides what is behind it where `displayMode` draws surfaces; a `.widget`-layer body ignores the set, as it bypasses `selectionFilter`. `OffscreenPickMap.pickableKinds` reports the set a map was rendered with. See [Picking: Picking one kind](Picking.md#picking-one-kind). It changes nothing in a render. |
 
 > **Behaviour change (issue #136):** the default options now run the SSAO / silhouette composite (as the live viewport's defaults do), so a lit render is ambient-occluded and silhouetted. Lit surfaces are ACES tone-mapped in linear space whether or not the composite runs. Set `enableSilhouettes = false` and `lightingConfiguration.enableSSAO = false` for the previous look.
 >
@@ -190,14 +191,15 @@ public init(
     uniformTessellationFactor: UniformTessellationFactor = .loadAdaptive(),
     pickRadius: Int = 0,
     pickFollowsDisplayMode: Bool = true,
-    selectionFilter: PickResultFilter? = nil
+    selectionFilter: PickResultFilter? = nil,
+    pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
 )
 
 @MainActor
 public init(matching controller: ViewportController, width: Int, height: Int)
 ```
 
-`init(matching:width:height:)` copies everything the offscreen path honours from a live controller: camera, display mode, lighting, grid and axes, edge intensity, clip planes, selection and hover, the controller's `selectionFilter`, and the relevant `ViewportConfiguration` fields (background colour, MSAA, grid spacing, edge lines, selection and hover outline styles, silhouettes, normal smoothing, `pickingConfiguration.pickRadius` and `pickingConfiguration.followsDisplayMode`). Measurements are not copied.
+`init(matching:width:height:)` copies everything the offscreen path honours from a live controller: camera, display mode, lighting, grid and axes, edge intensity, clip planes, selection and hover, the controller's `selectionFilter`, and the relevant `ViewportConfiguration` fields (background colour, MSAA, grid spacing, edge lines, selection and hover outline styles, silhouettes, normal smoothing, `pickingConfiguration.pickRadius`, `pickingConfiguration.followsDisplayMode` and `pickingConfiguration.pickableKinds`). Measurements are not copied.
 
 **Example — thumbnail of what the viewport currently shows:**
 
@@ -362,7 +364,7 @@ A body with a [`heightfield`](Heightfield.md) renders, shadows, outlines and pic
 
 An offscreen renderer can ask what is under a pixel without a view. The pick pass is the live viewport's own: the same pipelines, the same `PickEncoding` (RG32Uint, R = object index, G = 30-bit primitive index + 2 kind bits), the same `PickResult`. For the same scene and camera, an offscreen pick returns the same `PickResult` as `ViewportRenderer.performPick(at:completion:)` and `performRegionPick(rect:completion:)` (pinned per body kind by `OffscreenPickTests`, which compares every sampled pixel with a live headless frame).
 
-Everything the live pick handles is stamped: interleaved and direct-mesh faces; tessellated (`.enhanced`) and mesh-shader (`.maximum`) surfaces, which report the input triangle index; edges (`edgeIndices`, `edgeDrawRange`) and analytic arcs, native or quad-expanded to the drawn width; vertices and point-cloud bodies; and overlay-layer bodies, which win over the geometry they cover. `displayMode` decides what is written (`.wireframe` writes no faces) unless `pickFollowsDisplayMode` is `false`, which writes every kind in every mode, `clipPlanes` discard clipped fragments, each body's `transform` is applied, `isVisible` and `isPickable` are honoured, and bodies are numbered in draw order over the visible ones, so `PickResult.bodyIndex` agrees with a live viewport showing the same list. The frame is the one `render(bodies:options:)` draws for the same options: same camera, projection and scene-fitted near/far planes.
+Everything the live pick handles is stamped: interleaved and direct-mesh faces; tessellated (`.enhanced`) and mesh-shader (`.maximum`) surfaces, which report the input triangle index; edges (`edgeIndices`, `edgeDrawRange`) and analytic arcs, native or quad-expanded to the drawn width; vertices and point-cloud bodies; and overlay-layer bodies, which win over the geometry they cover. `displayMode` decides what is written (`.wireframe` writes no faces) unless `pickFollowsDisplayMode` is `false`, which writes every kind in every mode, only the kinds in `pickableKinds` are written, `clipPlanes` discard clipped fragments, each body's `transform` is applied, `isVisible` and `isPickable` are honoured, and bodies are numbered in draw order over the visible ones, so `PickResult.bodyIndex` agrees with a live viewport showing the same list. The frame is the one `render(bodies:options:)` draws for the same options: same camera, projection and scene-fitted near/far planes.
 
 The pass shares its encoder with the live renderer (`RendererSharedSetup.encodePickPass`), so the two cannot drift apart. The pick is 1x, so `msaaSampleCount` has no effect on it.
 
@@ -387,7 +389,7 @@ public func performPick(
 ) -> PickResult?
 ```
 
-The offscreen `performPick(at:completion:)`: renders the pick pass and returns the pick under `pixel` (render pixels, origin top left), or `nil` for background. With `options.pickRadius` above `0` it samples the `(2r + 1)` square around the pixel and returns the best hit (a vertex over an edge over a face, the nearest of equals), exactly as the live neighbourhood pick does. A hit that `options.selectionFilter` rejects is a miss, except a widget-layer hit. Synchronous, and it renders the pass on every call: to pick many pixels of one scene use `renderPickMap`.
+The offscreen `performPick(at:completion:)`: renders the pick pass and returns the pick under `pixel` (render pixels, origin top left), or `nil` for background. With `options.pickRadius` above `0` it samples the `(2r + 1)` square around the pixel and returns the best hit (a vertex over an edge over a face among the `options.pickableKinds`, the nearest of equals), exactly as the live neighbourhood pick does. A hit that `options.selectionFilter` rejects is a miss, except a widget-layer hit. Synchronous, and it renders the pass on every call: to pick many pixels of one scene use `renderPickMap`.
 
 #### `performRegionPick(bodies:rect:options:)`
 

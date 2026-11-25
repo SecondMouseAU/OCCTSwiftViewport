@@ -117,8 +117,8 @@ public enum RenderAppearance: Sendable, Hashable {
 ///
 /// The GPU pick pass runs on request, not with every render: `OffscreenRenderer.renderPickMap(...)`,
 /// `performPick(...)` and `performRegionPick(...)` stamp the same pick texture a live viewport does
-/// and decode it with the same `PickResult`. `pickRadius`, `pickFollowsDisplayMode` and
-/// `selectionFilter` configure them.
+/// and decode it with the same `PickResult`. `pickRadius`, `pickFollowsDisplayMode`,
+/// `pickableKinds` and `selectionFilter` configure them.
 ///
 /// What the offscreen path does **not** reproduce: TAA, depth of field, and frustum culling.
 public struct OffscreenRenderOptions: Sendable {
@@ -328,6 +328,14 @@ public struct OffscreenRenderOptions: Sendable {
     /// `PickLayer.widget` body is returned unfiltered.
     public var selectionFilter: PickResultFilter?
 
+    /// The kinds the offscreen pick pass writes, matching `PickingConfiguration.pickableKinds`.
+    ///
+    /// Every kind by default. A kind outside the set is never written, so it takes no pixel and
+    /// never wins the `pickRadius` neighbourhood choice: with `[.face]`, a pixel on an edge's pick
+    /// band or a vertex's square returns the face under it. A `PickLayer.widget` body ignores it,
+    /// as it ignores `selectionFilter`. It changes nothing in a render.
+    public var pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
+
     /// Creates render options.
     ///
     /// Every scene default is read from `ViewportController.defaultConfiguration` (and
@@ -390,7 +398,9 @@ public struct OffscreenRenderOptions: Sendable {
         pickRadius: Int = ViewportController.defaultConfiguration.pickingConfiguration.pickRadius,
         pickFollowsDisplayMode: Bool = ViewportController.defaultConfiguration
             .pickingConfiguration.followsDisplayMode,
-        selectionFilter: PickResultFilter? = nil
+        selectionFilter: PickResultFilter? = nil,
+        pickableKinds: Set<PrimitiveKind> = ViewportController.defaultConfiguration
+            .pickingConfiguration.pickableKinds
     ) {
         self.width = width
         self.height = height
@@ -437,13 +447,14 @@ public struct OffscreenRenderOptions: Sendable {
         self.pickRadius = min(max(0, pickRadius), 32)
         self.pickFollowsDisplayMode = pickFollowsDisplayMode
         self.selectionFilter = selectionFilter
+        self.pickableKinds = pickableKinds
     }
 
     /// Options that reproduce what a controller's live viewport currently shows.
     ///
     /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
     /// selection and hover, the pick radius, `pickingConfiguration.followsDisplayMode` and
-    /// selection filter, and every `ViewportConfiguration`
+    /// `pickableKinds`, the selection filter, and every `ViewportConfiguration`
     /// field the offscreen path honours. Measurements are not copied; pass resolved ones in
     /// `measurements` to draw them.
     ///
@@ -494,7 +505,8 @@ public struct OffscreenRenderOptions: Sendable {
             uniformTessellationFactor: config.uniformTessellationFactor,
             pickRadius: config.pickingConfiguration.pickRadius,
             pickFollowsDisplayMode: config.pickingConfiguration.followsDisplayMode,
-            selectionFilter: controller.selectionFilter
+            selectionFilter: controller.selectionFilter,
+            pickableKinds: config.pickingConfiguration.pickableKinds
         )
         // `debugDisableTessellation` switches the live view's refinement off.
         if controller.debugDisableTessellation { renderingQuality = .standard }
@@ -1860,7 +1872,8 @@ public final class OffscreenRenderer: Sendable {
     /// body kinds (interleaved and direct-mesh faces, tessellated and mesh-shader surfaces
     /// at `renderingQuality`, edges, arcs, vertices, point-cloud and overlay bodies), with
     /// `clipPlanes`, each body's `transform` and `displayMode` applied (unless
-    /// `options.pickFollowsDisplayMode` is false). The frame is the one
+    /// `options.pickFollowsDisplayMode` is false) and `options.pickableKinds` selecting the kinds
+    /// that are written. The frame is the one
     /// `render(bodies:options:)` draws for the same options. Bodies are numbered in draw order
     /// over the visible ones, as live, so `PickResult.bodyIndex` agrees with a live viewport
     /// showing the same list.
@@ -1934,7 +1947,8 @@ public final class OffscreenRenderer: Sendable {
         // Arcs sampled for this camera, one draw each so an arc pick reports its arc index.
         let edgeConfig = options.edgeLineConfiguration
         let stamping = PickStampRules(
-            displayMode: options.displayMode, followsDisplayMode: options.pickFollowsDisplayMode)
+            displayMode: options.displayMode, followsDisplayMode: options.pickFollowsDisplayMode,
+            pickableKinds: options.pickableKinds)
         let sampled = RendererSharedBuffers.sampleArcs(
             bodies: arcBodies, displayMode: options.displayMode,
             viewProjection: setup.viewProjection, viewportSize: SIMD2(Float(w), Float(h)),
@@ -1983,7 +1997,7 @@ public final class OffscreenRenderer: Sendable {
 
         return OffscreenPickMap(
             width: w, height: h, pickRadius: options.pickRadius,
-            selectionFilter: options.selectionFilter,
+            pickableKinds: options.pickableKinds, selectionFilter: options.selectionFilter,
             texels: PickEncoding.texels(
                 from: readback.contents(), bytesPerRow: bytesPerRow, width: w, height: h),
             indexMap: indexMap, layerMap: layerMap,

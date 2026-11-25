@@ -145,14 +145,17 @@ extension RendererSharedSetup {
 
 /// Which kinds of a body the pick pass stamps in a display mode.
 ///
-/// The one place that decides what the pass stamps. With `followsDisplayMode`
-/// (`PickingConfiguration.followsDisplayMode`, the default) a kind is stamped only when the mode
-/// draws it, so a hidden one cannot win a pick; without it, every kind a body carries is stamped
-/// in every mode. Vertices are stamped either way. Each renderer builds one and hands it to both
-/// the arc sampling (`samplesHiddenArcs`) and the pass (`PickPassFrame.stamping`).
+/// The one place that decides what the pass stamps. A kind is stamped only if it is in
+/// `pickableKinds` (`PickingConfiguration.pickableKinds`, every kind by default) and, with
+/// `followsDisplayMode` (`PickingConfiguration.followsDisplayMode`, the default), the mode draws
+/// it, so a hidden one cannot win a pick; without it, every kind a body carries is stamped in
+/// every mode. Vertices are stamped either way. Each renderer builds one and hands it to both the
+/// arc sampling (`samplesHiddenArcs`) and the pass (`PickPassFrame.stamping`).
 struct PickStampRules: Equatable, Sendable {
     var displayMode: DisplayMode
     var followsDisplayMode: Bool
+    /// The kinds the app wants picked; a kind outside it is never stamped.
+    var pickableKinds: Set<PrimitiveKind> = Set(PrimitiveKind.allCases)
 
     /// Whether the frame's arc sampling must include the arcs the mode does not draw, because
     /// the pass stamps them (`RendererSharedBuffers.sampleArcs(includeHidden:)`).
@@ -162,24 +165,55 @@ struct PickStampRules: Equatable, Sendable {
 
     /// Faces, and a heightfield's surface.
     var stampsSurfaces: Bool {
-        !followsDisplayMode || displayMode.showsSurfaces
+        pickableKinds.contains(.face) && (!followsDisplayMode || displayMode.showsSurfaces)
+    }
+
+    /// Whether a geometry body's surface is stamped as a blank occluder.
+    ///
+    /// A blank occluder is written with `PickEncoding.noObject`, which hides what is behind it
+    /// and picks as a miss. That is a face the app left out of `pickableKinds` in a mode that
+    /// draws surfaces, so the edges and vertices behind it stay hidden as they are drawn.
+    var stampsBlankSurfaces: Bool {
+        !pickableKinds.contains(.face) && displayMode.showsSurfaces
+    }
+
+    /// An overlay body's faces, which are stamped in every display mode.
+    var stampsOverlaySurfaces: Bool {
+        pickableKinds.contains(.face)
     }
 
     /// A body's edge polylines and arcs; `bodyHasMesh` is whether it has a triangle mesh.
     func stampsEdges(bodyHasMesh: Bool) -> Bool {
-        !followsDisplayMode || displayMode.drawsEdges(bodyHasMesh: bodyHasMesh)
+        pickableKinds.contains(.edge)
+            && (!followsDisplayMode || displayMode.drawsEdges(bodyHasMesh: bodyHasMesh))
     }
 
     /// One of the frame's sampled arcs: any arc the frame sampled when the setting is off, and
     /// the drawn ones otherwise.
     func stampsArc(_ arc: RendererSharedBuffers.SampledArcDraw) -> Bool {
-        !followsDisplayMode || arc.isDrawn
+        pickableKinds.contains(.edge) && (!followsDisplayMode || arc.isDrawn)
+    }
+
+    /// A body's vertices and a point-cloud body's points.
+    var stampsVertices: Bool {
+        pickableKinds.contains(.vertex)
     }
 
     /// A heightfield's lattice lines, which stand for its surface where the surface is not
     /// stamped (`.wireframe`); with the surface stamped they would add nothing.
     var stampsHeightfieldLattice: Bool {
-        followsDisplayMode && HeightfieldDrawSet.drawsLattice(in: displayMode)
+        pickableKinds.contains(.face) && followsDisplayMode
+            && HeightfieldDrawSet.drawsLattice(in: displayMode)
+    }
+
+    /// These rules for `body`: a body on `PickLayer.widget` is outside `pickableKinds`, as it is
+    /// outside `selectionFilter`, so a manipulator keeps its edges and vertices when the app
+    /// picks faces only.
+    func rules(for body: ViewportBody) -> PickStampRules {
+        guard body.pickLayer == .widget else { return self }
+        var rules = self
+        rules.pickableKinds = Set(PrimitiveKind.allCases)
+        return rules
     }
 }
 
@@ -271,28 +305,31 @@ extension RendererSharedSetup {
 
         // Faces. By default only when the display mode draws surfaces, so hidden ones
         // (`.wireframe`) can't win a pick. Overlay bodies are stamped in the overlay loop below.
+        // A face the app left out of `pickableKinds` is stamped as a blank occluder where the mode
+        // draws surfaces: it hides what is behind it and picks as a miss.
         for entry in bodies where entry.body.isPickable && entry.body.renderLayer != .overlay {
             let body = entry.body
             let buffers = entry.buffers
+            let rules = stamping.rules(for: body)
+            guard rules.stampsSurfaces || rules.stampsBlankSurfaces else { continue }
+            let faceObjectIndex = rules.stampsSurfaces ? entry.objectIndex : PickEncoding.noObject
             if let heightfield = entry.heightfield {
                 // A heightfield stamps its cell index. `.wireframe` draws no surface, so by
                 // default only its lattice is stamped, below.
-                guard stamping.stampsSurfaces, let pipeline = heightfield.pickPipeline.value
-                else { continue }
+                guard let pipeline = heightfield.pickPipeline.value else { continue }
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
-                var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+                var bodyUniforms = BodyUniforms(body: body, objectIndex: faceObjectIndex)
                 heightfield.encodePick(
                     encoder: pickEncoder, pipeline: pipeline, uniforms: &uniforms,
                     bodyUniforms: &bodyUniforms)
                 continue
             }
-            guard stamping.stampsSurfaces, buffers.hasMesh, let vb = buffers.vertexBuffer,
-                let ib = buffers.indexBuffer
+            guard buffers.hasMesh, let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer
             else { continue }
             var uniforms = makeUniforms()
             uniforms.modelMatrix = body.transform
-            var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
+            var bodyUniforms = BodyUniforms(body: body, objectIndex: faceObjectIndex)
 
             if frame.useMeshShaders, let ml = buffers.meshlets,
                 let msPipeline = pipelines.meshShader
@@ -454,7 +491,8 @@ extension RendererSharedSetup {
         for entry in bodies
         where entry.body.renderLayer == .geometry && entry.body.isPickable
             && !entry.body.edgeIndices.isEmpty
-            && stamping.stampsEdges(bodyHasMesh: entry.buffers.indexCount > 0)
+            && stamping.rules(for: entry.body)
+                .stampsEdges(bodyHasMesh: entry.buffers.indexCount > 0)
         {
             stampEdges(entry)
         }
@@ -483,13 +521,15 @@ extension RendererSharedSetup {
         // Geometry-layer arcs (issue #48), each drawn separately so the fragment stamps its arc
         // index. The frame's arcs are the drawn ones, plus the hidden ones when the setting is off.
         for d in frame.arcs
-        where d.body.renderLayer == .geometry && d.body.isPickable && stamping.stampsArc(d) {
+        where d.body.renderLayer == .geometry && d.body.isPickable
+            && stamping.rules(for: d.body).stampsArc(d)
+        {
             stampArc(d)
         }
         // Geometry-layer vertices: bodies with `vertices` set.
         for entry in bodies
         where entry.body.renderLayer == .geometry && entry.body.isPickable
-            && !entry.body.vertices.isEmpty
+            && !entry.body.vertices.isEmpty && stamping.rules(for: entry.body).stampsVertices
         {
             stampVertices(entry)
         }
@@ -506,9 +546,10 @@ extension RendererSharedSetup {
         for entry in bodies where entry.body.renderLayer == .overlay && entry.body.isPickable {
             let body = entry.body
             let buffers = entry.buffers
+            let rules = stamping.rules(for: body)
             if let heightfield = entry.heightfield {
                 // An overlay heightfield stamps its surface in every display mode, over the rest.
-                if let pipeline = heightfield.pickPipeline.value {
+                if rules.stampsOverlaySurfaces, let pipeline = heightfield.pickPipeline.value {
                     var uniforms = makeUniforms()
                     uniforms.modelMatrix = body.transform
                     var bodyUniforms = BodyUniforms(body: body, objectIndex: entry.objectIndex)
@@ -518,8 +559,8 @@ extension RendererSharedSetup {
                 }
                 continue
             }
-            if body.primitiveKind != .point, buffers.hasMesh, let vb = buffers.vertexBuffer,
-                let ib = buffers.indexBuffer
+            if body.primitiveKind != .point, rules.stampsOverlaySurfaces, buffers.hasMesh,
+                let vb = buffers.vertexBuffer, let ib = buffers.indexBuffer
             {
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
@@ -531,14 +572,14 @@ extension RendererSharedSetup {
                     bodyUniforms: &bodyUniforms)
             }
             if body.primitiveKind != .point,
-                stamping.stampsEdges(bodyHasMesh: buffers.hasMesh)
+                rules.stampsEdges(bodyHasMesh: buffers.hasMesh)
             {
                 stampEdges(entry)
             }
-            for d in frame.arcs where d.body.id == body.id && stamping.stampsArc(d) {
+            for d in frame.arcs where d.body.id == body.id && rules.stampsArc(d) {
                 stampArc(d)
             }
-            stampVertices(entry)
+            if rules.stampsVertices { stampVertices(entry) }
         }
     }
 

@@ -13,7 +13,10 @@ import Foundation
 /// has already resolved a single primitive, so a `PickResultFilter` runs on the
 /// decoded `PickResult` and either accepts it or rejects it. A rejected pick is
 /// treated as a miss: GPU picking reads exactly one primitive per pixel, so
-/// there is no alternate candidate to fall through to.
+/// there is no alternate candidate to fall through to. To make the kind
+/// underneath win instead, narrow the pick pass itself with
+/// `PickingConfiguration.pickableKinds`; the filter keeps deciding per result
+/// (body IDs, layers).
 ///
 /// Assign one to `ViewportController.selectionFilter` to constrain what the
 /// user-geometry pick stream surfaces (e.g. "edges only", "everything except

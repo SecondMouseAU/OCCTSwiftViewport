@@ -29,6 +29,10 @@ public struct OffscreenPickMap: Sendable {
     /// The tolerance radius `pick(at:)` samples with, from `OffscreenRenderOptions.pickRadius`.
     public let pickRadius: Int
 
+    /// The kinds the pick pass wrote and `pick(at:)` chooses among, from
+    /// `OffscreenRenderOptions.pickableKinds`.
+    public let pickableKinds: Set<PrimitiveKind>
+
     /// The filter picks pass through, from `OffscreenRenderOptions.selectionFilter`.
     public let selectionFilter: PickResultFilter?
 
@@ -50,8 +54,9 @@ public struct OffscreenPickMap: Sendable {
     ///
     /// With `pickRadius` 0 this reads the exact pixel, clamped to the render. Above 0 it reads the
     /// `(2 * pickRadius + 1)` square around it and returns the best hit: a vertex over an edge
-    /// over a face, the nearest of equals. A result the `selectionFilter` rejects is a miss,
-    /// except a `PickLayer.widget` hit, which bypasses it as live.
+    /// over a face, the nearest of equals, among the `pickableKinds`. A result the
+    /// `selectionFilter` rejects is a miss, except a `PickLayer.widget` hit, which bypasses it as
+    /// live.
     public func pick(at pixel: SIMD2<Int>) -> PickResult? {
         let result: PickResult?
         if pickRadius <= 0 {
@@ -97,7 +102,8 @@ public struct OffscreenPickMap: Sendable {
         return ViewportRenderer.bestNeighborhoodPickResult(
             texels(in: region), width: region.width,
             center: SIMD2(pixel.x - region.x, pixel.y - region.y),
-            indexMap: indexMap, layerMap: layerMap, heightfields: heightfields)
+            indexMap: indexMap, layerMap: layerMap, heightfields: heightfields,
+            pickableKinds: pickableKinds)
     }
 
     /// The texels of `region` as one flat row-major array.
