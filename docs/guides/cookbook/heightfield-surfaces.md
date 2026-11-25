@@ -230,8 +230,11 @@ every mode. Every other display mode draws the surface as before.
   target; 2 px is a 9x cliff. On an iPad Pro (M2) at 2732 x 2048 the same field costs about 20 ms at
   the default target with 4x MSAA, which misses a 60 fps budget; with 6 px, or with MSAA off at
   4 px, it is about 6 ms. The default stays at 4 px on every platform, so choose the setting for
-  your device. Nothing has been measured on an iPhone, and 5 px has not been measured anywhere.
+  your device. On an iPhone 15 Pro (2556 x 1179) the default costs about 4 ms early in a run and 6
+  to 13 ms once the phone has warmed, so the surface alone holds 60 fps; with shadows, SSAO and
+  silhouettes on it is about 11 ms early and about 22 ms warm. 5 px has not been measured anywhere.
   Measure in a **release** build, since a debug build's GPU timings are not representative. The
-  [reference](../../reference/Heightfield.md#cost-on-an-ipad) has the iPad table.
+  reference has the [iPad table](../../reference/Heightfield.md#cost-on-an-ipad) and the
+  [iPhone table](../../reference/Heightfield.md#cost-on-an-iphone).
 - **Offscreen.** `OffscreenRenderer` draws, shadows, outlines and picks a heightfield exactly as the
   live viewport does; `OffscreenRenderOptions.heightfieldMeshCellPixels` carries the target.
