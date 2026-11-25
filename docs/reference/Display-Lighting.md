@@ -112,7 +112,7 @@ Text(controller.displayMode.displayName)
 public var showsSurfaces: Bool { get }
 ```
 
-`true` for every mode except `.wireframe`. Indicates whether the renderer runs the shaded surface pipeline. Surfaces are written to the GPU pick buffer only when this is `true`.
+`true` for every mode except `.wireframe`. Indicates whether the renderer runs the shaded surface pipeline. Surfaces are written to the GPU pick buffer only when this is `true`, unless `PickingConfiguration.followsDisplayMode` is `false` (see [Picking](Picking.md#picking-independent-of-the-display-mode)).
 
 ```swift
 if controller.displayMode.showsSurfaces {
@@ -188,7 +188,7 @@ The opacity a surface with the given material opacity is drawn with in this mode
 public func drawsEdges(bodyHasMesh: Bool) -> Bool
 ```
 
-Whether a body's edges are drawn, and written to the pick buffer, in this mode: `showsEdges`, or always for a body with no surface mesh, which would otherwise be invisible.
+Whether a body's edges are drawn, and written to the pick buffer, in this mode: `showsEdges`, or always for a body with no surface mesh, which would otherwise be invisible. With `PickingConfiguration.followsDisplayMode` off the pick buffer gets them in every mode, and drawing is unchanged.
 
 #### `keyboardShortcut`
 

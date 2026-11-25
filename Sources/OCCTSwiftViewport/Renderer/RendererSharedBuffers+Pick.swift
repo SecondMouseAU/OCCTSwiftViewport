@@ -22,6 +22,11 @@ extension RendererSharedBuffers {
         let count: Int
         let quadStart: Int
         let quadCount: Int
+        /// Whether the display mode draws this arc.
+        ///
+        /// A hidden one is sampled for the pick pass only (`sampleArcs(includeHidden:)`), and the
+        /// main passes skip it.
+        let isDrawn: Bool
     }
 
     /// A frame's arcs sampled to line segments, with the vertices to upload.
@@ -47,17 +52,24 @@ extension RendererSharedBuffers {
     ///   - viewportSize: Render-target size in pixels.
     ///   - quadExpansion: Also expand the samples to quad strips (`EdgeLineConfiguration` width
     ///     and dashes).
+    ///   - includeHidden: Also sample the arcs the mode does not draw, those of pickable bodies,
+    ///     with `isDrawn` false, for a pick pass that stamps every kind in every mode
+    ///     (`PickStampRules`). Required, so a caller cannot leave the pick without them by
+    ///     omission.
     /// - Returns: One draw per non-empty arc, with the line and quad-strip vertices they index.
     static func sampleArcs(
         bodies: [(body: ViewportBody, objectIndex: UInt32, hasMesh: Bool)],
         displayMode: DisplayMode,
         viewProjection: simd_float4x4,
         viewportSize: SIMD2<Float>,
-        quadExpansion: Bool
+        quadExpansion: Bool,
+        includeHidden: Bool
     ) -> SampledArcs {
         var sampled = SampledArcs()
         for entry in bodies where !entry.body.arcs.isEmpty {
-            guard displayMode.showsEdges || !entry.hasMesh else { continue }
+            let isDrawn = displayMode.drawsEdges(bodyHasMesh: entry.hasMesh)
+            // A hidden arc is for the pick pass alone, which stamps pickable bodies only.
+            guard isDrawn || (includeHidden && entry.body.isPickable) else { continue }
             let mvp = viewProjection * entry.body.transform
             for (arcIndex, arc) in entry.body.arcs.enumerated() {
                 let segments = ArcSampling.segmentCount(
@@ -81,7 +93,7 @@ extension RendererSharedBuffers {
                         SampledArcDraw(
                             body: entry.body, objectIndex: entry.objectIndex, arcIndex: arcIndex,
                             start: start, count: count, quadStart: quadStart,
-                            quadCount: quadCount))
+                            quadCount: quadCount, isDrawn: isDrawn))
                 }
             }
         }

@@ -213,8 +213,9 @@ config.heightfieldLatticePixels = 8        // denser; the default is 16, the ran
 The lattice is see-through, as a mesh's edges are in `.wireframe`: lines behind a ridge are drawn.
 Section planes, `transform` and `isVisible` apply as for the shaded surface. The lines are pickable and
 the gaps are not (a mesh in `.wireframe` is picked at its edges, not its faces): a tap on a line gives
-`PickResult.heightfield` with the cell under it, and `refinePick` makes it exact. Every other display
-mode draws the surface as before.
+`PickResult.heightfield` with the cell under it, and `refinePick` makes it exact. With
+`PickingConfiguration.followsDisplayMode` set to `false` the gaps are picked too, as the surface is in
+every mode. Every other display mode draws the surface as before.
 
 ---
 

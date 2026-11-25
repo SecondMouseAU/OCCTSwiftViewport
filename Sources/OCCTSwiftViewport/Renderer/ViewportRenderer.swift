@@ -2105,6 +2105,9 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
         // `frameArcQuadBuffer`, ranges `quadStart`/`quadCount`) so arcs get the configured width and
         // dash pattern like polyline edges, and their pick footprint matches.
         var frameArcDraws: [FrameArcDraw] = []
+        let pickStamping = PickStampRules(
+            displayMode: displayMode,
+            followsDisplayMode: controller.configuration.pickingConfiguration.followsDisplayMode)
         let arcBodies = frameVisibleBodies.filter { !$0.body.arcs.isEmpty }
         let useQuadArcs = frameEdgeConfig.useQuadExpansion && quadEdgePipeline != nil
         var frameArcQuadBuffer: MTLBuffer?
@@ -2145,11 +2148,14 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
 
         if !arcBodies.isEmpty {
             // Match the edge-pass visibility rule: show feature edges when the display mode
-            // draws edges, or when the body is edge-only.
+            // draws edges, or when the body is edge-only. Arcs the mode hides are sampled too
+            // when the pick pass stamps every kind in every mode, and flagged not drawn.
             let sampled = RendererSharedBuffers.sampleArcs(
                 bodies: arcBodies.map { ($0.body, $0.objectIndex, $0.buffers.indexCount > 0) },
                 displayMode: displayMode, viewProjection: viewProjection,
-                viewportSize: SIMD2<Float>(Float(w), Float(h)), quadExpansion: useQuadArcs)
+                viewportSize: SIMD2<Float>(Float(w), Float(h)), quadExpansion: useQuadArcs,
+                includeHidden: pickStamping.samplesHiddenArcs
+                    && controller.configuration.pickingConfiguration.isEnabled)
             frameArcDraws = sampled.draws
             let arcVerts = sampled.lineVertices
             let arcQuadVerts = sampled.quadVertices
@@ -2175,7 +2181,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
                 // Overlay-layer arcs are drawn in the overlay pass, on top of everything (#170).
                 mainEncoder.setDepthStencilState(depthState)
-                for d in frameArcDraws where d.body.renderLayer == .geometry {
+                for d in frameArcDraws where d.body.renderLayer == .geometry && d.isDrawn {
                     encodeArc(d)
                 }
             }
@@ -2443,7 +2449,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 }
 
                 // The body's arcs, sampled with the geometry arcs above but drawn here, on top.
-                for d in frameArcDraws where d.body.id == body.id {
+                for d in frameArcDraws where d.body.id == body.id && d.isDrawn {
                     encodeArc(d)
                 }
             }
@@ -2540,7 +2546,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                         },
                     frame: PickPassFrame(
                         pipelines: pickPipelines, depthState: depthState,
-                        overlayDepthState: overlayDepthState, displayMode: displayMode,
+                        overlayDepthState: overlayDepthState, stamping: pickStamping,
                         useMeshShaders: useMeshShaders, useTessellation: useTessellation,
                         edgeConfiguration: frameEdgeConfig, viewportSize: edgeViewportSize,
                         contentScale: pickContentScale, arcs: frameArcDraws,

@@ -67,7 +67,8 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     /// Whether this mode shows surface shading.
     ///
     /// Surfaces are stamped into the GPU pick buffer only when this is `true`, so hidden faces
-    /// can't win a pick in `.wireframe`.
+    /// can't win a pick in `.wireframe`, unless `PickingConfiguration.followsDisplayMode` is
+    /// `false`.
     public var showsSurfaces: Bool {
         switch self {
         case .wireframe:
@@ -135,7 +136,8 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     /// Whether a body's edges are drawn, and stamped into the pick buffer, in this mode.
     ///
     /// Edges show when the mode ``showsEdges``, and always for a body with no surface mesh, which
-    /// would otherwise be invisible.
+    /// would otherwise be invisible. The pick buffer gets them in every mode when
+    /// `PickingConfiguration.followsDisplayMode` is `false`; what is drawn does not change.
     public func drawsEdges(bodyHasMesh: Bool) -> Bool {
         showsEdges || !bodyHasMesh
     }

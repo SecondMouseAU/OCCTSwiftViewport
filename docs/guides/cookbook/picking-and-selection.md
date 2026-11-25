@@ -37,6 +37,24 @@ Within that `7 x 7` neighbourhood the pick prefers a vertex over an edge over a 
 
 ---
 
+## Picking a kind in every display mode
+
+By default the pick pass writes only what the display mode shows: no faces in `.wireframe`, and no edges of a mesh body in `.shaded`, `.flat`, `.unlit` or `.rendered`. An app with its own face / edge / vertex toggle, separate from how the model is drawn, wants the opposite. Turn the display-mode link off and narrow with the selection filter:
+
+```swift
+var config = ViewportConfiguration.cad
+config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDisplayMode: false)
+let controller = ViewportController(configuration: config)
+
+// from the toggle
+controller.selectionFilter = .faces      // or .edges, .vertices
+controller.displayMode = .wireframe      // faces are still picked
+```
+
+Every kind a body carries is then written in every mode, depth tested against the others as in `.shadedWithEdges`. Nothing is drawn differently, so an edge the mode hides stays hidden and is still pickable. A face-only filter misses where an edge's pick band or a vertex's 8 pt square covers the pixel, because the filter runs after one primitive per pixel is chosen. In `.wireframe` an edge or vertex behind a face is not pickable where that face is in front. See [Picking](../../reference/Picking.md#picking-independent-of-the-display-mode).
+
+---
+
 ## Picking without a view
 
 The same pick pass runs headlessly. `OffscreenRenderer` stamps the same RG32Uint texture and
@@ -53,8 +71,9 @@ let box = renderer.performRegionPick(
 ```
 
 For the same scene and camera the result equals the live `performPick` and `performRegionPick`.
-`options.pickRadius` and `options.selectionFilter` play the roles of
-`PickingConfiguration.pickRadius` and `ViewportController.selectionFilter`. To pick many pixels
+`options.pickRadius`, `options.pickFollowsDisplayMode` and `options.selectionFilter` play the roles of
+`PickingConfiguration.pickRadius`, `PickingConfiguration.followsDisplayMode` and
+`ViewportController.selectionFilter`. To pick many pixels
 of one scene, call `renderPickMap(bodies:options:)` once and use the returned `OffscreenPickMap`.
 See [Offscreen Rendering](offscreen-rendering.md#picking-headlessly).
 

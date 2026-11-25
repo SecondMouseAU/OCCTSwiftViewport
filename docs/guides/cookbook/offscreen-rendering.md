@@ -95,6 +95,7 @@ if let image = renderer.render(bodies: [body], options: options) {
 | `pixelPan` | `SIMD2<Float>?` | `nil` | Screen-space nudge (+x right, +y down) |
 | `measurements` | `[ViewportMeasurement]` | `[]` | See [Measurement overlays](#measurement-overlays) |
 | `pickRadius` | `Int` | `0` | Pick tolerance in pixels; see [Picking headlessly](#picking-headlessly) |
+| `pickFollowsDisplayMode` | `Bool` | `true` | `false` writes every kind a body carries in every display mode; see [Picking](../../reference/Picking.md#picking-independent-of-the-display-mode) |
 | `selectionFilter` | `PickResultFilter?` | `nil` | Filter the headless pick passes hits through |
 
 All fields have defaults so you can construct with only the overrides you need. The scene
@@ -358,7 +359,7 @@ runs the live viewport's GPU pick pass, so for the same scene and camera it retu
 `PickResult` as `ViewportRenderer.performPick`: the body, the primitive index and the kind
 (face, edge or vertex). It covers every body kind the live pick does (interleaved and
 direct-mesh faces, `.enhanced` and `.maximum` surfaces, edges, arcs, vertices, point clouds,
-overlay bodies) and honours `clipPlanes`, `displayMode`, each body's `transform` and `isPickable`.
+overlay bodies) and honours `clipPlanes`, `displayMode` (unless `pickFollowsDisplayMode` is `false`), each body's `transform` and `isPickable`.
 
 Use the options you render with, so the pick sees the same camera:
 
@@ -386,8 +387,8 @@ let inside = map?.pickRegion(CGRect(x: 100, y: 100, width: 300, height: 200))  /
 the live viewport (index it through `faceIndices`, `edgeIndices` or `vertexIndices`). Set
 `options.selectionFilter` to reject hits as `ViewportController.selectionFilter` does; a
 `.widget`-layer hit bypasses it. Pixel coordinates are render pixels with the origin at the top
-left. `OffscreenRenderOptions(matching: controller, ...)` copies the controller's `pickRadius`
-and `selectionFilter`, so a snapshot and a pick can share one options value. Details:
+left. `OffscreenRenderOptions(matching: controller, ...)` copies the controller's `pickRadius`,
+`followsDisplayMode` and `selectionFilter`, so a snapshot and a pick can share one options value. Details:
 [GPU picking](../../reference/Rendering.md#gpu-picking).
 
 ---

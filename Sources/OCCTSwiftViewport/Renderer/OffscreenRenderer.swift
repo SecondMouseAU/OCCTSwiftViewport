@@ -117,7 +117,8 @@ public enum RenderAppearance: Sendable, Hashable {
 ///
 /// The GPU pick pass runs on request, not with every render: `OffscreenRenderer.renderPickMap(...)`,
 /// `performPick(...)` and `performRegionPick(...)` stamp the same pick texture a live viewport does
-/// and decode it with the same `PickResult`. `pickRadius` and `selectionFilter` configure them.
+/// and decode it with the same `PickResult`. `pickRadius`, `pickFollowsDisplayMode` and
+/// `selectionFilter` configure them.
 ///
 /// What the offscreen path does **not** reproduce: TAA, depth of field, and frustum culling.
 public struct OffscreenRenderOptions: Sendable {
@@ -313,6 +314,14 @@ public struct OffscreenRenderOptions: Sendable {
         }
     }
 
+    /// Whether the offscreen pick writes only what `displayMode` shows, matching
+    /// `PickingConfiguration.followsDisplayMode`.
+    ///
+    /// `true` (the default): faces only when the mode shows surfaces, a mesh body's edges and
+    /// arcs only when it shows edges. `false`: every kind a body carries in every mode. It
+    /// changes nothing in a render.
+    public var pickFollowsDisplayMode: Bool = true
+
     /// Constrains what the offscreen pick returns, matching `ViewportController.selectionFilter`.
     ///
     /// A pick that fails the filter is a miss, with the live widget bypass: a hit on a
@@ -379,6 +388,8 @@ public struct OffscreenRenderOptions: Sendable {
         uniformTessellationFactor: UniformTessellationFactor =
             ViewportController.defaultConfiguration.uniformTessellationFactor,
         pickRadius: Int = ViewportController.defaultConfiguration.pickingConfiguration.pickRadius,
+        pickFollowsDisplayMode: Bool = ViewportController.defaultConfiguration
+            .pickingConfiguration.followsDisplayMode,
         selectionFilter: PickResultFilter? = nil
     ) {
         self.width = width
@@ -424,13 +435,15 @@ public struct OffscreenRenderOptions: Sendable {
         self.adaptiveTessellation = adaptiveTessellation
         self.uniformTessellationFactor = uniformTessellationFactor
         self.pickRadius = min(max(0, pickRadius), 32)
+        self.pickFollowsDisplayMode = pickFollowsDisplayMode
         self.selectionFilter = selectionFilter
     }
 
     /// Options that reproduce what a controller's live viewport currently shows.
     ///
     /// Copies the camera, display mode, lighting, grid and axes, edge intensity, clip planes,
-    /// selection and hover, the pick radius and selection filter, and every `ViewportConfiguration`
+    /// selection and hover, the pick radius, `pickingConfiguration.followsDisplayMode` and
+    /// selection filter, and every `ViewportConfiguration`
     /// field the offscreen path honours. Measurements are not copied; pass resolved ones in
     /// `measurements` to draw them.
     ///
@@ -480,6 +493,7 @@ public struct OffscreenRenderOptions: Sendable {
             adaptiveTessellation: config.adaptiveTessellation,
             uniformTessellationFactor: config.uniformTessellationFactor,
             pickRadius: config.pickingConfiguration.pickRadius,
+            pickFollowsDisplayMode: config.pickingConfiguration.followsDisplayMode,
             selectionFilter: controller.selectionFilter
         )
         // `debugDisableTessellation` switches the live view's refinement off.
@@ -1845,7 +1859,8 @@ public final class OffscreenRenderer: Sendable {
     /// The pass is the live viewport's: the same pipelines, the same `PickEncoding`, and the same
     /// body kinds (interleaved and direct-mesh faces, tessellated and mesh-shader surfaces
     /// at `renderingQuality`, edges, arcs, vertices, point-cloud and overlay bodies), with
-    /// `clipPlanes`, each body's `transform` and `displayMode` applied. The frame is the one
+    /// `clipPlanes`, each body's `transform` and `displayMode` applied (unless
+    /// `options.pickFollowsDisplayMode` is false). The frame is the one
     /// `render(bodies:options:)` draws for the same options. Bodies are numbered in draw order
     /// over the visible ones, as live, so `PickResult.bodyIndex` agrees with a live viewport
     /// showing the same list.
@@ -1918,10 +1933,13 @@ public final class OffscreenRenderer: Sendable {
 
         // Arcs sampled for this camera, one draw each so an arc pick reports its arc index.
         let edgeConfig = options.edgeLineConfiguration
+        let stamping = PickStampRules(
+            displayMode: options.displayMode, followsDisplayMode: options.pickFollowsDisplayMode)
         let sampled = RendererSharedBuffers.sampleArcs(
             bodies: arcBodies, displayMode: options.displayMode,
             viewProjection: setup.viewProjection, viewportSize: SIMD2(Float(w), Float(h)),
-            quadExpansion: edgeConfig.useQuadExpansion && pipelines.quadEdge != nil)
+            quadExpansion: edgeConfig.useQuadExpansion && pipelines.quadEdge != nil,
+            includeHidden: stamping.samplesHiddenArcs)
 
         guard
             let pickEncoder = commandBuffer.makeRenderCommandEncoder(
@@ -1932,7 +1950,7 @@ public final class OffscreenRenderer: Sendable {
             encoder: pickEncoder, bodies: pickBodies,
             frame: PickPassFrame(
                 pipelines: pipelines, depthState: depthState, overlayDepthState: overlayDepthState,
-                displayMode: options.displayMode, useMeshShaders: refinement.meshShaders,
+                stamping: stamping, useMeshShaders: refinement.meshShaders,
                 useTessellation: refinement.tessellation, edgeConfiguration: edgeConfig,
                 viewportSize: SIMD2(Float(w), Float(h)), contentScale: 1, arcs: sampled.draws,
                 arcLineBuffer: RendererSharedBuffers.makeEdgeBuffer(
