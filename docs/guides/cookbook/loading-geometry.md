@@ -298,7 +298,7 @@ let cloud = ViewportBody(
 )
 ```
 
-`boundingBox` falls back to the `vertices` array when `vertexData` is empty, so `CameraState.fit(to:)` and frustum culling work correctly for point clouds.
+`boundingBox` falls back to the `vertices` array for a body with neither `vertexData` nor direct-mesh positions, so `CameraState.fit(to:)` and frustum culling work correctly for point clouds.
 
 ---
 

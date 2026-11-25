@@ -182,7 +182,10 @@ public enum SceneRaycast {
     /// Direct-mesh bodies (``ViewportBody/usesDirectMesh``) draw `meshPositions` (stride 3),
     /// interleaved bodies draw `vertexData` (stride 6). `vertices` is the fallback for a body
     /// with neither. Reading the wrong one indexed an empty array (issue #167).
-    private struct TrianglePositions {
+    ///
+    /// Also read by ``ViewportBody/worldHitPoint(ray:triangleIndex:)``, so tap-to-measure and the
+    /// raycast agree on where a body's triangles are.
+    struct TrianglePositions {
         private enum Source {
             case stride3([Float])
             case stride6([Float])

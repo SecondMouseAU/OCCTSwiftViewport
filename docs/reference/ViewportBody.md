@@ -179,7 +179,7 @@ let body = ViewportBody.directMesh(
 
 - **Opt-in.** Nothing changes unless you call `directMesh(...)`. Bodies built with `init(vertexData:)` keep the interleaved path and all existing behaviour.
 - **`NormalSmoothing` is skipped.** A direct body renders the normals you supply, verbatim. This is the point: OCCT's analytic per-vertex normals are already correct, and re-deriving them is wasted work. It also means `ViewportConfiguration.autoSmoothNormals` does **not** apply to direct bodies — if your source normals are flat/faceted, either smooth them yourself or use the interleaved path.
-- **`vertexData` is left empty**; `vertices` is populated with the reshaped positions (for vertex picking). `boundingBox`, `CameraState.fit(to:)` and CPU raycasting (`SceneRaycast`) read `meshPositions` directly, so a direct body built through `init(meshPositions:meshNormals:)` without `vertices` works too.
+- **`vertexData` is left empty**; `vertices` is populated with the reshaped positions (for vertex picking). `boundingBox`, `CameraState.fit(to:)`, CPU raycasting (`SceneRaycast`) and tap-to-measure (`worldHitPoint(ray:triangleIndex:)`) read `meshPositions` directly, so a direct body built through `init(meshPositions:meshNormals:)` without `vertices`, or with `vertices` holding unrelated points, works too.
 - **Tessellation and mesh shaders are skipped** for direct bodies (`renderingQuality = .enhanced` has no effect on them).
 - **Pick caveat:** because `vertices` holds *mesh* vertices, a direct body does not carry separate B-Rep corner-vertex or per-segment edge pick indices. Face display, GPU pick, CPU raycast, and edge *display* all work.
 
@@ -367,7 +367,7 @@ Positions go through the matrix; normals go through the inverse transpose of its
 public var boundingBox: BoundingBox? { get }
 ```
 
-Returns the axis-aligned bounding box of everything the body draws: the mesh positions in `vertexData` (stride 6, positions at offsets 0-2), or `vertices` when `vertexData` is empty (point clouds and direct-mesh bodies), plus every point of every `edges` polyline and the full circle of every `arcs` entry (conservative for a partial arc). Used for near/far clip-plane fitting, frustum culling, shadow framing, pick culling and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
+Returns the axis-aligned bounding box of everything the body draws: the mesh positions the renderer draws (`meshPositions` on a direct-mesh body, otherwise `vertexData`, stride 6 with positions at offsets 0-2), or `vertices` for a body with neither (point clouds), plus every point of every `edges` polyline and the full circle of every `arcs` entry (conservative for a partial arc). Used for near/far clip-plane fitting, frustum culling, shadow framing, pick culling and `CameraState.fit(to:)`. Returns `nil` if the body has no points at all.
 
 Edges have counted since issue #135. Before that, an edge lying in front of its mesh could be cut off by the near plane, and an edge-only body had no bounds, so it was never culled and was ignored by fit-to-view.
 
@@ -401,7 +401,7 @@ public func worldHitPoint(ray: Ray, triangleIndex: Int) -> SIMD3<Float>?
 
 Returns the world-space point where `ray` intersects the triangle at `triangleIndex`, accounting for this body's `transform`.
 
-Looks up the three vertex positions from `indices`/`vertexData` (stride 6), or from `vertices` on a direct-mesh body (whose `vertexData` is empty), transforms each into world space via `transform`, and intersects with the ray using Möller-Trumbore. Returns `nil` if `triangleIndex` is out of range or the ray misses the (transformed) triangle.
+Looks up the three vertex positions from `indices` and the positions the renderer draws: `meshPositions` (stride 3) on a direct-mesh body (`usesDirectMesh`), otherwise `vertexData` (stride 6). `vertices` is the vertex-pick array, so it is read only for a body that has neither (the same rule `SceneRaycast` follows). Each position is transformed into world space via `transform`, then intersected with the ray using Möller-Trumbore. Returns `nil` if `triangleIndex` is out of range or the ray misses the (transformed) triangle.
 
 `triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick result — pass the two together to find where the user tapped on a surface. That index is always exact, whatever the body's triangle count.
 
