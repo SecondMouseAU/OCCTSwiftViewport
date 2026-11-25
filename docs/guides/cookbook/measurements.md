@@ -57,7 +57,7 @@ While `measurementMode != .none`, each tap on a **face** (`.face` pick) is conve
 The internal flow per tap:
 
 1. GPU pick returns a `PickResult` with `kind == .face` and a `triangleIndex`.
-2. `ViewportController.handleMeasurementPick` reconstructs the world-space hit point using `ViewportBody.worldHitPoint(ray:triangleIndex:)`, which respects the body's `transform` and works on direct-mesh bodies.
+2. `ViewportController.handleMeasurementPick` reconstructs the world-space hit point using `ViewportBody.worldHitPoint(ray:triangleIndex:)`, which respects the body's `transform` and reads the same triangle positions the renderer draws, so it works on direct-mesh bodies however they were built (`ViewportBody.directMesh(...)` or the initializer with `meshPositions:`/`meshNormals:`).
 3. The point is appended to `pendingMeasurementPoints`.
 4. Once enough points are gathered for the active mode, a `ViewportMeasurement` is appended to `controller.measurements` and `pendingMeasurementPoints` is cleared for the next measurement.
 

@@ -513,8 +513,8 @@ extension ViewportBody {
     /// detects ``usesDirectMesh`` and uploads `positions`/`normals` to separate GPU buffers.
     ///
     /// `positions` and `normals` are stride-3 (`[x, y, z, …]`) and must be the same length.
-    /// `vertices` (for vertex picking) is derived from `positions`; `boundingBox` and
-    /// `SceneRaycast` read `meshPositions` directly.
+    /// `vertices` (for vertex picking) is derived from `positions`; `boundingBox`, `SceneRaycast`
+    /// and `worldHitPoint(ray:triangleIndex:)` read `meshPositions` directly.
     public static func directMesh(
         id: String,
         positions: [Float],
