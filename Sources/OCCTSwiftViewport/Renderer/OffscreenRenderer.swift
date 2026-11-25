@@ -224,8 +224,8 @@ public struct OffscreenRenderOptions: Sendable {
     /// `ViewportConfiguration.heightfieldMeshCellPixels`.
     public var heightfieldMeshCellPixels: Float
 
-    /// How far apart the lines of a heightfield's `.wireframe` lattice are, in pixels, matching
-    /// `ViewportConfiguration.heightfieldLatticePixels`.
+    /// How far apart the lines of a heightfield's lattice (`.wireframe`, `.shadedWithEdges`) are,
+    /// in pixels, matching `ViewportConfiguration.heightfieldLatticePixels`.
     public var heightfieldLatticePixels: Float
 
     /// Whether interleaved bodies get crease-aware normal smoothing, matching
@@ -919,7 +919,7 @@ public final class OffscreenRenderer: Sendable {
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
             meshCellPixels: options.heightfieldMeshCellPixels,
-            latticePixels: HeightfieldDrawSet.drawsLattice(in: displayMode)
+            latticePixels: HeightfieldDrawSet.plansLattice(in: displayMode)
                 ? options.heightfieldLatticePixels : nil,
             clipPlanes: RendererSharedSetup.activeClipPlanes(
                 setup.clipPlanes, count: setup.clipPlaneCount),
@@ -1466,6 +1466,17 @@ public final class OffscreenRenderer: Sendable {
                 entry.draw.encodeShaded(
                     encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
                     uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+            if HeightfieldDrawSet.drawsLatticeOverSurface(in: displayMode),
+                let latticePipeline = heightfieldPipelines.latticeOverSurface.value
+            {
+                // `.shadedWithEdges`: the lattice over the surface just drawn, as live.
+                HeightfieldDrawSet.encodeLatticePass(
+                    encoder: mainEncoder, entries: heightfieldEntries, pipeline: latticePipeline,
+                    edgeConfiguration: options.edgeLineConfiguration,
+                    viewportSize: SIMD2<Float>(Float(w), Float(h)), makeUniforms: makeUniforms,
+                    depthState: highlightDepthState, restoreDepthState: depthState,
+                    objectIndex: { _ in 0 })
             }
         } else if HeightfieldDrawSet.drawsLattice(in: displayMode), let heightfieldPipelines,
             let latticePipeline = heightfieldPipelines.lattice.value

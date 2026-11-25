@@ -201,6 +201,16 @@ struct PickStampRules: Equatable, Sendable {
 
     /// A heightfield's lattice lines, which stand for its surface where the surface is not
     /// stamped (`.wireframe`); with the surface stamped they would add nothing.
+    ///
+    /// So `.shadedWithEdges`, which draws the lattice over the surface
+    /// (`HeightfieldDrawSet.drawsLatticeOverSurface(in:)`, #263), stamps no lattice of its own: the
+    /// surface stamp writes, under every pixel a line covers, the cell the line's own stamp would
+    /// (both read it from the interpolated grid position), as a face. A pixel on a line and a pixel
+    /// between lines therefore both give the surface pick (`.face`, the cell,
+    /// `PickResult.heightfield`); a heightfield has no edge primitive for a line to report, as a
+    /// mesh's edges do. With `followsDisplayMode` off the surface is stamped in every mode, and the
+    /// lattice in none. A face is what a line stamps, so with `.face` out of `pickableKinds` there
+    /// is none in any mode; `.shadedWithEdges` then stamps its surface as a blank occluder.
     var stampsHeightfieldLattice: Bool {
         pickableKinds.contains(.face) && followsDisplayMode
             && HeightfieldDrawSet.drawsLattice(in: displayMode)

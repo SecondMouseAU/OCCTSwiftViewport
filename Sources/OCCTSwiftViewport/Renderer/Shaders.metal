@@ -3284,11 +3284,11 @@ fragment float4 skybox_fragment(
 struct HeightfieldTile {
     uint2 origin;   // the tile's first vertex, in fine cells (a multiple of HF_TILE_CELLS)
     uint  levels;   // levels shared with neighbours, 3 bits each. Bits 0-11: edges -X +X -Y +Y.
-                    // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y. Bits 24-27: `.wireframe` lattice
-                    // borders, one bit per edge -X +X -Y +Y, set where the neighbour across the
-                    // edge draws a line on the border that this tile does not (0 in every other mode)
-    uint  lattice;  // `.wireframe` lattice: line pitch of this tile as a power of two of fine
-                    // cells (bits 0-3). Unused, 0, by every other pass.
+                    // Bits 12-23: corners -X-Y, +X-Y, -X+Y, +X+Y. Bits 24-27: lattice borders, one
+                    // bit per edge -X +X -Y +Y, set where the neighbour across the edge draws a
+                    // line on the border that this tile does not (0 in every mode with no lattice)
+    uint  lattice;  // lattice (`.wireframe`, `.shadedWithEdges`): line pitch of this tile as a power
+                    // of two of fine cells (bits 0-3). Unused, 0, by every other pass.
 };
 
 // Swift mirror: HeightfieldDrawParams in HeightfieldRenderer.swift. Stride 48.
@@ -3718,5 +3718,109 @@ fragment PickFragmentOut heightfield_lattice_pick_fragment(
     int2 cell = clamp(int2(floor(in.gridPos + 0.5)), int2(0), int2(params.size) - 1);
     PickFragmentOut out;
     out.pickID = packPickID(bodyUniforms.objectIndex, uint(cell.y) * params.size.x + uint(cell.x), 0u);
+    return out;
+}
+
+// MARK: Heightfield lattice over the shaded surface (`.shadedWithEdges`)
+
+// In `.shadedWithEdges` the lattice is drawn over the shaded surface, which has written depth. These
+// two entry points are the `.wireframe` ones with what that needs added, and share everything else
+// with them: `hfDisplace`, the tile planner's pitch, `hfLatticeCoverage` (width, fade, dash), the
+// section planes and the vertex-to-fragment struct. They are entry points of their own, not a branch
+// in the `.wireframe` functions, so that `.wireframe` and the lattice pick compile as they did: a
+// branch there moved `.wireframe` pixels by a rounding (about 200 pixels of a 1024 x 1024 frame,
+// by up to 9 of 255).
+//
+// The vertex function pulls each vertex toward the viewer, as a mesh's edges are (see
+// `edgeBiasedClipPosition`), so a line wins the depth test against the surface it lies on, and a line
+// behind a ridge loses it. Without the pull, a perspective view loses about a quarter of the line
+// pixels to depth ties: the lattice and the surface are two draws of the same triangles through two
+// vertex functions, and their depth agrees only to rounding. The fragment function colours the line
+// as a meshed body's edges are coloured (contrast against the body's colour, depth fade,
+// `edgeIntensity`), not in the body's own colour, which would vanish into the surface.
+
+// The pull, in pixels of the drawable. The pull of `edgeBiasedClipPosition` for a one pixel edge.
+#define HF_LATTICE_BIAS_PX 3.0
+
+// Clip position of a lattice vertex, pulled toward the viewer along its own view ray (screen position
+// unchanged) by HF_LATTICE_BIAS_PX pixels, measured in world units at its depth. The same pull as
+// `edgeBiasedClipPosition`, which takes the scene `Uniforms`; the edge uniforms carry the same
+// matrices and the render target size. Not a constant NDC step: how much world depth that spans
+// depends on the near and far planes (#157).
+inline float4 hfLatticeBiasedClipPosition(float4 worldPos, constant EdgeUniforms &uniforms) {
+    float viewportHeight = uniforms.viewportSize.y > 1.0 ? uniforms.viewportSize.y : 1000.0;
+    float biasNDC = HF_LATTICE_BIAS_PX * 2.0 / viewportHeight;
+    float4x4 vp = uniforms.viewProjectionMatrix;
+    float4 clipPosition = vp * worldPos;
+    float4x4 viewMatrix = uniforms.viewMatrix;
+    float3 cameraUp = float3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+    float3 cameraBack = float3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+    bool orthographic = abs(vp[0][3]) + abs(vp[1][3]) + abs(vp[2][3]) < 1e-6;
+    float baseW = max(clipPosition.w, 1e-6);
+    float4 upClipPos = vp * (worldPos + float4(cameraUp, 0.0));
+    float ndcPerWorld = abs(upClipPos.y / max(upClipPos.w, 1e-6) - clipPosition.y / baseW);
+    if (ndcPerWorld > 1e-6) {
+        float3 towardViewer = orthographic
+            ? cameraBack
+            : normalize(uniforms.cameraPosition.xyz - worldPos.xyz);
+        float4 pulledClipPos = vp * (worldPos + float4(towardViewer * (biasNDC / ndcPerWorld), 0.0));
+        if (pulledClipPos.w > 1e-6) {
+            float unbiasedDepth = clipPosition.z / baseW;
+            // Never push a vertex in front of the near plane on the bias alone.
+            float biasedDepth = max(pulledClipPos.z / pulledClipPos.w, min(unbiasedDepth, 0.0));
+            clipPosition.z = biasedDepth * clipPosition.w;
+        }
+    }
+    return clipPosition;
+}
+
+vertex HeightfieldLatticeOut heightfield_lattice_surface_vertex(
+    uint vid [[vertex_id]],
+    uint iid [[instance_id]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    const device HeightfieldTile *tiles [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]],
+    texture2d<float> heights [[texture(0)]]
+) {
+    HeightfieldVertex v = hfDisplace(vid, iid, tiles, params, heights);
+    HeightfieldLatticeOut out;
+    float4 worldPos = uniforms.modelMatrix * float4(v.position, 1.0);
+    out.clipPosition = hfLatticeBiasedClipPosition(worldPos, uniforms);
+    out.worldPosition = worldPos.xyz;
+    out.gridPos = v.gridPos;
+    out.pitchLevel = tiles[iid].lattice & 15u;
+    out.tileGrid = v.gridPos - float2(tiles[iid].origin);
+    out.borders = (tiles[iid].levels >> 24u) & 15u;
+    return out;
+}
+
+fragment WireframeFragmentOut heightfield_lattice_surface_fragment(
+    HeightfieldLatticeOut in [[stage_in]],
+    constant EdgeUniforms &uniforms [[buffer(1)]],
+    constant BodyUniforms &bodyUniforms [[buffer(2)]],
+    constant HeightfieldParams &params [[buffer(3)]]
+) {
+    float coverage = hfLatticeCoverage(
+        in.gridPos, in.pitchLevel, in.tileGrid, in.borders, params, uniforms, true);
+    for (uint cp = 0; cp < uniforms.clipPlaneCount; cp++) {
+        if (dot(uniforms.clipPlanes[cp].xyz, in.worldPosition) + uniforms.clipPlanes[cp].w < 0.0) {
+            discard_fragment();
+        }
+    }
+    if (coverage <= 0.0) discard_fragment();
+    // A meshed body's edge colour, as `quad_edge_fragment` computes it: light on a dark body, dark on
+    // a light one, faded with depth and scaled by `edgeIntensity`.
+    float3 bodyColor = bodyUniforms.color.rgb;
+    float luminance = dot(bodyColor, float3(0.299, 0.587, 0.114));
+    float3 darkEdge = max(bodyColor * 0.25, float3(0.08));
+    float3 lightEdge = bodyColor * 0.4 + 0.6;
+    float3 edgeColor = mix(lightEdge, darkEdge, smoothstep(0.3, 0.6, luminance));
+    float edgeIntensity = max(uniforms.edgeParams.y, 0.0);
+    float linearDepth = edgeFadeDepth(
+        in.worldPosition, uniforms.viewMatrix, uniforms.cameraPosition.w, uniforms.materialParams.w);
+    float minAlpha = mix(0.2, 1.0, saturate(edgeIntensity));
+    float edgeAlpha = mix(1.0, minAlpha, linearDepth) * saturate(edgeIntensity);
+    WireframeFragmentOut out;
+    out.color = float4(edgeColor, edgeAlpha * coverage);
     return out;
 }

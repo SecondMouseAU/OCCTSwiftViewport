@@ -215,7 +215,25 @@ Section planes, `transform` and `isVisible` apply as for the shaded surface. The
 the gaps are not (a mesh in `.wireframe` is picked at its edges, not its faces): a tap on a line gives
 `PickResult.heightfield` with the cell under it, and `refinePick` makes it exact. With
 `PickingConfiguration.followsDisplayMode` set to `false` the gaps are picked too, as the surface is in
-every mode. Every other display mode draws the surface as before.
+every mode. Every other display mode but `.shadedWithEdges` (below) draws the surface as before.
+
+---
+
+## Shaded with edges: the lattice over the surface
+
+`.shadedWithEdges` draws the same lattice over the shaded surface, as a mesh's edges are drawn over its
+faces:
+
+```swift
+controller.displayMode = .shadedWithEdges
+```
+
+The lines are the `.wireframe` ones, at the same spacing (`heightfieldLatticePixels`), with the width
+and dash of `edgeLineConfiguration`. They are coloured as a mesh's edges are, dark on a pale body and
+light on a dark one (`edgeIntensity` dims them, 0 hides them), not in the body's colour, which would
+vanish into the surface. The surface hides the lines behind a ridge, and a nearer body hides them like
+any other geometry. The lines are not picked separately: a tap on a line or between lines gives the
+surface pick (`PickResult.heightfield` with the cell under it).
 
 ---
 

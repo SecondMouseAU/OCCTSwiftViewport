@@ -21,6 +21,10 @@ public enum DisplayMode: String, CaseIterable, Sendable {
     case shaded
 
     /// Shaded with visible edges overlay.
+    ///
+    /// A ``Heightfield`` has no edge geometry, so it draws the same lattice as in `.wireframe`
+    /// over its shaded surface, which hides the lines behind a ridge (see
+    /// ``ViewportConfiguration/heightfieldLatticePixels``).
     case shadedWithEdges
 
     /// Faceted shading: lit like `.shaded`, but each triangle uses its own face normal, so the

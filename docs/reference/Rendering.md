@@ -27,7 +27,7 @@ Controls how geometry is drawn in the viewport or an offscreen render.
 |------|-------------|
 | `.wireframe` | Edges only — no surface fill. |
 | `.shaded` | Lit surface shading (Cook-Torrance GGX + hemisphere ambient + Fresnel rim). No edge overlay. |
-| `.shadedWithEdges` | Shaded surfaces with a contrast-adaptive wireframe overlay. |
+| `.shadedWithEdges` | Shaded surfaces with a contrast-adaptive wireframe overlay. A heightfield draws its [lattice](Heightfield.md#over-the-surface-shadedwithedges) over the surface. |
 | `.flat` | Surface fill without smooth normal interpolation. |
 | `.unlit` | Flat-colour shading — each body drawn in its constant `color` with no lighting, ambient, shadows, Fresnel, or tone-mapping. Faithful per-body colour for diagnostic renders (v1.1.21+). |
 | `.xray` | Transparent surface with visible internal edges. |
@@ -123,7 +123,7 @@ Full configuration for a single offscreen render pass. All fields have defaults;
 | `selectionTint` | `SelectionTintStyle` | `.selection` | Surface tint colour and strength for selected bodies, mirroring `ViewportConfiguration.selectionTint`. `.off` removes the wash. See [`SelectionTintStyle`](Configuration.md#selectiontintstyle). |
 | `hoverTint` | `SelectionTintStyle` | `.hover` | Surface tint for the hovered body, mirroring `ViewportConfiguration.hoverTint`. |
 | `heightfieldMeshCellPixels` | `Float` | `4` | The widest a [heightfield](Heightfield.md) mesh cell may appear, in pixels, mirroring `ViewportConfiguration.heightfieldMeshCellPixels` (clamped to `1...32`; 2 is a cost cliff). |
-| `heightfieldLatticePixels` | `Float` | `16` | How far apart the lines of a heightfield's `.wireframe` [lattice](Heightfield.md#the-wireframe-lattice) are on screen, in pixels, mirroring `ViewportConfiguration.heightfieldLatticePixels` (clamped to `1...256`). No effect in other display modes. |
+| `heightfieldLatticePixels` | `Float` | `16` | How far apart the lines of a heightfield's [lattice](Heightfield.md#the-wireframe-lattice) (`.wireframe`, and `.shadedWithEdges` over the surface) are on screen, in pixels, mirroring `ViewportConfiguration.heightfieldLatticePixels` (clamped to `1...256`). No effect in other display modes. |
 | `autoSmoothNormals` | `Bool` | `false` | Crease-aware normal smoothing of interleaved meshes, mirroring `ViewportConfiguration.autoSmoothNormals` (on in `.cadHighQuality`). |
 | `normalSmoothingCreaseAngle` | `Float` | `0.524` | Crease angle in radians for `autoSmoothNormals`. |
 | `enableSilhouettes` | `Bool` | `true` | Screen-space depth silhouettes, mirroring `ViewportConfiguration.enableSilhouettes`. Shares one composite pass with SSAO (tone mapping happens in the surface shader, not here); the pass is skipped in `.wireframe` and `.unlit`. |
@@ -358,7 +358,7 @@ func savePNG(bodies: [ViewportBody], to url: URL) throws {
 
 ### Heightfield bodies
 
-A body with a [`heightfield`](Heightfield.md) renders, shadows, outlines and picks offscreen exactly as it does live, through the same tile planner and shaders: the shaded and translucent passes, the shadow map (with its own light-side tile plan), the SSAO and silhouette depth prepass, section planes, the selection outline, the overlay layer, and the GPU pick pass (`PickResult.heightfield`). The renderer keeps the GPU copy of each field and uploads only the tiles edited since it last drew, so calling `render` after `replace(region:...)` is cheap. `.wireframe` draws a heightfield as a [lattice](Heightfield.md#the-wireframe-lattice) (the surface is not drawn), through the same code, and picks its lines. A field the GPU cannot allocate is logged once (`os.Logger`, subsystem `OCCTSwiftViewport`, category `Heightfield`) and not drawn.
+A body with a [`heightfield`](Heightfield.md) renders, shadows, outlines and picks offscreen exactly as it does live, through the same tile planner and shaders: the shaded and translucent passes, the shadow map (with its own light-side tile plan), the SSAO and silhouette depth prepass, section planes, the selection outline, the overlay layer, and the GPU pick pass (`PickResult.heightfield`). The renderer keeps the GPU copy of each field and uploads only the tiles edited since it last drew, so calling `render` after `replace(region:...)` is cheap. `.wireframe` draws a heightfield as a [lattice](Heightfield.md#the-wireframe-lattice) (the surface is not drawn), through the same code, and picks its lines; `.shadedWithEdges` draws the same lattice [over the shaded surface](Heightfield.md#over-the-surface-shadedwithedges). A field the GPU cannot allocate is logged once (`os.Logger`, subsystem `OCCTSwiftViewport`, category `Heightfield`) and not drawn.
 
 ### GPU picking
 
