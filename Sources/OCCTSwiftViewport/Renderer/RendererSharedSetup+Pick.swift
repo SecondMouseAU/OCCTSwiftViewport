@@ -141,6 +141,48 @@ extension RendererSharedSetup {
     }
 }
 
+// MARK: - What is stamped
+
+/// Which kinds of a body the pick pass stamps in a display mode.
+///
+/// The one place that decides what the pass stamps. With `followsDisplayMode`
+/// (`PickingConfiguration.followsDisplayMode`, the default) a kind is stamped only when the mode
+/// draws it, so a hidden one cannot win a pick; without it, every kind a body carries is stamped
+/// in every mode. Vertices are stamped either way. Each renderer builds one and hands it to both
+/// the arc sampling (`samplesHiddenArcs`) and the pass (`PickPassFrame.stamping`).
+struct PickStampRules: Equatable, Sendable {
+    var displayMode: DisplayMode
+    var followsDisplayMode: Bool
+
+    /// Whether the frame's arc sampling must include the arcs the mode does not draw, because
+    /// the pass stamps them (`RendererSharedBuffers.sampleArcs(includeHidden:)`).
+    var samplesHiddenArcs: Bool {
+        !followsDisplayMode
+    }
+
+    /// Faces, and a heightfield's surface.
+    var stampsSurfaces: Bool {
+        !followsDisplayMode || displayMode.showsSurfaces
+    }
+
+    /// A body's edge polylines and arcs; `bodyHasMesh` is whether it has a triangle mesh.
+    func stampsEdges(bodyHasMesh: Bool) -> Bool {
+        !followsDisplayMode || displayMode.drawsEdges(bodyHasMesh: bodyHasMesh)
+    }
+
+    /// One of the frame's sampled arcs: any arc the frame sampled when the setting is off, and
+    /// the drawn ones otherwise.
+    func stampsArc(_ arc: RendererSharedBuffers.SampledArcDraw) -> Bool {
+        !followsDisplayMode || arc.isDrawn
+    }
+
+    /// A heightfield's lattice lines, which stand for its surface where the surface is not
+    /// stamped (`.wireframe`); with the surface stamped they would add nothing.
+    var stampsHeightfieldLattice: Bool {
+        followsDisplayMode && HeightfieldDrawSet.drawsLattice(in: displayMode)
+    }
+}
+
 // MARK: - Pass inputs
 
 /// The GPU buffers of one body that the pick pass draws, whichever renderer cached them.
@@ -185,7 +227,8 @@ struct PickPassFrame {
     var depthState: MTLDepthStencilState
     /// Always-pass without writes: overlay bodies win over the geometry they are drawn on.
     var overlayDepthState: MTLDepthStencilState
-    var displayMode: DisplayMode
+    /// What the pass stamps for the frame's display mode.
+    var stamping: PickStampRules
     /// Stamp faces through the mesh-shader pipeline where a body has meshlets.
     var useMeshShaders: Bool
     /// Stamp faces through the tessellated pipeline where a body has patches.
@@ -210,7 +253,8 @@ extension RendererSharedSetup {
     /// Encodes the 1x pick pass into `encoder`.
     ///
     /// Every pickable body's faces, edges, arcs and vertices are stamped into the RG32Uint
-    /// attachment as `PickEncoding` packs them.
+    /// attachment as `PickEncoding` packs them, the faces and edges that `frame.stamping` allows
+    /// for the display mode.
     ///
     /// Both renderers call this, so a headless pick and a live one cannot drift apart. `bodies`
     /// lists every visible body in draw order, including ones with no mesh, so arc-only bodies
@@ -221,18 +265,19 @@ extension RendererSharedSetup {
         frame: PickPassFrame
     ) {
         let pipelines = frame.pipelines
-        let displayMode = frame.displayMode
+        let stamping = frame.stamping
         let makeUniforms = frame.makeUniforms
         pickEncoder.setDepthStencilState(frame.depthState)
 
-        // Faces. Only when the display mode draws surfaces, so hidden ones (`.wireframe`) can't
-        // win a pick. Overlay bodies are stamped in the overlay loop below.
+        // Faces. By default only when the display mode draws surfaces, so hidden ones
+        // (`.wireframe`) can't win a pick. Overlay bodies are stamped in the overlay loop below.
         for entry in bodies where entry.body.isPickable && entry.body.renderLayer != .overlay {
             let body = entry.body
             let buffers = entry.buffers
             if let heightfield = entry.heightfield {
-                // A heightfield stamps its cell index; `.wireframe` draws no surface to pick.
-                guard displayMode.showsSurfaces, let pipeline = heightfield.pickPipeline.value
+                // A heightfield stamps its cell index. `.wireframe` draws no surface, so by
+                // default only its lattice is stamped, below.
+                guard stamping.stampsSurfaces, let pipeline = heightfield.pickPipeline.value
                 else { continue }
                 var uniforms = makeUniforms()
                 uniforms.modelMatrix = body.transform
@@ -242,7 +287,7 @@ extension RendererSharedSetup {
                     bodyUniforms: &bodyUniforms)
                 continue
             }
-            guard displayMode.showsSurfaces, buffers.hasMesh, let vb = buffers.vertexBuffer,
+            guard stamping.stampsSurfaces, buffers.hasMesh, let vb = buffers.vertexBuffer,
                 let ib = buffers.indexBuffer
             else { continue }
             var uniforms = makeUniforms()
@@ -404,12 +449,12 @@ extension RendererSharedSetup {
         }
 
         // Geometry-layer edges: bodies with `edgeIndices` set, when the display mode draws their
-        // edges (`.shaded` hides them, so they can't win a pick).
+        // edges (`.shaded` hides them, so by default they can't win a pick).
         pickEncoder.setDepthStencilState(pipelines.edgeOrPointDepthState)
         for entry in bodies
         where entry.body.renderLayer == .geometry && entry.body.isPickable
             && !entry.body.edgeIndices.isEmpty
-            && displayMode.drawsEdges(bodyHasMesh: entry.buffers.indexCount > 0)
+            && stamping.stampsEdges(bodyHasMesh: entry.buffers.indexCount > 0)
         {
             stampEdges(entry)
         }
@@ -417,7 +462,7 @@ extension RendererSharedSetup {
         // stamp, but its lattice lines are its edges. They stamp the cell under the pixel as a face
         // pick, so `PickResult.heightfield` and `refinePick` work as for a surface, and only where
         // a line is drawn, as a mesh in `.wireframe` is picked at its edges and not its faces.
-        if HeightfieldDrawSet.drawsLattice(in: displayMode) {
+        if stamping.stampsHeightfieldLattice {
             for entry in bodies
             where entry.body.renderLayer == .geometry && entry.body.isPickable {
                 guard let heightfield = entry.heightfield,
@@ -436,8 +481,9 @@ extension RendererSharedSetup {
             }
         }
         // Geometry-layer arcs (issue #48), each drawn separately so the fragment stamps its arc
-        // index.
-        for d in frame.arcs where d.body.renderLayer == .geometry && d.body.isPickable {
+        // index. The frame's arcs are the drawn ones, plus the hidden ones when the setting is off.
+        for d in frame.arcs
+        where d.body.renderLayer == .geometry && d.body.isPickable && stamping.stampsArc(d) {
             stampArc(d)
         }
         // Geometry-layer vertices: bodies with `vertices` set.
@@ -451,10 +497,11 @@ extension RendererSharedSetup {
         // Overlay pick pass (#170): RenderLayer.overlay bodies stamp everything the overlay pass
         // draws (surfaces in every display mode, the edges and arcs the mode shows, and
         // vertices) with always-pass depth, so a widget wins the pick over geometry in front of
-        // it, as it is drawn over it. Edges are stamped whether or not `edgeIndices` is set: a
-        // gizmo ring drawn as a polyline is grabbed by its edges. Within a body, edges and
-        // vertices are stamped after its faces so they win; a later overlay body wins over an
-        // earlier one, as it is drawn over it.
+        // it, as it is drawn over it. With the setting off its edges and arcs are stamped in
+        // every mode. Edges are stamped whether or not `edgeIndices` is set: a gizmo ring drawn
+        // as a polyline is grabbed by its edges. Within a body, edges and vertices are stamped
+        // after its faces so they win; a later overlay body wins over an earlier one, as it is
+        // drawn over it.
         pickEncoder.setDepthStencilState(frame.overlayDepthState)
         for entry in bodies where entry.body.renderLayer == .overlay && entry.body.isPickable {
             let body = entry.body
@@ -484,11 +531,11 @@ extension RendererSharedSetup {
                     bodyUniforms: &bodyUniforms)
             }
             if body.primitiveKind != .point,
-                displayMode.drawsEdges(bodyHasMesh: buffers.hasMesh)
+                stamping.stampsEdges(bodyHasMesh: buffers.hasMesh)
             {
                 stampEdges(entry)
             }
-            for d in frame.arcs where d.body.id == body.id {
+            for d in frame.arcs where d.body.id == body.id && stamping.stampsArc(d) {
                 stampArc(d)
             }
             stampVertices(entry)

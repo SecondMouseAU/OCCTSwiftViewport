@@ -41,7 +41,7 @@ How much of the pick texture each primitive covers, in drawable pixels:
 | Edge, arc | With `EdgeLineConfiguration.useQuadExpansion` on (the default): a band as wide as the drawn edge, at least 1 pt (2 px on a 2× display). Dash gaps are pickable too. With it off: a 1 px line, like the drawn one. |
 | Vertex | An 8 × 8 pt square (16 × 16 px on a 2× display), centred on the vertex. |
 
-Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. A body's `edgeDrawRange` limits this to the segments it shows: the others are not written to the pick buffer, and the segments inside it report their absolute index. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
+Only bodies with `edgeIndices` set are edge-pickable; arcs are always pickable. Whether edges and faces are written in a given display mode is [`PickingConfiguration.followsDisplayMode`](#picking-independent-of-the-display-mode). A body's `edgeDrawRange` limits this to the segments it shows: the others are not written to the pick buffer, and the segments inside it report their absolute index. `PickingConfiguration.pickRadius` adds to these footprints: it widens the square read around the cursor and does not change what is drawn into the pick texture.
 
 ---
 
@@ -210,7 +210,7 @@ func observeFacePicks(controller: ViewportController) {
 
 ## Display mode and pick content
 
-The GPU pick pass writes only what the current `DisplayMode` shows, so geometry the user can't see never wins a pick:
+By default the GPU pick pass writes only what the current `DisplayMode` shows, so geometry the user can't see never wins a pick:
 
 | Content | Written to the pick buffer when |
 |---|---|
@@ -228,9 +228,38 @@ The GPU pick pass writes only what the current `DisplayMode` shows, so geometry 
 
 `.xray` keeps surfaces pickable even though they are see-through: the nearest surface under the cursor wins, as in `.shaded`, and edges co-planar with it win the depth tie. Edges and faces behind that nearest surface stay unpickable, although they show through it.
 
-A geometry-layer body's polyline `edges` are pickable only when it sets `edgeIndices` (its `arcs` always are; an overlay body's edges always are). In `.wireframe`, where faces are not pickable, a body with no `edgeIndices`, `arcs` or `vertices` therefore can't be picked at all. Set `edgeIndices` on bodies you want selectable in wireframe.
+A geometry-layer body's polyline `edges` are pickable only when it sets `edgeIndices` (its `arcs` always are; an overlay body's edges always are). In `.wireframe`, where faces are not pickable, a body with no `edgeIndices`, `arcs` or `vertices` therefore can't be picked at all. Set `edgeIndices` on bodies you want selectable in wireframe, or set [`followsDisplayMode`](#picking-independent-of-the-display-mode) to `false`, which picks the body by its faces there.
 
 Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so a click could select an invisible face or edge.
+
+### Picking independent of the display mode
+
+An app that chooses the pick kind (face, edge, vertex) separately from how the model is drawn, with a toolbar toggle for example, cannot offer `.shaded` and `.wireframe` if those modes disable a kind. Set `PickingConfiguration.followsDisplayMode` to `false` to write every kind a body carries in every display mode (what the pick pass did before 1.3.0):
+
+```swift
+config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDisplayMode: false)
+```
+
+| Content | `followsDisplayMode == true` (default) | `followsDisplayMode == false` |
+|---|---|---|
+| Faces | when the mode shows surfaces | in every mode |
+| Edges and arcs of a body with a mesh | when the mode shows edges | in every mode |
+| Edges and arcs of an edge-only body | every mode | every mode |
+| Vertices | every mode | every mode |
+| A heightfield's surface | when the mode shows surfaces | in every mode |
+| A heightfield's [lattice lines](Heightfield.md#the-wireframe-lattice) | in `.wireframe` | never: the surface covers them |
+
+Kinds each mode picks, from the same box with `edgeIndices` and `vertices` set:
+
+| Mode | `true` (default) | `false` |
+|---|---|---|
+| `.shaded`, `.flat`, `.unlit`, `.rendered` | face, vertex | edge, face, vertex |
+| `.shadedWithEdges`, `.xray` | edge, face, vertex | edge, face, vertex |
+| `.wireframe` | edge, vertex | edge, face, vertex |
+
+The setting changes only the pick pass. It draws nothing, and an edge the mode hides stays hidden. It costs what the extra stamps cost: the pick pass also draws the faces the mode hides (or the edges), tessellated and mesh-shader surfaces included, and with picking enabled the arcs the mode hides are sampled each frame for the pick (pickable bodies only). The kinds are depth tested against each other as `.shadedWithEdges` does: the nearest surface wins, and an edge or vertex lying on it wins the tie. So with it off, in `.wireframe` an edge or a vertex behind a face of the same or another body is not pickable where that face is in front, although the wireframe draws it. Overlay bodies follow the same rule: with it off their edges and arcs are written in every mode, drawn or not.
+
+Narrow to one kind with `ViewportController.selectionFilter` (`.faces`, `.edges`, `.vertices`): the filter runs after the pick resolves one primitive per pixel, so it can reject a kind but cannot make a hidden one appear, which is why the pass has to write every kind first. For the same reason a rejected kind still occupies its pixels: with `.faces` and `followsDisplayMode` off in `.shaded`, a click on the band of an edge (as wide as the drawn edge, at least 1 pt) or on a vertex's 8 pt square is a miss, not the face underneath. `pickRadius` does not change that, since it chooses among hits before the filter. Clip planes and each body's `transform` apply as for the default. `OffscreenRenderOptions.pickFollowsDisplayMode` is the same switch for the headless pick, and `OffscreenRenderOptions(matching:)` copies it.
 
 ---
 
@@ -244,10 +273,11 @@ Before issue #136, faces were written in `.wireframe` and edges in `.shaded`, so
 | `performRegionPick(rect:completion:)` | `OffscreenRenderer.performRegionPick(bodies:rect:options:) -> [PickResult]` |
 | the pick texture, held by the renderer | `OffscreenRenderer.renderPickMap(bodies:options:) -> OffscreenPickMap?`, then `pick(at:)` and `pickRegion(_:)` |
 | `PickingConfiguration.pickRadius` | `OffscreenRenderOptions.pickRadius` |
+| `PickingConfiguration.followsDisplayMode` | `OffscreenRenderOptions.pickFollowsDisplayMode` |
 | `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
 | `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
 
-A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so its surface is not picked there; its [lattice lines](Heightfield.md#the-wireframe-lattice) are, as a mesh in `.wireframe` is picked at its edges and not its faces: a pixel on a line returns the cell under it (`PickResult.heightfield` set, `refinePick` applies), a pixel between lines returns `nil`.
+A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so by default its surface is not picked there; its [lattice lines](Heightfield.md#the-wireframe-lattice) are, as a mesh in `.wireframe` is picked at its edges and not its faces: a pixel on a line returns the cell under it (`PickResult.heightfield` set, `refinePick` applies), a pixel between lines returns `nil`. With `followsDisplayMode` (`pickFollowsDisplayMode`) off, the surface is picked in `.wireframe` too, between the lines as well.
 
 The offscreen calls are synchronous (the live ones complete asynchronously, after a GPU readback). Coordinates are render pixels, origin top left. Clip planes, `displayMode`, `isVisible`, `isPickable`, render layers, each body's `transform` and the `renderingQuality` surface path are applied as live. The full API is in [Rendering: GPU picking](Rendering.md#gpu-picking).
 

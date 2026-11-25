@@ -31,8 +31,10 @@ controller.displayMode = .shadedWithEdges
 The `showsSurfaces`, `showsEdges`, `usesSmoothShading`, and `usesTransparency`
 properties on `DisplayMode` expose these flags programmatically, useful if you
 are building a toolbar or binding a picker. Both renderers read them, and the
-GPU pick pass follows the Surfaces and Edges columns: hidden faces and edges
-can't be picked (see
+GPU pick pass follows the Surfaces and Edges columns by default: hidden faces
+and edges can't be picked. An app with its own face / edge / vertex toggle can
+make picking independent of the mode with
+`PickingConfiguration.followsDisplayMode` (see
 [Picking](../../reference/Picking.md#display-mode-and-pick-content)).
 
 ```swift

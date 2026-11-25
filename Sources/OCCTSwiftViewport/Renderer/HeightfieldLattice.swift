@@ -33,7 +33,8 @@ extension HeightfieldLayout {
 
 extension HeightfieldDrawSet {
 
-    /// Whether `displayMode` draws (and picks) the field as a lattice.
+    /// Whether `displayMode` draws (and, unless the pick stamps every kind in every mode, picks)
+    /// the field as a lattice.
     ///
     /// The modes that show edges but not surfaces do, which today is `.wireframe`. Every other
     /// mode draws the surface, or, for a heightfield, which has no edge geometry, nothing more.

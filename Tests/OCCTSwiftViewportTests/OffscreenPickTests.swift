@@ -23,7 +23,7 @@ private func translation(_ x: Float, _ y: Float, _ z: Float) -> simd_float4x4 {
 }
 
 /// A unit-ish box with its 12 edges and 8 corners pickable.
-private func pickableBox(
+func pickableBox(
     _ id: String, at position: SIMD3<Float> = .zero, size: Float = 1.2,
     color: SIMD4<Float> = SIMD4(0.8, 0.8, 0.8, 1)
 ) -> ViewportBody {
@@ -84,7 +84,7 @@ private struct RigUnavailable: Error {}
 
 /// One scene rendered through both renderers, with the pick results of each.
 @MainActor
-private struct PickParityRig {
+struct PickParityRig {
     static let size = 96
 
     let controller: ViewportController
@@ -97,7 +97,8 @@ private struct PickParityRig {
         bodies: [ViewportBody], displayMode: DisplayMode = .shadedWithEdges,
         quality: RenderingQuality = .standard,
         edge: EdgeLineConfiguration = EdgeLineConfiguration(width: 4), pickRadius: Int = 0,
-        clipPlanes: [ClipPlane] = [], filter: PickResultFilter? = nil
+        followsDisplayMode: Bool = true, clipPlanes: [ClipPlane] = [],
+        filter: PickResultFilter? = nil
     ) throws {
         var camera = CameraState()
         camera.rotation =
@@ -111,7 +112,8 @@ private struct PickParityRig {
         config.backgroundColor = SIMD4(0, 0, 0, 1)
         config.showViewCube = false
         config.renderingQuality = quality
-        config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: pickRadius)
+        config.pickingConfiguration = PickingConfiguration(
+            isEnabled: true, pickRadius: pickRadius, followsDisplayMode: followsDisplayMode)
         let controller = ViewportController(configuration: config)
         controller.displayMode = displayMode
         controller.showGrid = false
@@ -178,6 +180,8 @@ private struct PickParityRig {
         var bodyIndices: [String: Int] = [:]
         var layers: Set<PickLayer> = []
         var primitives: [PrimitiveKind: Set<Int>] = [:]
+        /// The bodies each kind of hit was on.
+        var bodiesByKind: [PrimitiveKind: Set<String>] = [:]
     }
 
     /// Picks a grid of pixels, and the whole frame and a few rectangles, from both renderers.
@@ -206,6 +210,7 @@ private struct PickParityRig {
                     comparison.bodyIndices[hit.bodyID] = hit.bodyIndex
                     comparison.layers.insert(hit.pickLayer)
                     comparison.primitives[hit.kind, default: []].insert(hit.triangleIndex)
+                    comparison.bodiesByKind[hit.kind, default: []].insert(hit.bodyID)
                 }
             }
         }

@@ -888,7 +888,7 @@ struct HeightfieldLatticeTests {
     ///
     /// The field is 100 cells in a 160 px view, 300 units across, so pixel `(x, y)` is over the
     /// cell `(x - 80) * 1.875 + 50`, rows reversed; the lines are at cells 0, 32, 64 and 96.
-    private static func cell(atPixel pixel: SIMD2<Int>) -> SIMD2<Int> {
+    static func cell(atPixel pixel: SIMD2<Int>) -> SIMD2<Int> {
         let scale: Float = 300 / 160
         return SIMD2(
             Int((50 + (Float(pixel.x) + 0.5 - 80) * scale).rounded(.down)),

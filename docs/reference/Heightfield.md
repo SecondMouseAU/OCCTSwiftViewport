@@ -245,6 +245,11 @@ pick with the cell under it; a pixel between lines returns `nil`, as a mesh in `
 at its edges and not its faces. `PickResult.heightfield` is set, and `refinePick` still makes the
 cell exact.
 
+With `PickingConfiguration.followsDisplayMode` off (`OffscreenRenderOptions.pickFollowsDisplayMode`
+offscreen) the surface is picked in every display mode, `.wireframe` included, between the lines as
+well as on them: a heightfield carries a surface, and the lattice lines are part of it. The lattice
+pick is then not written. Nothing is drawn differently.
+
 ## heightfieldMeshCellPixels
 
 ```swift
@@ -357,8 +362,8 @@ drawn.
   edge-only body, `edgeIntensity` and the depth fade do not apply.
 - **See-through.** Lines behind a ridge are drawn, as a mesh's edges are in `.wireframe`: the surface
   writes no depth. Lines are tested against opaque geometry drawn before them but write no depth.
-- **Picking.** The lines are picked, not the gaps; see
-  [`PickResult.heightfield`](#pickresultheightfield).
+- **Picking.** The lines are picked, not the gaps (unless `PickingConfiguration.followsDisplayMode` is
+  `false`, which picks the whole surface); see [`PickResult.heightfield`](#pickresultheightfield).
 - **Lines at multiples of the pitch.** Lines stand at the field's cell 0 and every pitch after it, so the
   far border (the last row and column) has a line only where it falls on one.
 - **Limit: a field seen from very far.** When a tile's pitch is 64 cells or more, its lines fall on
@@ -419,7 +424,7 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 | Feature | Behaviour |
 |---------|-----------|
 | Shaded, flat, unlit, x-ray, shaded with edges | Drawn. A heightfield has no edge geometry, so "with edges" adds nothing (the lattice is drawn only in `.wireframe`). |
-| `.wireframe` | A **lattice** on the displaced surface, see-through, in the body's colour with the edge configuration's width and dash; the surface itself is not drawn. The lines are picked (the cell under the pixel), the gaps are not. See [the wireframe lattice](#the-wireframe-lattice). |
+| `.wireframe` | A **lattice** on the displaced surface, see-through, in the body's colour with the edge configuration's width and dash; the surface itself is not drawn. The lines are picked (the cell under the pixel), the gaps are not, unless `PickingConfiguration.followsDisplayMode` is off, which picks the whole surface. See [the wireframe lattice](#the-wireframe-lattice). |
 | Translucency (`opacity < 1`, `.xray`) | Drawn in the sorted transparent pass with no depth writes, depth-sorted with translucent meshes by world-bounds centre. A single sheet needs no cull order. |
 | Shadows | Casts shadows. The shadow plan is separate from the camera's: it keeps tiles outside the view whose shadow can fall into it, and culls the rest. |
 | SSAO, silhouettes | The field writes the depth prepass (not when translucent, as for meshes). |

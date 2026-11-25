@@ -25,7 +25,8 @@ struct HeightfieldPickRig {
 
     init(
         bodies: [ViewportBody], camera: CameraState, width: Int = 512, height: Int = 512,
-        forcedLevel: Int? = nil, pickRadius: Int = 0, sampleCount: Int = 4
+        forcedLevel: Int? = nil, pickRadius: Int = 0, sampleCount: Int = 4,
+        followsDisplayMode: Bool = true
     ) throws {
         var config = ViewportConfiguration()
         config.initialCameraState = camera
@@ -36,7 +37,8 @@ struct HeightfieldPickRig {
         lighting.shadowsEnabled = false
         lighting.enableSSAO = false
         config.lightingConfiguration = lighting
-        config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: pickRadius)
+        config.pickingConfiguration = PickingConfiguration(
+            isEnabled: true, pickRadius: pickRadius, followsDisplayMode: followsDisplayMode)
         let controller = ViewportController(configuration: config)
         controller.displayMode = .shaded
         controller.lightingConfiguration = lighting

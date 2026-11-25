@@ -5,7 +5,7 @@ parent: API Reference
 
 # Configuration
 
-These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `ViewportController(configuration:)` that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums — `RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition` — are referenced by fields inside `ViewportConfiguration`.
+These types control viewport appearance, rendering fidelity, and picking. `ViewportConfiguration` is the single struct passed to `ViewportController(configuration:)` that governs everything from camera limits and grid style to anti-aliasing and tessellation quality. `ClipPlane` defines section cuts. `PickingConfiguration` gates the GPU pick-ID buffer and sets what it writes. `EdgeLineConfiguration` sets edge line width and dash pattern. The supporting enums (`RenderingQuality`, `UniformTessellationFactor`, `RenderLayer`, `AxisStyle`, `GridStyle`, and `ViewCubePosition`) are referenced by fields inside `ViewportConfiguration`.
 
 [`GestureConfiguration`](Input.md#gestureconfiguration) and [`DynamicPivotConfiguration`](Camera.md#dynamicpivotconfiguration) are documented on the Input and Camera pages respectively — `ViewportConfiguration` embeds them by value.
 
@@ -517,7 +517,7 @@ Crease angle threshold for `autoSmoothNormals`, and for the PN-triangle patches 
 public var pickingConfiguration: PickingConfiguration  // default: .init()
 ```
 
-Governs whether the GPU pick-ID texture is allocated and written. See [`PickingConfiguration`](#pickingconfiguration).
+Governs whether the GPU pick-ID texture is allocated and written, with what tolerance, and whether what it writes follows the display mode. See [`PickingConfiguration`](#pickingconfiguration).
 
 ---
 
@@ -1087,10 +1087,22 @@ Values are clamped to `0...32`, both in the initializer and when the pick runs, 
 
 ---
 
-### `init(isEnabled:pickRadius:)`
+### `followsDisplayMode`
 
 ```swift
-public init(isEnabled: Bool = false, pickRadius: Int = 0)
+public var followsDisplayMode: Bool  // default: true
+```
+
+Whether what the pick pass writes follows the display mode. `true` writes faces only when the mode shows surfaces (`DisplayMode.showsSurfaces`) and a mesh body's edges and arcs only when it shows edges (`DisplayMode.drawsEdges(bodyHasMesh:)`), so geometry the user can't see never wins a pick; this is the behaviour since 1.3.0. `false` writes every kind a body carries in every display mode, as before 1.3.0: `.wireframe` picks faces and `.shaded` picks edges. Vertices are written in every mode either way.
+
+Set it to `false` when the pick kind (face, edge, vertex) is chosen separately from how the model is drawn, and narrow to one kind with `ViewportController.selectionFilter`. The setting changes only the pick pass: nothing is drawn differently. `OffscreenRenderOptions.pickFollowsDisplayMode` is the headless counterpart. The full table, the depth rules and the heightfield and overlay cases are in [Picking: Picking independent of the display mode](Picking.md#picking-independent-of-the-display-mode).
+
+---
+
+### `init(isEnabled:pickRadius:followsDisplayMode:)`
+
+```swift
+public init(isEnabled: Bool = false, pickRadius: Int = 0, followsDisplayMode: Bool = true)
 ```
 
 Creates a picking configuration.
@@ -1100,6 +1112,13 @@ Creates a picking configuration.
 ```swift
 var config = ViewportConfiguration.cad
 config.pickingConfiguration = PickingConfiguration(isEnabled: true, pickRadius: 3)
+```
+
+**Example: a face / edge / vertex toggle that works in every display mode:**
+
+```swift
+config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDisplayMode: false)
+controller.selectionFilter = .edges   // or .faces, .vertices, from the toggle
 ```
 
 ---
