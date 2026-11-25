@@ -197,7 +197,8 @@ public final class ViewportController: ObservableObject {
 
     /// Dynamic pivot strategy for automatic orbit center adjustment.
     ///
-    /// Internal so the input router's focus-on-point raycast shares its bounding-box cache.
+    /// Internal so the input router's focus-on-point raycast and the public `sceneBounds(of:)`
+    /// share its bounding-box cache.
     lazy var pivotStrategy = PivotStrategy()
 
     /// Overlay bodies' local bounds by ID, with the `boundsKey` they were read at (not

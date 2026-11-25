@@ -560,7 +560,7 @@ Seeds pan inertia. Same semantics as `setAngularVelocity`.
 
 `PivotStrategy` is a `@MainActor` helper that chooses an appropriate orbit center each time the user begins an orbit gesture. Every pivot it returns is on the line of sight through the view centre, so moving the pivot there never moves the view. When the camera is zoomed out it returns the point on the line of sight at the depth of the scene centre (the centre of the world-space union of the visible `.geometry`-layer bodies' bounds, each moved by its current `transform`, so moving a body by transform alone moves the pivot too; hidden and `.overlay` bodies are left out). It used to return the scene centre itself, which after a pan was off to the side, so releasing the pan slid the view back to the model (issue #204). When zoomed in close it raycasts through the view center and returns the hit point; in between it blends smoothly via a smoothstep curve.
 
-`ViewportController` owns a `PivotStrategy` and drives it automatically. You only need to interact with it directly for custom viewport integrations.
+`ViewportController` owns a `PivotStrategy` and drives it automatically. You only need to interact with it directly for custom viewport integrations. It has no public bounds query of its own: to read the scene's world bounds from the cache the controller's `PivotStrategy` keeps, call [`ViewportController.sceneBounds(of:)`](Views.md#sceneboundsof) (issue #252).
 
 ---
 
@@ -594,7 +594,7 @@ Returns the recommended pivot, or `nil` when `config.isEnabled` is `false`, no s
 public func invalidateCache()
 ```
 
-Forces the bounding-box cache to be rebuilt on the next `computePivot` call. Rarely needed: the cache is keyed on each body's `generation`, which changes whenever its geometry is replaced or mutated, and entries for bodies no longer passed in are pruned.
+Forces the bounding-box cache to be rebuilt on the next `computePivot` call. Rarely needed: the cache is keyed on each body's bounds key, its `generation` (which changes whenever its geometry is replaced or mutated) plus the version of any shared in-place content it draws, such as a heightfield (issue #237). Entries for bodies no longer passed in are pruned by the viewport's own calls; `ViewportController.sceneBounds(of:)` does not prune, so a call with part of the scene does not discard the rest.
 
 ---
 
