@@ -19,6 +19,11 @@ extension ViewportBody {
     ///
     /// `triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick, which is always the
     /// exact triangle index, however many triangles the body has.
+    ///
+    /// A heightfield body has no triangles, so this returns `nil` for one (its
+    /// `PickResult.triangleIndex` is a cell index). `ViewportController.handleMeasurementPick`
+    /// takes the point from the field instead, with the same ray-to-field walk as
+    /// `ViewportController.refinePick(_:ndc:bodies:)`.
     public func worldHitPoint(ray: Ray, triangleIndex: Int) -> SIMD3<Float>? {
         let base = triangleIndex * 3
         guard base >= 0, base + 2 < indices.count,
@@ -38,6 +43,23 @@ extension ViewportBody {
 
         guard let t = ray.intersectsTriangle(v0: v0, v1: v1, v2: v2) else { return nil }
         return ray.origin + ray.direction * t
+    }
+
+    /// The first hit of a world-space `ray` on this body's heightfield, through its `transform`.
+    ///
+    /// Maps the ray into the field's space, walks the full-resolution grid (`Heightfield.raycast`)
+    /// and returns the hit as a world-space point with the cell it lies in. `nil` when the body
+    /// has no heightfield, its transform is not invertible, or the ray misses the field. The
+    /// shared ray-to-field step of `ViewportController.refinePick(_:ndc:bodies:)` and
+    /// `ViewportController.handleMeasurementPick(result:ndc:bodies:aspectRatio:)`.
+    func heightfieldHit(ray: Ray) -> (point: SIMD3<Float>, hit: HeightfieldHit)? {
+        guard let field = heightfield,
+            let (local, scale) = SceneRaycast.localRay(ray, transform: transform),
+            let walk = field.raycast(origin: local.origin, direction: local.direction),
+            let hit = field.hit(cellIndex: walk.cell.y * field.width + walk.cell.x)
+        else { return nil }
+        // `walk.distance` is along the unit local ray; `scale` converts it to world units.
+        return (ray.origin + ray.direction * (walk.distance * scale), hit)
     }
 
     /// Resolves a wrapped face-pick triangle index to the exact triangle under `ray`.

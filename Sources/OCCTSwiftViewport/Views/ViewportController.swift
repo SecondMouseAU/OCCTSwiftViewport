@@ -556,16 +556,13 @@ public final class ViewportController: ObservableObject {
         _ result: PickResult?, ndc: SIMD2<Float>, bodies: [ViewportBody]
     ) -> PickResult? {
         guard let result, result.heightfield != nil,
-            let body = Self.body(for: result, in: bodies), let field = body.heightfield
+            let body = Self.body(for: result, in: bodies)
         else { return result }
         let ray = Ray.fromCamera(
             ndc: ndc, cameraState: cameraState, aspectRatio: lastAspectRatio,
             sceneBounds: cameraState.isOrthographic
                 ? orthographicEyeBounds(of: bodies, cameraState: cameraState) : nil)
-        guard let (local, _) = SceneRaycast.localRay(ray, transform: body.transform),
-            let hit = field.raycast(origin: local.origin, direction: local.direction),
-            let refined = field.hit(cellIndex: hit.cell.y * field.width + hit.cell.x)
-        else { return result }
+        guard let (_, refined) = body.heightfieldHit(ray: ray) else { return result }
         return result.refiningHeightfield(to: refined)
     }
 
@@ -726,7 +723,9 @@ public final class ViewportController: ObservableObject {
     /// `measurementMode != .none`. Only `.face` picks yield a point; edge/vertex
     /// picks and misses are ignored. The point is the ray/triangle intersection
     /// in world space (respecting the body's transform), then fed to
-    /// `addMeasurementPoint(_:)`.
+    /// `addMeasurementPoint(_:)`. On a heightfield body it is where the ray meets the
+    /// field's full-resolution surface instead, and a ray that passes beside the field
+    /// adds no point.
     public func handleMeasurementPick(
         result: PickResult?,
         ndc: SIMD2<Float>,
@@ -741,10 +740,12 @@ public final class ViewportController: ObservableObject {
         let ray = Ray.fromCamera(
             ndc: ndc, cameraState: cameraState, aspectRatio: aspectRatio,
             sceneBounds: Self.worldBounds(of: body))
-        guard let point = body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex)
-        else {
-            return
-        }
+        // A heightfield has no triangles: its point is where the ray meets the field itself.
+        let point =
+            body.heightfield != nil
+            ? body.heightfieldHit(ray: ray)?.point
+            : body.worldHitPoint(ray: ray, triangleIndex: result.triangleIndex)
+        guard let point else { return }
         addMeasurementPoint(point)
     }
 
