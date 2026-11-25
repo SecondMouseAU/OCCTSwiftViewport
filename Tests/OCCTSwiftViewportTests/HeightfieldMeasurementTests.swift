@@ -21,9 +21,10 @@ struct HeightfieldMeasurementTests {
     private static let slope: Float = 0.05
     private static let size = 256
 
-    /// A plane, `z = slope * (x + y)` at cell `(x, y)`. The surface spans the cell centres, so in
-    /// body-local space a point `(x, y)` on it has `z = slope * (x + y - 1)`, whichever way the
-    /// quads are split into triangles.
+    /// A plane, `slope * (x + y)` high at cell `(x, y)`.
+    ///
+    /// The surface spans the cell centres, so in body-local space a point `(x, y)` on it has
+    /// `z = slope * (x + y - 1)`, whichever way the quads are split into triangles.
     private static func plane() throws -> Heightfield {
         var heights = [Float](repeating: 0, count: cells * cells)
         for y in 0..<cells {

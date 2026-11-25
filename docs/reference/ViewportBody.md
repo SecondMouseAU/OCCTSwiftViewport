@@ -405,6 +405,8 @@ Looks up the three vertex positions from `indices` and the positions the rendere
 
 `triangleIndex` matches `PickResult.triangleIndex` for a `.face` pick result — pass the two together to find where the user tapped on a surface. That index is always exact, whatever the body's triangle count.
 
+A **heightfield** body has no triangles (`PickResult.triangleIndex` is a cell index there), so this returns `nil` for one. `ViewportController.handleMeasurementPick` takes the point from the field instead; to find one yourself, cast the ray with `SceneRaycast.cast(ray:bodies:)`, which walks the field.
+
 | Parameter | Description |
 |---|---|
 | `ray` | World-space ray (typically from `Ray.fromCamera` via `ProjectionUtility`). |

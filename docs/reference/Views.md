@@ -702,7 +702,7 @@ public func handleMeasurementPick(
 )
 ```
 
-Converts a GPU pick result into a world-space surface point (ray / triangle intersection, respecting the body's transform) and feeds it to `addMeasurementPoint(_:)`. Only `.face` picks are accepted; edge / vertex picks and misses are ignored. Called by `MetalViewportView` while `measurementMode != .none`.
+Converts a GPU pick result into a world-space surface point (ray / triangle intersection, respecting the body's transform) and feeds it to `addMeasurementPoint(_:)`. Only `.face` picks are accepted; edge / vertex picks and misses are ignored. On a heightfield body the point is where the tap's ray meets the field's full-resolution surface (`Heightfield.raycast`, as in `refinePick`), through the body's transform; a ray that passes beside the field adds no point. Called by `MetalViewportView` while `measurementMode != .none`.
 
 #### `cancelPendingMeasurement()`
 

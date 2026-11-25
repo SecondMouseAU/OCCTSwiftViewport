@@ -430,6 +430,7 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 | SSAO, silhouettes | The field writes the depth prepass (not when translucent, as for meshes). |
 | Section planes | Clipped per fragment, and tiles wholly behind a plane are culled. |
 | Selection | Tint, and the screen-space outline (selection mask and stencil mark), live and offscreen. |
+| Tap-to-measure | `handleMeasurementPick` takes the point from the field: the tap's ray walked over the full-resolution heights through the body's transform, as `refinePick` does, so the point is on the true surface, not the coarser drawn one. A ray that passes beside the field adds no point. `ViewportBody.worldHitPoint(ray:triangleIndex:)` is for meshes and returns `nil` for a field. |
 | Overlay layer (`renderLayer == .overlay`) | Drawn after the outline with always-pass depth, in every display mode, with no shadows or outline, like a widget. Picked over geometry. |
 | TAA | The jittered projection reaches the tile plan and every draw. An edit restarts accumulation (like an animated body), so a field being edited does not ghost under a still camera. |
 | Per-triangle highlight, vertex colours, tessellation, mesh shaders, normal smoothing | Not applicable: the per-cell attribute ramp is the colour channel, and the surface is not a mesh. |
