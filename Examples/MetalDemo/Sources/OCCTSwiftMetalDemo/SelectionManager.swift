@@ -169,44 +169,17 @@ final class SelectionManager: ObservableObject {
         body: ViewportBody,
         meta: CADBodyMetadata
     ) -> ViewportBody? {
-        let stride = 6
-        var overlayVerts: [Float] = []
-        var overlayIndices: [UInt32] = []
-        var vertIdx: UInt32 = 0
-
-        for (ti, fi) in meta.faceIndices.enumerated() {
-            guard fi == faceIndex else { continue }
-            let baseIndex = ti * 3
-            guard baseIndex + 2 < body.indices.count else { continue }
-
-            for j in 0..<3 {
-                let srcIdx = Int(body.indices[baseIndex + j])
-                let base = srcIdx * stride
-                guard base + 5 < body.vertexData.count else { continue }
-
-                let px = body.vertexData[base]
-                let py = body.vertexData[base + 1]
-                let pz = body.vertexData[base + 2]
-                let nx = body.vertexData[base + 3]
-                let ny = body.vertexData[base + 4]
-                let nz = body.vertexData[base + 5]
-
-                let offset: Float = 0.002
-                overlayVerts.append(contentsOf: [
-                    px + nx * offset, py + ny * offset, pz + nz * offset,
-                    nx, ny, nz
-                ])
-            }
-            overlayIndices.append(contentsOf: [vertIdx, vertIdx + 1, vertIdx + 2])
-            vertIdx += 3
-        }
-
-        guard !overlayIndices.isEmpty else { return nil }
+        // Reads `meshPositions`/`meshNormals` on a direct-mesh body and `vertexData` otherwise
+        // (issue #264); `body.vertexData` alone is empty for a direct-mesh body.
+        guard
+            let mesh = MeshVertexReader.faceHighlightMesh(
+                of: body, faceIndices: meta.faceIndices, face: faceIndex)
+        else { return nil }
 
         return ViewportBody(
             id: "highlight-face",
-            vertexData: overlayVerts,
-            indices: overlayIndices,
+            vertexData: mesh.vertexData,
+            indices: mesh.indices,
             edges: [],
             color: SIMD4<Float>(0.2, 0.5, 1.0, 0.6)
         )

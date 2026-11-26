@@ -41,32 +41,22 @@ enum GeometryUtils {
 
     /// Intersects a ray with a specific triangle from a body's geometry.
     ///
-    /// Returns the 3D hit point, or nil if the triangle index is out of range or no intersection.
+    /// Returns the 3D hit point in the body's local space (`transform` is not applied), or nil if
+    /// the triangle index or one of its vertices is out of range, the body has no mesh, or there
+    /// is no intersection. Reads a direct-mesh body (`usesDirectMesh`) and an interleaved one.
     static func hitPointOnTriangle(
         ray: Ray,
         body: ViewportBody,
         triangleIndex: Int
     ) -> SIMD3<Float>? {
-        let stride = 6
         let baseIndex = triangleIndex * 3
-        guard baseIndex + 2 < body.indices.count else { return nil }
-
-        let i0 = Int(body.indices[baseIndex])
-        let i1 = Int(body.indices[baseIndex + 1])
-        let i2 = Int(body.indices[baseIndex + 2])
-
-        func vertex(_ idx: Int) -> SIMD3<Float> {
-            let base = idx * stride
-            return SIMD3<Float>(
-                body.vertexData[base],
-                body.vertexData[base + 1],
-                body.vertexData[base + 2]
-            )
-        }
-
-        let v0 = vertex(i0)
-        let v1 = vertex(i1)
-        let v2 = vertex(i2)
+        guard baseIndex >= 0, baseIndex + 2 < body.indices.count,
+            // Direct-mesh bodies keep their positions in `meshPositions`, not `vertexData`.
+            let reader = MeshVertexReader(body),
+            let v0 = reader.position(at: Int(body.indices[baseIndex])),
+            let v1 = reader.position(at: Int(body.indices[baseIndex + 1])),
+            let v2 = reader.position(at: Int(body.indices[baseIndex + 2]))
+        else { return nil }
 
         guard let t = ray.intersectsTriangle(v0: v0, v1: v1, v2: v2) else { return nil }
         return ray.origin + ray.direction * t
