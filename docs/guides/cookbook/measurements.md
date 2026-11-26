@@ -57,7 +57,7 @@ While `measurementMode != .none`, each tap on a **face** (`.face` pick) is conve
 The internal flow per tap:
 
 1. GPU pick returns a `PickResult` with `kind == .face` and a `triangleIndex`.
-2. `ViewportController.handleMeasurementPick` reconstructs the world-space hit point using `ViewportBody.worldHitPoint(ray:triangleIndex:)`, which respects the body's `transform` and reads the same triangle positions the renderer draws, so it works on direct-mesh bodies however they were built (`ViewportBody.directMesh(...)` or the initializer with `meshPositions:`/`meshNormals:`).
+2. `ViewportController.handleMeasurementPick` reconstructs the world-space hit point using `ViewportBody.worldHitPoint(ray:triangleIndex:)`, which respects the body's `transform` and reads the same triangle positions the renderer draws, so it works on direct-mesh bodies however they were built (`ViewportBody.directMesh(...)` or the initializer with `meshPositions:`/`meshNormals:`). A **heightfield** body has no triangles, so its point comes from the field instead: the tap's ray is walked over the field's full-resolution heights (`Heightfield.raycast`, the same step `refinePick` uses), through the body's `transform`. A tap whose ray passes beside the field adds no point.
 3. The point is appended to `pendingMeasurementPoints`.
 4. Once enough points are gathered for the active mode, a `ViewportMeasurement` is appended to `controller.measurements` and `pendingMeasurementPoints` is cleared for the next measurement.
 
@@ -280,6 +280,7 @@ The overlay re-renders whenever `controller.measurements` changes (it is driven 
 ## Notes and limitations
 
 - Only **face** picks accumulate measurement points. Tapping an edge, vertex, or empty space is ignored.
+- A heightfield body measures like a mesh: tap its surface and the point lands on the field, not on the coarser surface the GPU drew. Call `body.worldHitPoint(ray:triangleIndex:)` yourself on a heightfield body and it returns `nil`; use `SceneRaycast.cast(ray:bodies:)` for the world-space point instead.
 - Tap-to-measure and selection are mutually exclusive at the interaction layer: while `measurementMode != .none`, taps route to `handleMeasurementPick` and do not update `controller.pickResult` or `selectedBodyIDs`.
 - Bodies with `isPickable = false` are excluded from the GPU pick buffer and cannot yield measurement points.
 - Rubber-band rendering for the in-progress segment is not drawn by the built-in overlay; expose `pendingMeasurementPoints` to your own canvas layer if you need it.
