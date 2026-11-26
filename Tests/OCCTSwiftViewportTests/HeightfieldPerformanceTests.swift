@@ -12,8 +12,9 @@
 // far worse, and say nothing about release.
 //
 // Each scenario prints its median CPU and GPU milliseconds over the measured frames. `latticeCost`
-// (#254) draws the `.wireframe` lattice and the shaded surface alternately, frame by frame, because
-// the GPU's clock state otherwise moves one variant's figure against the next.
+// (#254, #263) draws the `.wireframe` lattice, or the lattice over the surface in
+// `.shadedWithEdges`, and the shaded surface alternately, frame by frame, because the GPU's clock
+// state otherwise moves one variant's figure against the next.
 
 import Foundation
 import Testing
@@ -199,6 +200,24 @@ struct HeightfieldPerformanceTests {
                 "8 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded, target: 8),
                 Variant(mode: .wireframe, target: 8)
             ),
+            // The lattice over the shaded surface (#263): `.shadedWithEdges` against `.shaded`,
+            // which draws the identical surface, so the difference is the lattice pass alone.
+            (
+                "OVER SURFACE 4 px mesh cell, msaa4: lattice 16 px", Variant(mode: .shaded),
+                Variant(mode: .shadedWithEdges)
+            ),
+            (
+                "OVER SURFACE 4 px mesh cell, msaa4: lattice 1 px (every mesh cell)",
+                Variant(mode: .shaded), Variant(mode: .shadedWithEdges, latticePixels: 1)
+            ),
+            (
+                "OVER SURFACE 4 px mesh cell, msaa1: lattice 16 px", Variant(mode: .shaded, msaa: 1),
+                Variant(mode: .shadedWithEdges, msaa: 1)
+            ),
+            (
+                "OVER SURFACE 8 px mesh cell, msaa4: lattice 16 px",
+                Variant(mode: .shaded, target: 8), Variant(mode: .shadedWithEdges, target: 8)
+            ),
         ]
         for (name, shaded, lattice) in pairs {
             var gpu = [[Double]](repeating: [], count: 2)
@@ -216,11 +235,26 @@ struct HeightfieldPerformanceTests {
                 _ = renderer.render(bodies: [body], options: options)
                 if frame >= 40 { gpu[frame % 2].append(renderer.lastGPUSeconds * 1e3) }
             }
+            // p10 and p90 of the frames within the run, so the spread is printed with the median.
+            func spread(_ values: [Double]) -> String {
+                let sorted = values.sorted()
+                guard !sorted.isEmpty else { return "" }
+                return String(
+                    format: "p10 %.2f p90 %.2f", sorted[sorted.count / 10],
+                    sorted[sorted.count * 9 / 10])
+            }
+            // Frame 2k is the shaded variant and 2k + 1 the lattice one, so they ran back to back
+            // under the same clocks: the difference of each pair is the lattice's cost with the
+            // clock state taken out, and its median and p10 / p90 are the figure to read.
+            let paired = zip(gpu[0], gpu[1]).map { $1 - $0 }
             print(
                 String(
-                    format: "LATTICE %@: shaded %.2f ms (best %.2f), lattice %.2f ms (best %.2f)",
-                    name, Self.median(gpu[0]), gpu[0].min() ?? 0, Self.median(gpu[1]),
-                    gpu[1].min() ?? 0))
+                    format:
+                        "LATTICE %@: shaded %.2f ms (best %.2f; %@), lattice %.2f ms (best %.2f; %@), "
+                        + "paired difference %.2f ms (%@)",
+                    name, Self.median(gpu[0]), gpu[0].min() ?? 0, spread(gpu[0]),
+                    Self.median(gpu[1]), gpu[1].min() ?? 0, spread(gpu[1]), Self.median(paired),
+                    spread(paired)))
         }
     }
 

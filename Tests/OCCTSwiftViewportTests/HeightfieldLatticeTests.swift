@@ -856,7 +856,9 @@ struct HeightfieldLatticeTests {
     func otherModesAreUnchanged() throws {
         let field = try LatticeScene.field { i, j in 5 * sin(Float(i) * 0.2) * cos(Float(j) * 0.2) }
         let body = LatticeScene.body(field)
-        for mode in DisplayMode.allCases where mode != .wireframe {
+        // `.shadedWithEdges` draws the lattice over the surface since #263, so it follows the
+        // setting too; HeightfieldLatticeShadedWithEdgesTests covers it.
+        for mode in DisplayMode.allCases where mode != .wireframe && mode != .shadedWithEdges {
             var a = LatticeSetup()
             a.mode = mode
             a.latticePixels = 1

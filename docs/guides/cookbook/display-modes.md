@@ -70,6 +70,11 @@ most common mode for geometry review. Keyboard shortcut: **S**.
 Shaded surfaces with contrast-adaptive wireframe edges overlaid. Helps show
 both silhouette and internal topology simultaneously. Keyboard shortcut: **E**.
 
+A heightfield has no edge geometry, so it draws its lattice here: the same lines
+as in `.wireframe`, over the shaded surface, in the contrast colour a mesh's
+edges get, with the lines behind a ridge hidden (see
+[Heightfield surfaces](heightfield-surfaces.md#shaded-with-edges-the-lattice-over-the-surface)).
+
 ![Shaded-with-edges render of a box and sphere scene](images/display-shaded-edges.png)
 
 ### `.flat`

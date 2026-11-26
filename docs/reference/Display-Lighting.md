@@ -39,7 +39,7 @@ controller.displayMode = .shaded
 
 #### `shadedWithEdges`
 
-Shaded surfaces with a wireframe edge overlay drawn on top. Combines readability of shading with topology visibility.
+Shaded surfaces with a wireframe edge overlay drawn on top. Combines readability of shading with topology visibility. A [`Heightfield`](Heightfield.md) has no edge geometry, so it draws its [lattice](Heightfield.md#over-the-surface-shadedwithedges) over the shaded surface instead: the same lines as in `.wireframe`, in the contrast colour a mesh's edges get here, hidden where a ridge is in front of them.
 
 ```swift
 controller.displayMode = .shadedWithEdges

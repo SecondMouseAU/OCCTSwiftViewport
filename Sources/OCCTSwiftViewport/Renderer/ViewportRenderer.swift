@@ -1501,7 +1501,7 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
             bodies: bodies, commandBuffer: commandBuffer, view: viewMatrix,
             projection: projMatrix, viewportHeight: Float(h),
             meshCellPixels: controller.configuration.heightfieldMeshCellPixels,
-            latticePixels: HeightfieldDrawSet.drawsLattice(in: displayMode)
+            latticePixels: HeightfieldDrawSet.plansLattice(in: displayMode)
                 ? controller.configuration.heightfieldLatticePixels : nil,
             clipPlanes: RendererSharedSetup.activeClipPlanes(clipPlaneVecs, count: clipPlaneCount),
             shadow: shadowEnabled
@@ -1987,6 +1987,17 @@ public final class ViewportRenderer: NSObject, MTKViewDelegate, Sendable {
                 entry.draw.encodeShaded(
                     encoder: mainEncoder, pipeline: heightfieldPipelines.shaded,
                     uniforms: &uniforms, bodyUniforms: &bodyUniforms)
+            }
+            if HeightfieldDrawSet.drawsLatticeOverSurface(in: displayMode),
+                let latticePipeline = heightfieldPipelines.latticeOverSurface.value
+            {
+                // `.shadedWithEdges`: the lattice over the surface just drawn, like a mesh's edges.
+                // A translucent field's surface is drawn later, over its lines, as a mesh's is.
+                HeightfieldDrawSet.encodeLatticePass(
+                    encoder: mainEncoder, entries: heightfieldEntries, pipeline: latticePipeline,
+                    edgeConfiguration: frameEdgeConfig, viewportSize: edgeViewportSize,
+                    makeUniforms: makeUniforms, depthState: highlightDepthState,
+                    restoreDepthState: depthState, objectIndex: { $0.objectIndex })
             }
         } else if HeightfieldDrawSet.drawsLattice(in: displayMode), let heightfieldPipelines,
             let latticePipeline = heightfieldPipelines.lattice.value

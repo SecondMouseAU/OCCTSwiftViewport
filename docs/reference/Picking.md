@@ -247,7 +247,7 @@ config.pickingConfiguration = PickingConfiguration(isEnabled: true, followsDispl
 | Edges and arcs of an edge-only body | every mode | every mode |
 | Vertices | every mode | every mode |
 | A heightfield's surface | when the mode shows surfaces | in every mode |
-| A heightfield's [lattice lines](Heightfield.md#the-wireframe-lattice) | in `.wireframe` | never: the surface covers them |
+| A heightfield's [lattice lines](Heightfield.md#the-wireframe-lattice) | in `.wireframe` only; in `.shadedWithEdges` they are drawn over the surface but not stamped, since the surface is and gives the same cell under a line | never: the surface covers them |
 
 Kinds each mode picks, from the same box with `edgeIndices` and `vertices` set:
 
@@ -306,7 +306,7 @@ The rules that follow are decided in one place, `PickStampRules`, which the live
 | `ViewportController.selectionFilter` | `OffscreenRenderOptions.selectionFilter` (widget-layer hits bypass it, as live) |
 | `PickingConfiguration.isEnabled` | not needed: the pass runs when asked |
 
-A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so by default its surface is not picked there; its [lattice lines](Heightfield.md#the-wireframe-lattice) are, as a mesh in `.wireframe` is picked at its edges and not its faces: a pixel on a line returns the cell under it (`PickResult.heightfield` set, `refinePick` applies), a pixel between lines returns `nil`. With `followsDisplayMode` (`pickFollowsDisplayMode`) off, the surface is picked in `.wireframe` too, between the lines as well.
+A heightfield body is picked offscreen too: its `PickResult.heightfield` carries the cell, height, attribute and id, and `OffscreenPickMap` holds the handles it reads them from. A heightfield draws no surface in `.wireframe`, so by default its surface is not picked there; its [lattice lines](Heightfield.md#the-wireframe-lattice) are, as a mesh in `.wireframe` is picked at its edges and not its faces: a pixel on a line returns the cell under it (`PickResult.heightfield` set, `refinePick` applies), a pixel between lines returns `nil`. In `.shadedWithEdges` the lattice is drawn over the surface, and the surface is picked as in `.shaded`: a pixel on a line and one between lines both return the cell under them as a `.face` (`PickResult.heightfield` set), the same result the line's own stamp would give. With `followsDisplayMode` (`pickFollowsDisplayMode`) off, the surface is picked in `.wireframe` too, between the lines as well.
 
 The offscreen calls are synchronous (the live ones complete asynchronously, after a GPU readback). Coordinates are render pixels, origin top left. Clip planes, `displayMode`, `isVisible`, `isPickable`, render layers, each body's `transform` and the `renderingQuality` surface path are applied as live. The full API is in [Rendering: GPU picking](Rendering.md#gpu-picking).
 

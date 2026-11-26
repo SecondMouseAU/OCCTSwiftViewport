@@ -1,9 +1,10 @@
 // HeightfieldLattice.swift
 // OCCTSwiftViewport
 //
-// The `.wireframe` lattice of a heightfield (#254): the pitch of its lines, the uniforms and draw
-// calls that put them on screen, and the main-pass loop both renderers share. The shaders are the
-// "Heightfield lattice" section of Shaders.metal.
+// The lattice of a heightfield, drawn in `.wireframe` in place of its surface (#254) and in
+// `.shadedWithEdges` over it (#263): the pitch of its lines, the uniforms and draw calls that put
+// them on screen, and the main-pass loop both renderers share. The shaders are the "Heightfield
+// lattice" section of Shaders.metal.
 
 import Foundation
 @preconcurrency import Metal
@@ -64,12 +65,27 @@ extension HeightfieldLayout {
 extension HeightfieldDrawSet {
 
     /// Whether `displayMode` draws (and, unless the pick stamps every kind in every mode, picks)
-    /// the field as a lattice.
+    /// the field as a lattice in place of its surface.
     ///
-    /// The modes that show edges but not surfaces do, which today is `.wireframe`. Every other
-    /// mode draws the surface, or, for a heightfield, which has no edge geometry, nothing more.
+    /// The modes that show edges but not surfaces do, which today is `.wireframe`. A mode that
+    /// shows both draws the surface and, for a heightfield, which has no edge geometry, adds the
+    /// lattice over it, see ``drawsLatticeOverSurface(in:)``.
     static func drawsLattice(in displayMode: DisplayMode) -> Bool {
         displayMode.showsEdges && !displayMode.showsSurfaces
+    }
+
+    /// Whether `displayMode` draws the lattice over the shaded surface, as a mesh's edges are.
+    ///
+    /// The modes that show both surfaces and edges, except `.xray`, whose surfaces write no depth
+    /// for the lines to be hidden behind. Today that is `.shadedWithEdges` (#263).
+    static func drawsLatticeOverSurface(in displayMode: DisplayMode) -> Bool {
+        displayMode.showsEdges && displayMode.showsSurfaces && !displayMode.usesTransparency
+    }
+
+    /// Whether the frame's tile plan carries a lattice pitch: the lattice is drawn, in place of
+    /// the surface or over it.
+    static func plansLattice(in displayMode: DisplayMode) -> Bool {
+        drawsLattice(in: displayMode) || drawsLatticeOverSurface(in: displayMode)
     }
 
     /// The uniforms of a lattice draw: the edge configuration's width and dash pattern.
@@ -112,7 +128,10 @@ extension HeightfieldDrawSet {
     ///
     /// Both renderers call this. The lines are tested against the depth already drawn (`depthState`,
     /// `.lessEqual` without writes) so a nearer opaque body hides them, and write none, so the lines
-    /// of one field never knock each other out; the surface itself is not drawn.
+    /// of one field never knock each other out. The surface itself is not drawn here: in
+    /// `.wireframe` it is not drawn at all, and in `.shadedWithEdges` (`HeightfieldPipelines.
+    /// latticeOverSurface` as `pipeline`) the caller has drawn it, and it hides the lines behind a
+    /// ridge.
     ///
     /// `objectIndex` gives the pick index a body's draw carries (the live renderer's draw-order
     /// ordinal; 0 offscreen, where the main pass never reads it), and `restoreDepthState` is the

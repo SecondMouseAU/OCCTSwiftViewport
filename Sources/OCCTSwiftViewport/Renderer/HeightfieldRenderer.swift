@@ -59,8 +59,8 @@ struct HeightfieldTileInstance {
     /// `.wireframe` lattice borders the tile draws for its neighbours
     /// (`HeightfieldLayout.latticeBorders`); 0 there in every other display mode.
     var levels: UInt32
-    /// The `.wireframe` lattice line pitch, a power of two of cells (see
-    /// `HeightfieldLayout.latticeLevel`); 0 in every other display mode.
+    /// The lattice line pitch, a power of two of cells (see `HeightfieldLayout.latticeLevel`); 0 in
+    /// every display mode that draws no lattice (all but `.wireframe` and `.shadedWithEdges`).
     var lattice: UInt32 = 0
 }
 
@@ -167,6 +167,12 @@ struct HeightfieldPipelines {
     /// The `.wireframe` lattice, built on first use so a renderer that never draws one never
     /// compiles it.
     let lattice: LazyPipeline
+    /// The lattice over the shaded surface in `.shadedWithEdges`, built on first use.
+    ///
+    /// Its vertex function pulls the lines toward the viewer and its fragment function colours them
+    /// as a mesh's edges. They are entry points of their own (#263), so `.wireframe` and the
+    /// lattice pick stay as they were.
+    let latticeOverSurface: LazyPipeline
 
     init?(device: MTLDevice, library: MTLLibrary, sampleCount: Int, depthFormat: MTLPixelFormat) {
         guard
@@ -182,6 +188,14 @@ struct HeightfieldPipelines {
                 device: device, label: "heightfield_lattice", library: library,
                 vertexFunction: "heightfield_lattice_vertex",
                 fragmentFunction: "heightfield_lattice_fragment",
+                colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
+                stencilPixelFormat: depthFormat, sampleCount: sampleCount, blending: .sourceOver)
+        }
+        latticeOverSurface = LazyPipeline {
+            RendererSharedSetup.makePipelineState(
+                device: device, label: "heightfield_lattice_surface", library: library,
+                vertexFunction: "heightfield_lattice_surface_vertex",
+                fragmentFunction: "heightfield_lattice_surface_fragment",
                 colorPixelFormat: .bgra8Unorm, depthPixelFormat: depthFormat,
                 stencilPixelFormat: depthFormat, sampleCount: sampleCount, blending: .sourceOver)
         }
@@ -205,8 +219,8 @@ struct HeightfieldView {
     /// World-space section planes (`dot(n, p) + w < 0` is clipped); a tile wholly behind one is
     /// not drawn.
     var clipPlanes: [SIMD4<Float>] = []
-    /// The on-screen spacing of `.wireframe` lattice lines, in pixels; `nil` when no lattice is
-    /// drawn, which leaves every tile's lattice pitch at 0.
+    /// The on-screen spacing of lattice lines, in pixels; `nil` when no lattice is drawn
+    /// (`HeightfieldDrawSet.plansLattice(in:)`), which leaves every tile's lattice pitch at 0.
     var latticePixels: Float?
 }
 

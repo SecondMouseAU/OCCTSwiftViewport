@@ -245,6 +245,12 @@ pick with the cell under it; a pixel between lines returns `nil`, as a mesh in `
 at its edges and not its faces. `PickResult.heightfield` is set, and `refinePick` still makes the
 cell exact.
 
+In `.shadedWithEdges` the lattice is drawn over the surface, but it is not stamped on its own: the
+surface already is, and writes the same cell under a line as the line's own stamp would. A pixel on
+a line and a pixel between lines both give the surface pick, the `.face` with the cell under it and
+`PickResult.heightfield` set. (A mesh's edges are picked as `.edge`s there; a heightfield has no edge
+primitive for a line to report.)
+
 With `PickingConfiguration.followsDisplayMode` off (`OffscreenRenderOptions.pickFollowsDisplayMode`
 offscreen) the surface is picked in every display mode, `.wireframe` included, between the lines as
 well as on them: a heightfield carries a surface, and the lattice lines are part of it. The lattice
@@ -282,14 +288,14 @@ ViewportConfiguration.heightfieldLatticePixels: Float   // default 16
 OffscreenRenderOptions.heightfieldLatticePixels: Float  // default 16; init(matching:) copies it
 ```
 
-How far apart the lines of the [`.wireframe` lattice](#the-wireframe-lattice) are on screen, in
-drawable pixels. Each tile's lines are the smallest power-of-two number of cells apart that spans at
+How far apart the lines of the [lattice](#the-wireframe-lattice) (`.wireframe`, and `.shadedWithEdges`
+over the surface) are on screen, in drawable pixels. Each tile's lines are the smallest power-of-two number of cells apart that spans at
 least this many pixels, so the pitch of a line is between this value and twice it. **Documented range
 `1...256`** (clamped when drawn). A value at or below the mesh cell
 ([`heightfieldMeshCellPixels`](#heightfieldmeshcellpixels), 4 px) draws one line per mesh cell, the
 true wireframe of what the GPU draws; at the default 4 px mesh cell that is a dense hatch (about 2 to 4
-pixels apart), which fades out where lines come closer than 3 pixels. It has no effect in any other
-display mode.
+pixels apart), which fades out where lines come closer than 3 pixels. It has no effect in any display
+mode but those two.
 
 ## ViewportController.refinePick
 
@@ -340,7 +346,9 @@ pick** has no single ray: it reports the cell of the drawn surface under each pi
 
 `.wireframe` draws a heightfield as a **lattice**: lines of constant grid position on the displaced
 surface, in the body's own colour, as an edge-only body's edges are. Nothing else of the surface is
-drawn.
+drawn. `.shadedWithEdges` draws the same lattice over the shaded surface (see
+[Over the surface](#over-the-surface-shadedwithedges) below). (The heading keeps its name, and its
+anchor, from when `.wireframe` was the only mode that drew it.)
 
 - **Same surface.** The lattice is drawn through the tile planner and `hfDisplace` the shaded passes
   use (the lattice vertex function calls it), so its lines lie on the surface that is drawn at each
@@ -362,8 +370,9 @@ drawn.
   edge-only body, `edgeIntensity` and the depth fade do not apply.
 - **See-through.** Lines behind a ridge are drawn, as a mesh's edges are in `.wireframe`: the surface
   writes no depth. Lines are tested against opaque geometry drawn before them but write no depth.
-- **Picking.** The lines are picked, not the gaps (unless `PickingConfiguration.followsDisplayMode` is
-  `false`, which picks the whole surface); see [`PickResult.heightfield`](#pickresultheightfield).
+- **Picking.** In `.wireframe` the lines are picked, not the gaps (unless
+  `PickingConfiguration.followsDisplayMode` is `false`, which picks the whole surface); see
+  [`PickResult.heightfield`](#pickresultheightfield).
 - **Lines at multiples of the pitch.** Lines stand at the field's cell 0 and every pitch after it, so the
   far border (the last row and column) has a line only where it falls on one.
 - **Lines on a tile border.** From a pitch of 64 cells a tile's lines fall on its borders, and each of
@@ -383,6 +392,49 @@ drawn.
   as a precise number. The lattice pitch did not change it measurably, and
   [`heightfieldMeshCellPixels`](#heightfieldmeshcellpixels) moves it as it moves the surface. M4 numbers
   only; nothing has been measured on an iPad or iPhone. The benchmark is
+  `HeightfieldPerformanceTests/latticeCost` (see [Cost](#cost)).
+
+### Over the surface (`.shadedWithEdges`)
+
+`.shadedWithEdges` draws the shaded surface as `.shaded` does, then the same lattice over it, as a
+mesh's edges are drawn over its faces (#263). It is the `.wireframe` lattice pass (the same draw loop,
+tile plan, `hfDisplace` and line coverage; only its vertex and fragment entry points are its own), so
+the spacing (`heightfieldLatticePixels`), width and dash (`edgeLineConfiguration`), section planes,
+`transform`, tile culling and the full-width lines on tile borders (the same border bits in the tile
+plan) are the same; what differs is:
+
+- **Hidden lines are hidden.** The lines are depth tested against the surface just drawn, so the surface
+  hides the lines behind a ridge (the one thing `.wireframe` deliberately does not do), and a nearer body
+  hides them like any other geometry. They write no depth, so the lines of one field never knock each other
+  out. A translucent field (`opacity < 1`) draws its lines in the opaque pass and its surface over them,
+  as a translucent mesh does with its edges.
+- **No z-fighting.** The lattice and the surface are two draws of the same triangles through two vertex
+  functions, so their depth agrees only to rounding in a perspective projection, and with no allowance a
+  quarter of the line pixels were lost to the depth test (78 percent of them kept at 1x MSAA on a
+  perspective top-down view, 92 at 4x; an orthographic projection agrees exactly). The vertex function
+  therefore pulls each vertex toward the viewer along its view ray by 3 pixels' worth of world distance at
+  its depth, the pull a mesh's edges get (`edgeBiasedClipPosition`), which keeps 99 percent. The pull is in
+  screen pixels, so it does not depend on the near and far planes. A hidden line within 3 pixels of depth
+  of the surface in front of it still shows: at a grazing angle, over a surface rougher than a cell, that
+  is a few lines, as for a mesh's edges.
+- **Colour.** The body's own colour would vanish into the surface, so the lines take the contrast colour a
+  mesh's edges get in this mode (dark on a pale body, light on a dark one), the depth fade, and
+  `edgeIntensity` (0 hides them).
+- **Picking.** Not stamped separately: the surface is, and gives the same cell under a line. A pixel on a
+  line and a pixel between lines both return the surface pick (`.face`, the cell,
+  `PickResult.heightfield`). See [`PickResult.heightfield`](#pickresultheightfield).
+- **Cost.** One more raster of the field's triangles with the lattice's cheap fragment, drawn on top of the
+  surface: about **a quarter of a shaded frame**. On an M4 in a release build (2000 x 2000 cells,
+  1668 x 1194, 4 px mesh cell, lattice 16 px), `.shadedWithEdges` against `.shaded` drawn alternately
+  frame by frame, five runs, the paired difference (lattice frame minus the shaded frame beside it) had a
+  median of 1.5 ms at 1x MSAA (1.50 to 1.53 across the runs; shaded 5.5 ms), 1.2 ms at an 8 px mesh cell
+  and 4x MSAA (1.15 to 1.18 in four runs, 0.5 in one), and 1.4 to 2.5 ms at the default 4x MSAA and 4 px
+  (median of the five runs 2.45); one line per mesh cell (lattice 1 px) cost 2.0 to 2.8 ms (median 2.77).
+  The 4x MSAA frames were bimodal, 4 ms or 11 ms for the shaded surface, because the GPU's clock state
+  moved within and between runs, and the lattice's cost moved in proportion (about 1.0 ms in the fast state,
+  2.5 ms in the slow one: 23 to 28 percent of the shaded frame in each, 24 percent at 8 px). Other work
+  was running on the Mac, so read it as "about a quarter of the frame", not as a precise number. M4
+  numbers only; **nothing has been measured on an iPad or iPhone**. The benchmark is
   `HeightfieldPerformanceTests/latticeCost` (see [Cost](#cost)).
 
 ## Trade-offs
@@ -427,7 +479,8 @@ surface drawn from a coarse level is conservative, never an over-estimate.
 
 | Feature | Behaviour |
 |---------|-----------|
-| Shaded, flat, unlit, x-ray, shaded with edges | Drawn. A heightfield has no edge geometry, so "with edges" adds nothing (the lattice is drawn only in `.wireframe`). |
+| Shaded, flat, unlit, x-ray | Drawn. A heightfield has no edge geometry, so `.xray`'s edges add nothing (the lattice is drawn only in `.wireframe` and `.shadedWithEdges`). |
+| `.shadedWithEdges` | The shaded surface with the **lattice drawn over it**, in the contrast colour a mesh's edges get, with the lines behind a ridge hidden by the surface. The surface is picked as in `.shaded`. See [Over the surface](#over-the-surface-shadedwithedges). |
 | `.wireframe` | A **lattice** on the displaced surface, see-through, in the body's colour with the edge configuration's width and dash; the surface itself is not drawn. The lines are picked (the cell under the pixel), the gaps are not, unless `PickingConfiguration.followsDisplayMode` is off, which picks the whole surface. See [the wireframe lattice](#the-wireframe-lattice). |
 | Translucency (`opacity < 1`, `.xray`) | Drawn in the sorted transparent pass with no depth writes, depth-sorted with translucent meshes by world-bounds centre. A single sheet needs no cull order. |
 | Shadows | Casts shadows. The shadow plan is separate from the camera's: it keeps tiles outside the view whose shadow can fall into it, and culls the rest. |
@@ -528,5 +581,6 @@ frame time with 200 disjoint edits in both runs (upload 9.3 MB against 15.6 MB).
 On the default scene the iPhone read about four times faster than the iPad table above (4.3 ms
 against 18.4 ms) with 1.9 times fewer pixels, although the iPad's M2 GPU is the larger one on paper.
 That is unexplained and the iPad is being re-measured, so treat the iPad figures as provisional until
-it is. Not measured: the lattice (see [The wireframe lattice](#the-wireframe-lattice)) on a phone, a
+it is. Not measured: the lattice (see [The wireframe lattice](#the-wireframe-lattice), and
+[over the surface](#over-the-surface-shadedwithedges)) on a phone, a
 5 px target, a sustained run longer than about 90 seconds, and a second iPhone.
